@@ -14,3 +14,6 @@ diag-enclave.png
 diag-enclave-zoom.png
 *.bak
 inspection-dashboard.broken-*.html
+
+# AI 生成素材原图（处理后只保留 assets/*.webp）
+generated-images/

@@ -283,55 +283,65 @@ h1 em{
   100%{opacity:0;transform:translateX(52%);}
 }
 .bouquet{
-  position:relative;z-index:2;display:block;
-  width:100%;height:auto;max-height:47vh;
+  position:relative;z-index:2;
+  width:min(100%,40vh);aspect-ratio:44/52;
+  margin:0 auto;
   overflow:visible;
-  filter:drop-shadow(0 26px 38px rgba(0,0,0,.66)) drop-shadow(0 0 22px rgba(224,70,107,.14));
+  /* 底部束口渐隐：茎秆收拢处自然没入黑暗，不需要装饰性的蝴蝶结 */
+  -webkit-mask-image:linear-gradient(180deg,#000 76%,transparent 97%);
+  mask-image:linear-gradient(180deg,#000 76%,transparent 97%);
 }
-/* 每朵花：外组（transform 属性定位）→ 内组（CSS 动画摇摆，避免覆盖定位） */
-.bloom-in{
-  transform-box:fill-box;transform-origin:50% 96%;
+/* 每支玫瑰：按花头位置定位（--x/--y 为花心坐标），茎秆向下渐隐入黑暗；
+   摇摆以花头为轴（像真花点头），img 内层做呼吸；外层滤镜做景深 */
+.sprig{
+  position:absolute;left:var(--x,50%);top:var(--y,30%);
+  width:var(--w,40%);
+  transform:translate(-50%,-18%) rotate(var(--r,0deg));
+  transform-origin:50% 18%;
   animation:sway var(--dur,7s) ease-in-out infinite;
   animation-delay:var(--delay,0s);
   will-change:transform;
 }
-@keyframes sway{
-  0%,100%{transform:rotate(calc(var(--amp,2deg) * -1)) translateY(0) scale(1);}
-  32%{transform:rotate(calc(var(--amp,2deg) * .45)) translateY(-2.4px) scale(1.012);}
-  68%{transform:rotate(calc(var(--amp,2deg) * 1)) translateY(-.8px) scale(1.019);}
-}
-/* 内层花瓣：缓慢开合，让花朵"活"起来 */
-.bud{
-  transform-box:fill-box;transform-origin:50% 62%;
-  animation:budOpen var(--bdur,12s) ease-in-out infinite;
+.sprig img{
+  width:100%;height:auto;display:block;
+  transform-origin:50% 20%;
+  animation:breathe var(--bdur,9s) ease-in-out infinite;
   animation-delay:var(--bdelay,0s);
+  user-select:none;-webkit-user-drag:none;
+  /* 茎秆向下渐隐：花从黑暗中生长出来，收束处不需要交待 */
+  -webkit-mask-image:linear-gradient(180deg,#000 46%,transparent 88%);
+  mask-image:linear-gradient(180deg,#000 46%,transparent 88%);
 }
-@keyframes budOpen{
-  0%,100%{transform:rotate(-5deg) scale(1);}
-  50%{transform:rotate(5deg) scale(.93);}
+@keyframes sway{
+  0%,100%{transform:translate(-50%,-18%) rotate(calc(var(--r,0deg) - var(--amp,1.5deg)));transform-origin:50% 18%;}
+  36%{transform:translate(-50%,-18%) rotate(calc(var(--r,0deg) + var(--amp,1.5deg)*.55)) translateY(-.4%);transform-origin:50% 18%;}
+  70%{transform:translate(-50%,-18%) rotate(calc(var(--r,0deg) + var(--amp,1.5deg)));transform-origin:50% 18%;}
 }
-/* 花瓣 */
-.po{fill:url(#pOuter);stroke:url(#rim);stroke-width:.9;}
-.pm{fill:url(#pMid);stroke:rgba(40,3,14,.62);stroke-width:1.7;}
-.pi{fill:url(#pIn);stroke:rgba(30,2,11,.62);stroke-width:1.5;}
-.stem{fill:none;stroke:url(#stemG);stroke-width:4.2;stroke-linecap:round;}
-.stem-hi{fill:none;stroke:rgba(126,178,138,.30);stroke-width:1.1;stroke-linecap:round;}
-.leaf{fill:url(#leafG);}
-.leaf-hi{fill:none;stroke:rgba(166,212,178,.24);stroke-width:.9;stroke-linecap:round;}
-/* 高光（湿亮感） */
-.spec{fill:#fff;opacity:.24;filter:blur(2.6px);mix-blend-mode:screen;}
-.dew-c{fill:rgba(255,240,244,.86);}
-.dew-h{fill:rgba(255,255,255,.95);}
+@keyframes breathe{0%,100%{transform:scale(1) rotate(0deg);}50%{transform:scale(1.02) rotate(var(--bamp,.6deg));}}
 /* 闪星 */
-.spark{fill:#fff6e6;animation:sparkle var(--sdur,3.8s) ease-in-out infinite;animation-delay:var(--sdelay,0s);transform-box:fill-box;transform-origin:50% 50%;}
-.spark.gold{fill:#ffe3a8;}
+.sparkle{
+  position:absolute;z-index:6;width:var(--s,11px);height:var(--s,11px);pointer-events:none;
+  background:radial-gradient(circle,#fff9ec 14%,rgba(255,216,170,.55) 46%,transparent 72%);
+  clip-path:polygon(50% 0,60.5% 39.5%,100% 50%,60.5% 60.5%,50% 100%,39.5% 60.5%,0 50%,39.5% 39.5%);
+  filter:drop-shadow(0 0 5px rgba(255,222,168,.9));
+  mix-blend-mode:screen;
+  animation:sparkle var(--sdur,3.8s) ease-in-out infinite;
+  animation-delay:var(--sdelay,0s);
+}
+.sparkle.gold{background:radial-gradient(circle,#ffe9bc 16%,rgba(255,196,110,.6) 46%,transparent 72%);}
 @keyframes sparkle{
   0%,70%,100%{opacity:0;transform:scale(.15) rotate(0deg);}
   80%{opacity:.98;transform:scale(1) rotate(24deg);}
   90%{opacity:.45;transform:scale(.66) rotate(44deg);}
 }
 /* 金色浮尘 */
-.mote{fill:#ffd9a0;animation:moteUp var(--mdur,11s) linear infinite;animation-delay:var(--mdelay,0s);}
+.fx{position:absolute;inset:0;z-index:6;pointer-events:none;}
+.mote{
+  position:absolute;width:3px;height:3px;border-radius:50%;pointer-events:none;
+  background:#ffd9a0;box-shadow:0 0 6px rgba(255,196,120,.85);opacity:0;
+  animation:moteUp var(--mdur,11s) linear infinite;
+  animation-delay:var(--mdelay,0s);
+}
 @keyframes moteUp{
   0%{opacity:0;transform:translateY(0) scale(.55);}
   14%{opacity:.9;}
@@ -538,98 +548,9 @@ html.still .mote{opacity:.55;transform:none;}
         <div class="petals" id="petals" aria-hidden="true"></div>
         <div class="sheen" aria-hidden="true"></div>
 
-        <svg class="bouquet" viewBox="0 0 440 520" role="img" aria-label="一束玫瑰花">
-          <defs>
-            <!-- 花瓣渐变：光源在左上，让每片花瓣都有由亮到暗的过渡 -->
-            <radialGradient id="pOuter" cx="32%" cy="24%" r="82%">
-              <stop offset="0%" stop-color="#e03a5e"/>
-              <stop offset="36%" stop-color="#a81438"/>
-              <stop offset="72%" stop-color="#6d0c26"/>
-              <stop offset="100%" stop-color="#38050f"/>
-            </radialGradient>
-            <radialGradient id="pMid" cx="36%" cy="28%" r="78%">
-              <stop offset="0%" stop-color="#f26182"/>
-              <stop offset="42%" stop-color="#bd1c46"/>
-              <stop offset="76%" stop-color="#770f2c"/>
-              <stop offset="100%" stop-color="#430718"/>
-            </radialGradient>
-            <radialGradient id="pIn" cx="40%" cy="32%" r="74%">
-              <stop offset="0%" stop-color="#fb8fa9"/>
-              <stop offset="46%" stop-color="#cf2a52"/>
-              <stop offset="80%" stop-color="#7e1231"/>
-              <stop offset="100%" stop-color="#52091d"/>
-            </radialGradient>
-            <!-- 花心暗部：内层花瓣下的深色阴影，拉开层次 -->
-            <radialGradient id="coreShade" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="rgba(34,2,11,.62)"/>
-              <stop offset="58%" stop-color="rgba(34,2,11,.30)"/>
-              <stop offset="100%" stop-color="rgba(34,2,11,0)"/>
-            </radialGradient>
-            <!-- 花瓣边缘的反射光（左上亮、右下消失） -->
-            <linearGradient id="rim" x1=".05" y1="0" x2=".85" y2="1">
-              <stop offset="0%" stop-color="rgba(255,226,236,.62)"/>
-              <stop offset="42%" stop-color="rgba(255,206,220,.14)"/>
-              <stop offset="100%" stop-color="rgba(255,206,220,0)"/>
-            </linearGradient>
-            <linearGradient id="stemG" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="#4a7355"/>
-              <stop offset="100%" stop-color="#1a2d21"/>
-            </linearGradient>
-            <linearGradient id="leafG" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color="#54855f"/>
-              <stop offset="58%" stop-color="#2c5037"/>
-              <stop offset="100%" stop-color="#1c3524"/>
-            </linearGradient>
-            <linearGradient id="ribbonG" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color="#f4cf98"/>
-              <stop offset="50%" stop-color="#d9b46a"/>
-              <stop offset="100%" stop-color="#8a6626"/>
-            </linearGradient>
-            <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
-              <feGaussianBlur stdDeviation="1.05" result="b"/>
-              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-
-            <!-- 花瓣：宽瓣、圆肩、中央微缺口（玫瑰花瓣特征） -->
-            <path id="petal" d="M0 0 C-27 -7 -41 -28 -34 -47 C-29 -61 -13 -65 -6 -56 C-3.2 -52.4 -1.6 -49 0 -46 C1.6 -49 3.2 -52.4 6 -56 C13 -65 29 -61 34 -47 C41 -28 27 -7 0 0 Z"/>
-            <!-- 花瓣折痕 -->
-            <path id="fold" d="M-16 -20 C-11 -33 -5 -41 0 -45" fill="none" stroke="rgba(255,224,232,.17)" stroke-width="1.05" stroke-linecap="round"/>
-            <!-- 叶片 -->
-            <path id="leaf" d="M0 0 C24 -4 48 -18 66 -42 C42 -46 14 -30 0 0 Z"/>
-            <path id="leafvein" d="M4 -6 C24 -14 44 -26 62 -40"/>
-            <!-- 花萼（花柄与花头之间的绿色小萼） -->
-            <g id="calyx">
-              <path d="M-13 -3 C-12 5 -6 11 0 13 C6 11 12 5 13 -3 C9 -3 4 -1 0 0 C-4 -1 -9 -3 -13 -3 Z" fill="#2c5138"/>
-              <path d="M-11 -2 L-17 12 L-6 4 M0 0 L0 15 L5 5 M11 -2 L17 11 L6 4" fill="none" stroke="#1e3a27" stroke-width="2.2" stroke-linecap="round"/>
-            </g>
-            <!-- 花心：螺旋卷芯 -->
-            <g id="bud">
-              <circle r="7" fill="#430718"/>
-              <path d="M-5.4 -1 A5.4 5.4 0 1 1 5.4 1.2 A3.3 3.3 0 1 1 -2 1.6" fill="none" stroke="#ae2242" stroke-width="2.3" stroke-linecap="round"/>
-              <path d="M-5.4 -1 A5.4 5.4 0 1 1 5.4 1.2" fill="none" stroke="rgba(255,190,206,.5)" stroke-width=".9" stroke-linecap="round"/>
-              <circle cx="-1.6" cy="-2.6" r=".9" fill="rgba(255,222,232,.75)"/>
-            </g>
-            <!-- 闪星 -->
-            <path id="star" d="M0 -8.5 L1.9 -1.9 L8.5 0 L1.9 1.9 L0 8.5 L-1.9 1.9 L-8.5 0 L-1.9 -1.9 Z"/>
-          </defs>
-
-          <!-- 花茎 / 叶片 / 花朵由脚本按同一套坐标生成，保证接续自然 -->
-          <g id="stems"></g>
-          <g id="leaves"></g>
-          <g id="blooms"></g>
-
-          <!-- 束口缎带 -->
-          <g id="ribbon">
-            <path d="M220 430 C198 440 182 459 178 489 C196 483 210 472 220 458 Z" fill="url(#ribbonG)" opacity=".92"/>
-            <path d="M220 430 C242 440 258 459 262 489 C244 483 230 472 220 458 Z" fill="url(#ribbonG)" opacity=".78"/>
-            <ellipse cx="220" cy="431" rx="17" ry="11" fill="url(#ribbonG)"/>
-            <ellipse cx="220" cy="431" rx="17" ry="11" fill="none" stroke="rgba(255,255,255,.28)" stroke-width=".8"/>
-            <ellipse cx="215" cy="427" rx="6" ry="4" fill="rgba(255,255,255,.24)"/>
-          </g>
-
-          <g id="sparkles" aria-hidden="true"></g>
-          <g id="motes" aria-hidden="true"></g>
-        </svg>
+        <!-- 花束：9 支真实素材玫瑰由脚本合成，每支独立摇摆/呼吸/景深 -->
+        <div class="bouquet" id="bouquet" role="img" aria-label="一束玫瑰花"></div>
+        <div class="fx" id="motes" aria-hidden="true"></div>
       </div>
 
       <div class="modules-head rise d4" id="modules">
@@ -961,193 +882,96 @@ html.still .mote{opacity:.55;transform:none;}
   }
 })();
 
-/* ==================== 玫瑰花束：程序化生成 ====================
-   每朵花独立定位/缩放/旋转，并各自带一套摇摆与开合节奏；
-   后排花朵加轻微景深（更暗、更虚），前景主花最亮最实——这是"像真花"的关键。
-   花茎、叶片按花朵坐标反推绘制，保证接续自然。 */
+/* ==================== 玫瑰花束：真实素材合成 ====================
+   两张照片级长茎玫瑰（纯黑底抠图 → assets/rose-a|b.webp），
+   9 支按「束口收拢、花头展开成穹顶」的方式扇形排布；
+   每支独立摇摆（绕茎基部）、呼吸、花头柔光脉动；
+   后排加景深（更虚更暗、微色相差），前排最清晰——空间感的关键。 */
 (function () {
-  var NS = 'http://www.w3.org/2000/svg';
-  var XLINK = 'http://www.w3.org/1999/xlink';
-  var stems = document.getElementById('stems');
-  var leaves = document.getElementById('leaves');
-  var blooms = document.getElementById('blooms');
-  var sparklesHost = document.getElementById('sparkles');
-  var motesHost = document.getElementById('motes');
-  if (!blooms) return;
+  var host = document.getElementById('bouquet');
+  if (!host) return;
 
   var STILL = /(?:\?|&)still=1/.test(location.search);
   var RM = (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) || STILL;
 
-  var TIE_X = 220, TIE_Y = 430;
+  var A = 'assets/rose-a.webp';
+  var B = 'assets/rose-b.webp';
 
-  /* x, y 花心；s 缩放；r 朝向；dof 0=最实 1=最虚 */
-  var HUES = [-6, 5, -3, 8, -8, 4, -2, 7, -5, 0];
-  var FLOWERS = [
-    { x: 150, y: 116, s: .74, r: -12, dof: .90 },
-    { x: 288, y: 110, s: .76, r: 14, dof: .90 },
-    { x: 100, y: 206, s: .86, r: -25, dof: .55 },
-    { x: 338, y: 200, s: .88, r: 22, dof: .55 },
-    { x: 166, y: 214, s: .92, r: -7, dof: .34 },
-    { x: 272, y: 216, s: .90, r: 9, dof: .34 },
-    { x: 218, y: 150, s: .98, r: -3, dof: .18 },
-    { x: 132, y: 300, s: .78, r: 16, dof: .46 },
-    { x: 302, y: 296, s: .80, r: -15, dof: .46 },
-    { x: 214, y: 278, s: 1.16, r: 5, dof: 0 }
+  /* x/y 花头坐标（容器百分比）；w 花头尺寸；r 初始倾角；blur/br/hue 景深；
+     dur/delay/amp 摇摆节奏；bdur/bdelay/bamp 呼吸节奏 */
+  var SPRIGS = [
+    /* 后排：小、虚、暗，位置最高 */
+    { src: B, x: 31, y: 9,  w: 40, r: -5,  z: 1, blur: 2.6, br: .64, hue: -8, dur: 7.6, delay: -1.2, amp: 1.9, bdur: 11.0, bdelay: -3, bamp: .8 },
+    { src: B, x: 50, y: 5,  w: 38, r: 0,   z: 1, blur: 2.8, br: .60, hue: 7,  dur: 8.4, delay: -4.1, amp: 1.6, bdur: 12.0, bdelay: -6, bamp: .6 },
+    { src: B, x: 69, y: 9,  w: 40, r: 5,   z: 1, blur: 2.6, br: .64, hue: -4, dur: 7.9, delay: -2.7, amp: 1.8, bdur: 10.5, bdelay: -1, bamp: .7 },
+    /* 中排：左右探出， forming 穹顶两肩 */
+    { src: B, x: 15, y: 27, w: 46, r: -16, z: 2, blur: 1.3, br: .74, hue: 6,  dur: 7.2, delay: -5.3, amp: 2.1, bdur: 10.0, bdelay: -4, bamp: .7 },
+    { src: B, x: 85, y: 27, w: 46, r: 16,  z: 2, blur: 1.3, br: .73, hue: -6, dur: 8.1, delay: -.6,  amp: 2.1, bdur: 11.5, bdelay: -7, bamp: .6 },
+    { src: A, x: 36, y: 24, w: 50, r: -6,  z: 3, blur: .6,  br: .88, hue: -4, dur: 6.8, delay: -2.0, amp: 1.5, bdur: 9.5,  bdelay: -2, bamp: .5 },
+    { src: A, x: 64, y: 24, w: 50, r: 6,   z: 3, blur: .6,  br: .87, hue: 5,  dur: 7.4, delay: -3.4, amp: 1.6, bdur: 10.8, bdelay: -5, bamp: .6 },
+    /* 前排：大、实、亮，位置最低 */
+    { src: A, x: 31, y: 45, w: 58, r: -8,  z: 4, blur: 0,   br: 1,   hue: 0, dur: 6.4, delay: -1.0, amp: 1.4, bdur: 9.0,  bdelay: -1, bamp: .5 },
+    { src: A, x: 57, y: 47, w: 60, r: 7,   z: 5, blur: 0,   br: 1,   hue: 0,  dur: 7.0, delay: -4.6, amp: 1.3, bdur: 9.8,  bdelay: -3, bamp: .45 }
   ];
 
-  function el(name, attrs) {
-    var n = document.createElementNS(NS, name);
-    for (var k in attrs) if (attrs.hasOwnProperty(k)) n.setAttribute(k, attrs[k]);
-    return n;
-  }
-  function useOf(id, cls, attrs) {
-    var u = el('use', attrs || {});
-    if (cls) u.setAttribute('class', cls);
-    u.setAttribute('href', id);
-    u.setAttributeNS(XLINK, 'xlink:href', id);
-    return u;
-  }
-  function usePetal(cls, rot, sc) {
-    return useOf('#petal', cls, { transform: 'rotate(' + rot + ') scale(' + sc + ')' });
-  }
-  function jit(r) { return (Math.random() - .5) * 2 * r; }
-  function nid(x) { return Math.round(x * 100) / 100; }
-
-  /* ---------- 花茎 ---------- */
-  FLOWERS.forEach(function (f, i) {
-    var x0 = nid(f.x), y0 = nid(f.y + 26 * f.s);
-    var x1 = nid(TIE_X + jit(9)), y1 = TIE_Y;
-    var cx = nid(x0 + (x1 - x0) * .3 + jit(11)), cy = nid(y0 + (y1 - y0) * .58);
-    var d = 'M' + x0 + ' ' + y0 + ' Q' + cx + ' ' + cy + ' ' + x1 + ' ' + y1;
-    stems.appendChild(el('path', { d: d, 'class': 'stem' }));
-    stems.appendChild(el('path', { d: d, 'class': 'stem-hi', transform: 'translate(-1.2,0)' }));
+  SPRIGS.forEach(function (p, i) {
+    var d = document.createElement('div');
+    d.className = 'sprig';
+    d.style.zIndex = p.z;
+    d.style.setProperty('--x', p.x + '%');
+    d.style.setProperty('--y', p.y + '%');
+    d.style.setProperty('--w', p.w + '%');
+    d.style.setProperty('--r', p.r + 'deg');
+    d.style.setProperty('--amp', p.amp + 'deg');
+    d.style.setProperty('--dur', p.dur + 's');
+    d.style.setProperty('--delay', p.delay + 's');
+    d.style.setProperty('--bdur', p.bdur + 's');
+    d.style.setProperty('--bdelay', p.bdelay + 's');
+    d.style.setProperty('--bamp', p.bamp + 'deg');
+    if (p.blur > 0 || p.br < 1 || p.hue !== 0) {
+      d.style.filter = 'blur(' + p.blur + 'px) brightness(' + p.br + ') hue-rotate(' + p.hue + 'deg)';
+    }
+    var img = document.createElement('img');
+    img.src = p.src;
+    img.alt = '';
+    img.decoding = 'async';
+    img.draggable = false;
+    d.appendChild(img);
+    host.appendChild(d);
   });
 
-  /* ---------- 叶片 ---------- */
-  for (var i = 0; i < 14; i++) {
-    var f = FLOWERS[i % FLOWERS.length];
-    var t = .42 + Math.random() * .42;
-    var x0 = f.x, y0 = f.y + 26 * f.s;
-    var x1 = TIE_X + jit(9);
-    var lx = nid(x0 + (x1 - x0) * t + jit(16));
-    var ly = nid(y0 + (TIE_Y - y0) * t + jit(10));
-    var side = i % 2 ? 1 : -1;
-    var rot = nid(side * (34 + Math.random() * 40) - 8);
-    var sc = nid(.44 + Math.random() * .34);
-    var g = el('g', { transform: 'translate(' + lx + ',' + ly + ') rotate(' + rot + ') scale(' + sc + ')', 'class': 'leaf-wrap' });
-    g.appendChild(useOf('#leaf', 'leaf'));
-    g.appendChild(useOf('#leafvein', 'leaf-hi'));
-    leaves.appendChild(g);
-  }
-
-  /* ---------- 花朵 ---------- */
-  var LAYERS = [
-    { cls: 'po', n: 6, base: [-6, 54, 118, 186, 242, 304], sc: [.98, 1.06], folds: true },
-    { cls: 'pm', n: 5, base: [24, 88, 156, 226, 296], sc: [.66, .74], folds: false },
-    { cls: 'pi', n: 4, base: [10, 94, 184, 268], sc: [.40, .48], folds: false }
+  /* 闪星：落在花束轮廓的关键点上 */
+  var SPARKS = [
+    [30, 9, 13, 0], [66, 7, 11, .7], [12, 30, 10, 1.5], [85, 27, 11, 2.3],
+    [43, 18, 8, 3.1], [58, 38, 9, 1.9], [34, 52, 12, 2.7], [70, 55, 9, .4],
+    [49, 12, 7, 3.6], [18, 54, 7, 1.2], [80, 48, 8, 2.9]
   ];
-
-  FLOWERS.forEach(function (f, idx) {
-    /* 外组只负责定位（transform 属性），内组负责动画（CSS transform），两者必须分开 */
-    var outer = el('g', {
-      'class': 'rose bloom',
-      transform: 'translate(' + f.x + ',' + f.y + ') scale(' + f.s + ') rotate(' + f.r + ')',
-      'data-dof': f.dof
-    });
-    /* 主花（hue=0 且 dof=0）不加任何滤镜，保持最清晰 */
-    var hue = HUES[idx % HUES.length];
-    if (f.dof > 0) {
-      outer.setAttribute('style',
-        'filter:blur(' + nid(f.dof * 1.35) + 'px) brightness(' + nid(1 - f.dof * .34) +
-        ') saturate(' + nid(1 - f.dof * .12) + ') opacity(' + nid(1 - f.dof * .22) +
-        ') hue-rotate(' + hue + 'deg)');
-    } else if (hue) {
-      outer.setAttribute('style', 'filter:hue-rotate(' + hue + 'deg)');
-    }
-    var inner = el('g', { 'class': 'bloom-in' });
-    inner.setAttribute('style',
-      '--dur:' + nid(6.2 + (idx % 5) * .57) + 's;--delay:' + nid(-idx * .83) +
-      's;--amp:' + nid(1.5 + (idx % 4) * .45) + 'deg;--bdur:' + nid(10.5 + (idx % 4) * 1.6) +
-      's;--bdelay:' + nid(-idx * 1.15) + 's');
-
-    /* 花萼（压在花瓣下方） */
-    inner.appendChild(useOf('#calyx', 'calyx'));
-
-    /* 类名用 petal-layers：避免与飘落花瓣层 .petals 的 CSS（position:absolute+overflow:hidden）冲突 */
-    var petalHost = el('g', { 'class': 'petal-layers' });
-    LAYERS.forEach(function (L) {
-      /* 内层花瓣之前先铺一层花心暗部，让中心有深度、层次分明 */
-      if (L.cls === 'pi') {
-        petalHost.appendChild(el('ellipse', { rx: '25', ry: '21', cy: '-4', fill: 'url(#coreShade)' }));
-      }
-      var lg = el('g', { 'class': 'layer-' + L.cls });
-      for (var k = 0; k < L.n; k++) {
-        var rot = nid(L.base[k] + jit(8));
-        var sc = nid(L.sc[0] + Math.random() * (L.sc[1] - L.sc[0]));
-        lg.appendChild(usePetal(L.cls, rot, sc));
-        if (L.folds && k % 2 === 0) {
-          lg.appendChild(useOf('#fold', 'fold', { transform: 'rotate(' + rot + ') scale(' + sc + ')' }));
-        }
-      }
-      petalHost.appendChild(lg);
-    });
-
-    /* 花心：缓慢开合，让花朵"活"起来 */
-    var budWrap = el('g', { 'class': 'bud' });
-    budWrap.appendChild(useOf('#bud', null, { transform: 'scale(1.22)' }));
-    inner.appendChild(petalHost);
-    inner.appendChild(budWrap);
-
-    /* 高光：湿亮感（屏幕混合，光来自左上，不随花朵旋转而偏） */
-    var spec = el('g', { 'class': 'spec-wrap', transform: 'rotate(' + (-f.r) + ')', opacity: '1' });
-    spec.appendChild(el('ellipse', { 'class': 'spec', cx: nid(-11), cy: nid(-16), rx: nid(10), ry: nid(6) }));
-    spec.appendChild(el('ellipse', { 'class': 'spec', cx: nid(6), cy: nid(-24), rx: nid(5.5), ry: nid(3.4), opacity: '.55' }));
-    inner.appendChild(spec);
-
-    /* 露珠 */
-    var dew = el('g', { 'class': 'dew' });
-    for (var q = 0; q < 3; q++) {
-      var dxp = nid(-22 + Math.random() * 42), dyp = nid(-34 + Math.random() * 40);
-      var rr = nid(1.5 + Math.random() * 1.1);
-      dew.appendChild(el('circle', { 'class': 'dew-c', cx: dxp, cy: dyp, r: rr }));
-      dew.appendChild(el('circle', { 'class': 'dew-h', cx: nid(dxp - rr * .34), cy: nid(dyp - rr * .38), r: nid(rr * .34) }));
-    }
-    inner.appendChild(dew);
-
-    outer.appendChild(inner);
-    blooms.appendChild(outer);
+  SPARKS.forEach(function (s, i) {
+    var sp = document.createElement('span');
+    sp.className = 'sparkle' + (i % 3 === 0 ? ' gold' : '');
+    sp.style.left = s[0] + '%';
+    sp.style.top = s[1] + '%';
+    sp.style.setProperty('--s', s[2] + 'px');
+    sp.style.setProperty('--sdur', (2.9 + (i % 4) * .8) + 's');
+    sp.style.setProperty('--sdelay', (-s[3]) + 's');
+    host.appendChild(sp);
   });
 
-  /* ---------- 闪星 ---------- */
-  if (sparklesHost) {
-    var SPARKS = [
-      [146, 92, 6, 0], [276, 84, 5, .7], [104, 178, 4.4, 1.5], [332, 172, 4.6, 2.3],
-      [186, 138, 3.6, 3.1], [248, 196, 4, 1.9], [176, 268, 5.2, 2.7], [262, 292, 4.2, .4],
-      [220, 118, 3.4, 3.6], [126, 268, 3.2, 1.2], [312, 258, 3.4, 2.9]
-    ];
-    SPARKS.forEach(function (s, i) {
-      var g = el('g', { transform: 'translate(' + s[0] + ',' + s[1] + ') scale(' + (s[2] / 8.5) + ')' });
-      g.appendChild(useOf('#star', 'spark' + (i % 3 === 0 ? ' gold' : ''), {
-        style: '--sdur:' + nid(2.9 + (i % 4) * .8) + 's;--sdelay:' + nid(-s[3]) + 's'
-      }));
-      sparklesHost.appendChild(g);
-    });
-  }
-
-  /* ---------- 金色浮尘 ---------- */
+  /* 金色浮尘：从花束中缓缓上浮 */
+  var motesHost = document.getElementById('motes');
   if (motesHost) {
     for (var m = 0; m < 16; m++) {
-      var mx = nid(70 + Math.random() * 300);
-      var my = nid(180 + Math.random() * 280);
-      var c = el('circle', {
-        'class': 'mote', cx: mx, cy: my, r: nid(.9 + Math.random() * 1.5),
-        style: '--mdur:' + nid(8.5 + Math.random() * 6) + 's;--mdelay:' + nid(-Math.random() * 12) + 's'
-      });
-      motesHost.appendChild(c);
+      var mo = document.createElement('span');
+      mo.className = 'mote';
+      mo.style.left = (12 + Math.random() * 76) + '%';
+      mo.style.top = (40 + Math.random() * 48) + '%';
+      mo.style.setProperty('--mdur', (8.5 + Math.random() * 6) + 's');
+      mo.style.setProperty('--mdelay', (-Math.random() * 12) + 's');
+      motesHost.appendChild(mo);
     }
   }
 
-  window.__homeRose = { flowers: FLOWERS.length, reduced: RM, still: STILL };
+  window.__homeRose = { flowers: SPRIGS.length, reduced: RM, still: STILL };
 })();
 
 /* ==================== 照片位 ==================== */
