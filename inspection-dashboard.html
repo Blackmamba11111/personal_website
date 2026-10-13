@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>客户巡检管理看板 | 河北 · 山西 · 北京</title>
+<title>客户巡检管理看板</title>
 <script type="text/javascript">
   /* 地图代理：仅本地预览环境注入（占位符 __WB_* 由沙箱在本地替换）。
      线上部署时不会注入，直接走 map.qq.com（需配置 window.TMAP_KEY）。 */
@@ -476,7 +476,7 @@
   <header class="topbar">
     <div class="brand">
       <div class="logo">巡</div>
-      <div class="txt">客户巡检管理看板<br><small>河北 · 山西 · 北京</small></div>
+      <div class="txt">客户巡检管理看板<br><small id="brandRegion">多单位巡检台账</small></div>
     </div>
     <div class="spacer"></div>
 
@@ -2164,9 +2164,46 @@
     } catch (e) { geocode(); }
   }
 
+  /* ---------------- 品牌区省份联动 ----------------
+     顶部副标题（及浏览器标题）不再写死「河北 · 山西 · 北京」，改为跟随：
+       ① 账号的数据范围 —— 普通账号只看自己台账里的区域，超管的「汇总」看全部；
+       ② 当前选中的区域筛选 —— 选了某区域就只显示该区域配置的省份。
+     区域未配置省份时退回用区域名，保证不出现空串。 */
+  function shortProv(p) {
+    return String(p == null ? '' : p).trim()
+      .replace(/特别行政区$/, '')
+      .replace(/(壮族|回族|维吾尔)?自治区$/, '')
+      .replace(/[省市]$/, '');
+  }
+
+  function brandProvinces() {
+    var rs = DB.regions || [];
+    if (state.regionFilter && state.regionFilter !== 'all') {
+      rs = rs.filter(function (x) { return x.id === state.regionFilter; });
+    }
+    var out = [];
+    rs.forEach(function (r) {
+      var ps = (r.provinces && r.provinces.length) ? r.provinces : [r.name];
+      ps.forEach(function (p) {
+        var t = shortProv(p);
+        if (t && out.indexOf(t) < 0) out.push(t);
+      });
+    });
+    return out;
+  }
+
+  function renderBrandRegion() {
+    var provs = brandProvinces();
+    var txt = provs.length ? provs.join(' · ') : '多单位巡检台账';
+    var el = document.getElementById('brandRegion');
+    if (el) el.textContent = txt;
+    document.title = '客户巡检管理看板 | ' + txt;
+  }
+
   /* ---------------- 区域管理 ---------------- */
   function renderRegionChips() {
     var box = document.getElementById('regionChips');
+    renderBrandRegion();     /* 品牌区省份跟随当前区域选择，与该容器是否存在无关 */
     if (!box) return;
     var html = '<button type="button" class="chip' + (state.regionFilter === 'all' ? ' on' : '') +
       '" data-rid="all">全部区域</button>';
