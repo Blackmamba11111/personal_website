@@ -1,4 +1,4 @@
-# 潘超 · 个人主页
+# 撒啦嘿 · 个人主页
 
 一个纯静态的个人主页 + 一个多账号的数据看板。零依赖、零构建，直接托管即可访问。
 
@@ -63,8 +63,8 @@ git branch -M main
 git push -u origin main
 ```
 
-> 提交作者目前写作 `潘超 <panchao@users.noreply.github.com>`。
-> 想用自己的邮箱：`git config user.email "你的邮箱" && git commit --amend --reset-author`。
+> 提交作者用的是占位的 GitHub noreply 邮箱，不会暴露真实信息。
+> 想换成自己的：`git config user.email "你的邮箱" && git commit --amend --reset-author`。
 
 不想用命令行的话，也可以在 GitHub 新建空仓库后，用网页的 **Add file → Upload files** 上传这些文件（注意保留 `assets/` 目录层级）。
 
