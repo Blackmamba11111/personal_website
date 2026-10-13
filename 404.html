@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>页面走丢了 · 潘超</title>
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#07070a">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<style>
+:root{
+  --bg:#07070a;--txt:#eceaf0;--dim:#9b98a8;--dim-2:#6f6c7c;
+  --gold:#d9b46a;--gold-2:#f0d79b;--rose:#e0466b;--rose-2:#ff8fa8;
+  --line:rgba(255,255,255,.09);--ease:cubic-bezier(.22,.61,.36,1);
+}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0;background:var(--bg);color:var(--txt);overflow:hidden;
+  font:15px/1.7 "PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  display:flex;align-items:center;justify-content:center;
+}
+#bg{
+  position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(1000px 620px at 22% 12%, rgba(224,70,107,.12), transparent 62%),
+    radial-gradient(900px 560px at 84% 86%, rgba(217,180,106,.10), transparent 60%),
+    linear-gradient(168deg,#07070a 0%,#0b0b11 48%,#08080c 100%);
+}
+#grid{
+  position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.5;
+  background-image:
+    linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
+  background-size:64px 64px, 64px 64px;
+  mask-image:radial-gradient(circle at 50% 42%, #000 0%, transparent 76%);
+  -webkit-mask-image:radial-gradient(circle at 50% 42%, #000 0%, transparent 76%);
+}
+.wrap{position:relative;z-index:2;text-align:center;padding:28px;}
+.code{
+  font-size:clamp(66px,12vw,132px);font-weight:700;line-height:1;letter-spacing:-2px;
+  background:linear-gradient(100deg,var(--rose-2),var(--gold-2) 52%,var(--rose));
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;
+  background-size:220% 100%;
+  animation:sheen 7s ease-in-out infinite;
+}
+@keyframes sheen{0%,100%{background-position:0% 50%;}50%{background-position:100% 50%;}}
+h1{margin:14px 0 0;font-size:19px;font-weight:600;letter-spacing:.4px;}
+p{margin:10px 0 0;color:var(--dim);font-size:13.5px;}
+.links{margin-top:26px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap;}
+a.btn{
+  text-decoration:none;color:var(--gold-2);font-size:13px;letter-spacing:.4px;
+  padding:10px 20px;border-radius:999px;
+  background:rgba(217,180,106,.09);
+  box-shadow:inset 0 0 0 1px rgba(217,180,106,.26);
+  transition:background .25s var(--ease), box-shadow .25s var(--ease), transform .25s var(--ease);
+}
+a.btn:hover{background:rgba(217,180,106,.17);box-shadow:inset 0 0 0 1px rgba(217,180,106,.46);transform:translateY(-2px);}
+a.ghost{color:var(--dim);background:rgba(255,255,255,.04);box-shadow:inset 0 0 0 1px var(--line);}
+a.ghost:hover{color:var(--txt);background:rgba(255,255,255,.08);}
+</style>
+</head>
+<body>
+<div id="bg"></div><div id="grid"></div>
+<div class="wrap">
+  <div class="code">404</div>
+  <h1>这个页面走丢了</h1>
+  <p>链接可能已失效，或者地址输错了。</p>
+  <div class="links">
+    <a class="btn" href="/">回到首页</a>
+    <a class="btn ghost" href="/inspection-dashboard.html">打开数据看板</a>
+  </div>
+</div>
+</body>
+</html>

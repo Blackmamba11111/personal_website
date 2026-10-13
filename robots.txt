@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /inspection-dashboard.html
+
+# 个人主页可直接收录；数据看板为登录后的私有工具，不希望被搜索引擎索引。
