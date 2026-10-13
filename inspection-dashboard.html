@@ -3688,13 +3688,19 @@
       AUTH.scope = '';
       showAuth();
     }
-    /* 登录界面已渲染 → 等首屏 load 之后再异步预热地图 SDK。
-       不放文档头部同步加载，也不在 load 之前注入：只要地图域名响应慢/不可达，
-       同步加载会阻塞整个文档解析（登录框永不出现），load 之前注入则会拖住浏览器加载指示。
-       预热失败不影响任何其它功能，用户登录后仍会按需重试。 */
-    var warm = function () { loadTMap(); };
-    if (document.readyState === 'complete') setTimeout(warm, 600);
-    else window.addEventListener('load', function () { setTimeout(warm, 600); });
+    /* 登录界面已渲染 → 不主动预热地图 SDK。
+       原因：只要地图域名响应慢/不可达，任何自动发起的请求都会让浏览器「一直转圈」
+       （页面其实已经渲染完，只是网络不空闲）；同步加载更糟，会直接阻塞解析。
+       改为：用户真正开始输入账号/密码时才预热 —— 既不阻塞首屏，登录后地图通常也已就绪。
+       注意不要挂在 focus 上：showAuth() 会自动聚焦用户名输入框，那样等于立即预热。 */
+    var warmed = false;
+    var warm = function () { if (warmed) return; warmed = true; loadTMap(); };
+    ['loginUser', 'loginPwd'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('input', warm);
+      el.addEventListener('keydown', warm);
+    });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
