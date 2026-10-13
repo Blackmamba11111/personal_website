@@ -1,0 +1,14 @@
+# Cloudflare 静态资源上传排除清单（.gitignore 语法）
+# 这些文件只服务于仓库与构建流程，不应作为网站资源对外提供。
+
+# 版本库目录（此前被整包上传过，含全部历史对象）
+.git
+
+# 构建与本地工具产物
+.wrangler
+wrangler.jsonc
+.gitignore
+.assetsignore
+
+# 文档（不影响站点运行，README 在 GitHub 上即可查阅）
+README.md

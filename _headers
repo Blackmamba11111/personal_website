@@ -1,19 +1,20 @@
 # ================= 全局安全头 =================
+# 说明：站点为单文件前端应用，页面内含内联脚本与内联样式，故 script/style 需放开 'unsafe-inline'；
+# 地图 SDK（腾讯地图 GL JS）需要加载 qq.com / gtimg.com 资源，并在 blob worker 中运行。
+# 若线上地图异常，可先注释掉 Content-Security-Policy 这一行排查。
+/*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), usb=()
   X-XSS-Protection: 0
-  # 说明：站点为单文件前端应用，页面内含内联脚本与内联样式，故 script/style 需放开 'unsafe-inline'；
-  # 地图 SDK（腾讯地图 GL JS）需要加载 qq.com / gtimg.com 资源，并在 blob worker 中运行。
-  # 若线上地图异常，可先注释掉下面这一行排查。
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://map.qq.com https://*.qq.com https://*.gtimg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.qq.com https://*.gtimg.com; font-src 'self' data:; connect-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.map.qq.com http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' https://map.qq.com; base-uri 'self'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://map.qq.com https://*.qq.com https://*.gtimg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.qq.com https://*.gtimg.com; font-src 'self' data:; connect-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.map.qq.com; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' https://map.qq.com; base-uri 'self'; form-action 'self'; object-src 'none'
 
 # ================= 静态资源：长缓存 =================
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 
 # ================= HTML：始终校验新鲜度 =================
-/*.html
-  Cache-Control: public, max-age=0, must-revalidate
 /
+  Cache-Control: public, max-age=0, must-revalidate
+/*.html
   Cache-Control: public, max-age=0, must-revalidate

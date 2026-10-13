@@ -17,11 +17,18 @@
 ├── 404.html                    # 自定义 404
 ├── assets/
 │   ├── favicon.svg             # 站点图标
-│   └── hero-photo.jpg          # 首页照片（可直接替换同名文件）
-├── _headers                    # Cloudflare Pages 安全头与缓存策略
+│   ├── hero-photo.jpg          # 首页照片（可直接替换同名文件）
+│   ├── rose-a.webp             # 玫瑰素材
+│   └── rose-b.webp
+├── _headers                    # 安全头与缓存策略（Cloudflare 解析，格式敏感）
+├── .assetsignore               # 上传排除清单（.git / .wrangler / README 等）
 ├── robots.txt
 └── README.md
 ```
+
+> **`_headers` 格式陷阱**：Cloudflare 要求每个响应头都必须紧跟在**顶格的路径行**之后
+> （路径行以 `/` 开头，响应头行缩进两个空格）。文件开头如果先写响应头、没写路径行，
+> 部署会直接失败并报 `Expected a path before headers`。全局头要写成 `/*` 开头。
 
 ## 本地预览
 
@@ -53,35 +60,55 @@ npx serve -l 8080
 
 ## 部署到 GitHub + Cloudflare Pages
 
-### 1) 推到 GitHub
+### 1) 推送到 GitHub
 
-仓库已初始化并完成首次提交。只需要：
+已推送到 <https://github.com/Blackmamba11111/personal_website>（分支 `main`）。日常只需：
 
 ```bash
-git remote add origin git@github.com:<你的用户名>/<仓库名>.git
-git branch -M main
-git push -u origin main
+git add -A
+git commit -m "说明这次改了什么"
+git push
 ```
 
-> 提交作者用的是占位的 GitHub noreply 邮箱，不会暴露真实信息。
-> 想换成自己的：`git config user.email "你的邮箱" && git commit --amend --reset-author`。
+> 推送凭证不保存在仓库里（`.git/config` 只有干净的 `https://` 地址）。
+> 建议在 GitHub 生成一个仅含 `repo` 权限的 **Personal access token**，用完即删；
+> 或者配置 SSH key 后把远程地址换成 `git@github.com:...` 以免去每次输入。
 
-不想用命令行的话，也可以在 GitHub 新建空仓库后，用网页的 **Add file → Upload files** 上传这些文件（注意保留 `assets/` 目录层级）。
+### 2) 接 Cloudflare（Workers 静态资源）
 
-### 2) 接 Cloudflare Pages
+1. Cloudflare 控制台 → **Workers & Pages** → **Create** → 连接 Git 仓库，选中 `personal_website`；
+2. 构建配置**保持自动检测即可**（无需手填）：
 
-1. 打开 Cloudflare 控制台 → **Workers & Pages** → **Create** → **Pages** → **Connect to Git**；
-2. 选中刚才的仓库；
-3. 构建设置里：
-   - **Framework preset**：`None`
-   - **Build command**：留空
-   - **Build output directory**：`/`
-4. 点 **Save and Deploy**。首次部署约 1 分钟，之后每次 `git push` 都会自动重新发布。
+   | 项 | 值 |
+   |---|---|
+   | Worker 名称 | `personal-website` |
+   | Framework | `Static` |
+   | Deploy command | `npx wrangler deploy` |
+   | Output directory | `.` |
 
-绑定自定义域名：Pages 项目 → **Custom domains** → 添加域名并按提示改 DNS 即可（Cloudflare 会自动签发证书）。
-若域名也托管在 Cloudflare，通常是一键完成。
+3. 点 **Deploy**。之后每次 `git push` 都会自动重新发布。
 
-### 3) 发布前检查清单
+`_headers`（安全头 / 缓存）与 `.assetsignore`（上传排除）都放在**仓库根目录**即自动生效，
+不需要额外配置。
+
+绑定自定义域名：项目 → **Settings → Domains & Routes** → 添加域名并按提示改 DNS（Cloudflare 自动签发证书）。
+
+### 3) 部署失败排查
+
+构建日志里如果出现下面这类报错，是 `_headers` 格式问题（不是代码问题）：
+
+```
+Invalid _headers configuration:
+Line 2: Expected a path before headers [code: 100324]
+```
+
+含义：有响应头没有紧跟在**顶格的路径行**后面。修法是把全局头（原本悬空的那些）
+归到 `/*` 路径块下，路径行顶格、响应头行缩进两空格。
+
+同时请确认 `.assetsignore` 生效——早期没有它时，`.git/` 整个目录会被当成静态资源上传
+（日志里能看到 `+ /.git/HEAD` 之类的行），既浪费体积也可能暴露仓库历史。
+
+### 4) 发布前检查清单
 
 - [ ] 首页照片已换成你想要的版本（`assets/hero-photo.jpg`）
 - [ ] 看板地图密钥已配置（见下一节；不配也能用，只是地图区域会提示不可用）
