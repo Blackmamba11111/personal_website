@@ -1,4 +1,5 @@
 # ================= 全局安全头 =================
+# 强制刷新标记：2026-10-13 修复地图样式域名白名单（qpic.cn）
 # 说明：站点为单文件前端应用，页面内含内联脚本与内联样式，故 script/style 需放开 'unsafe-inline'；
 # 地图 SDK（腾讯地图 GL JS）需要加载 qq.com / gtimg.com / qpic.cn 资源，并在 blob worker 中运行。
 # qpic.cn 是地图样式描述文件（mapstyle.qpic.cn）的必经域名，缺失会导致底图空白。

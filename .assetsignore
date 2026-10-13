@@ -12,3 +12,8 @@ wrangler.jsonc
 
 # 文档（不影响站点运行，README 在 GitHub 上即可查阅）
 README.md
+
+# 安全头改由 HTML 的 meta 标签声明：
+# Workers 静态资源不会更新「已存在」的 _headers 文件（实测修改内容后仍报 No updated asset files），
+# 保留该文件会导致 Cloudflare 持续下发一份无法更新的旧策略（曾拦截地图样式域名 mapstyle.qpic.cn）。
+_headers

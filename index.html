@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>撒啦嘿 · 个人主页</title>
 <meta name="description" content="个人主页：作品、工具与一些还在打磨中的想法。">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<!-- 安全策略：原先由 Cloudflare 的 _headers 提供，但 Workers 静态资源不会更新已存在的 _headers 文件，
+     故改由页面 meta 声明。腾讯地图 GL JS 需要 qq.com / gtimg.com / qpic.cn（地图样式文件）。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://map.qq.com https://*.qq.com https://*.gtimg.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.qpic.cn; font-src 'self' data:; connect-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.map.qq.com https://*.qpic.cn https://cloudflareinsights.com https://static.cloudflareinsights.com; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' https://map.qq.com; base-uri 'self'; form-action 'self'; object-src 'none'">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#07070a">
 <meta property="og:type" content="website">
