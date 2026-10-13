@@ -1889,7 +1889,7 @@
     });
     regionPolyLayer = regionCircleLayer = regionLabelLayer = null;
 
-    var polyStyles = {}, circStyles = {}, polys = [], circles = [], labels = [];
+    var polyStyles = {}, circStyles = {}, polys = [], circles = [];
     var claimed = {};   // 省份去重：即使数据中同省被多个区域包含，也只绘制一次
     DB.regions.forEach(function (r) {
       var sid = 'rg_' + r.id;
@@ -1928,7 +1928,9 @@
       } catch (e) { regionCircleLayer = null; }
     }
 
-    /* 区域名称标签 */
+    /* 名称标签：
+       ① 「全部区域」→ 每个区域一枚，显示区域名（取所辖省份中心均值）；
+       ② 选中某区域 → 该区域所辖的每个省份各自上浮省名，直接落在对应省份版图上。 */
     try {
       var lblStyle = new TMap.LabelStyle({
         color: '#1B2333', size: 12,
@@ -1936,21 +1938,55 @@
         backgroundColor: 'rgba(255,255,255,0.9)',
         borderColor: '#D8E0EE', borderWidth: 1, padding: '3px 8px', borderRadius: 6
       });
-      DB.regions.forEach(function (r) {
-        var lp = labelPointOf(r.provinces);
-        if (!lp) return;
-        labels.push({
-          id: 'lb_' + r.id, styleId: 'lbl',
-          position: new TMap.LatLng(lp.lat, lp.lng),
-          content: r.name
-        });
-      });
-      if (labels.length) {
-        regionLabelLayer = new TMap.MultiLabel({
-          map: map, styles: { lbl: lblStyle }, geometries: labels
+      var labelItems = [];
+      if (state.regionFilter && state.regionFilter !== 'all') {
+        var selRegion = DB.regions.filter(function (x) { return x.id === state.regionFilter; })[0];
+        if (selRegion) {
+          (selRegion.provinces || []).forEach(function (pn) {
+            var pt = provLabelPoint(pn);
+            if (!pt) return;
+            labelItems.push({
+              id: 'lbp_' + selRegion.id + '__' + pn, styleId: 'lbl',
+              position: new TMap.LatLng(pt.lat, pt.lng), content: shortProv(pn)
+            });
+          });
+        }
+      } else {
+        DB.regions.forEach(function (r) {
+          var lp = labelPointOf(r.provinces);
+          if (!lp) return;
+          labelItems.push({
+            id: 'lb_' + r.id, styleId: 'lbl',
+            position: new TMap.LatLng(lp.lat, lp.lng), content: r.name
+          });
         });
       }
-    } catch (e) { regionLabelLayer = null; }
+      if (labelItems.length) {
+        regionLabelLayer = new TMap.MultiLabel({
+          map: map, styles: { lbl: lblStyle }, geometries: labelItems
+        });
+      }
+    } catch (e) {
+      regionLabelLayer = null;
+      if (window.console && console.warn) console.warn('区域名称标签创建失败：', e && e.message);
+    }
+  }
+
+  /* 省份标签落点：取主体环（面积 ≥ 本省最大环 2%）顶点均值，
+     避免标签落进被包围的飞地/空洞（如河北境内的北京、天津）或被远海岛礁带偏 */
+  function provLabelPoint(pn) {
+    var p = PROV_MAP[pn];
+    if (!p) return null;
+    var rings = majorRings(p);
+    var best = null, bestArea = -1;
+    (rings || []).forEach(function (rg) {
+      var a = ringArea(rg);
+      if (a > bestArea) { bestArea = a; best = rg; }
+    });
+    if (!best || !best.length) return { lng: p.center[0], lat: p.center[1] };
+    var sx = 0, sy = 0;
+    best.forEach(function (c) { sx += c[0]; sy += c[1]; });
+    return { lng: sx / best.length, lat: sy / best.length };
   }
 
   function renderMarkers() {
