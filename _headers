@@ -7,7 +7,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), usb=()
   X-XSS-Protection: 0
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://map.qq.com https://*.qq.com https://*.gtimg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.qq.com https://*.gtimg.com; font-src 'self' data:; connect-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.map.qq.com; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' https://map.qq.com; base-uri 'self'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://map.qq.com https://*.qq.com https://*.gtimg.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.qq.com https://*.gtimg.com; font-src 'self' data:; connect-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.map.qq.com https://cloudflareinsights.com https://static.cloudflareinsights.com; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' https://map.qq.com; base-uri 'self'; form-action 'self'; object-src 'none'
 
 # ================= 静态资源：长缓存 =================
 /assets/*

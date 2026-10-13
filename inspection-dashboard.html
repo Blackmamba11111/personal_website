@@ -953,17 +953,17 @@
   </div>
 </div>
 <!-- ==================== 腾讯地图 SDK ====================
-     线上部署：把 Key 填到下面 window.TMAP_KEY 的引号里（一行即可），
-     并在腾讯位置服务控制台把站点域名加入白名单。
-     留空时不加载 Key，仅本地预览环境可用；地图不可用时页面会给出提示，其余功能不受影响。 -->
-<script>window.TMAP_KEY = '';</script>
-<script>
-(function () {
-  var base = 'https://map.qq.com/api/gljs?v=1.exp&libraries=service';
-  var key = String(window.TMAP_KEY || '').replace(/\s+/g, '');
-  document.write('<scr' + 'ipt src="' + base + (key ? '&key=' + encodeURIComponent(key) : '') + '"><\/scr' + 'ipt>');
-})();
-</script>
+     已配置 Key（下方 window.TMAP_KEY）。
+     注意：该 Key 是浏览器端公开密钥，安全依赖「腾讯位置服务控制台 → Key 白名单」，
+     必须在白名单里登记站点域名（web.aill.top），否则地图会报 Key 校验失败。
+     留空则不携带 Key 请求；地图不可用（网络不通 / 未配 Key / 域名未白名单）时页面会给出提示，
+     其余功能不受影响。
+
+     ⚠️ 这里只声明 Key，绝不在此同步加载 SDK。
+     SDK 由页面脚本在登录界面渲染完成后以 async 方式注入（见 loadTMap）。
+     原因：改为同步 <script> / document.write 加载时，只要地图域名响应慢或不可达，
+     整个文档解析会被无限阻塞，脚本末尾的 boot() 永不执行 → 登录框不出现、页面一直转圈。 -->
+<script>window.TMAP_KEY = '5BDBZ-G6VEQ-SAM5O-BQSZP-FCV6T-DHFMA';</script>
 <script>
 /* =========================================================================
  * 客户巡检管理看板
@@ -1632,18 +1632,86 @@
   var PIN_SRC_CAND = pinSvg('#94A3B8', 'dot');
   var PIN_SRC_CAND_ON = pinSvg('#0EA5E9', 'dot');
 
+  /* ---------------- 腾讯地图 SDK：异步加载（绝不阻塞首屏） ----------------
+     state: idle → loading → ready | failed
+     超时兜底：网络静默丢包（连接卡住、既不成功也不报错）时 script 的 onload/onerror 都不触发，
+     15s 后按失败处理并在图区提示；若随后迟到成功，则自动恢复初始化。 */
+  var tmapState = 'idle', tmapWaiters = [], tmapTimer = null;
+
+  function tmapHint(state) {
+    var el = document.getElementById('mapFail');
+    if (!el) return;
+    if (state === 'off') { el.classList.remove('on'); return; }
+    var box = el.querySelector('.box');
+    if (box) {
+      box.innerHTML = (state === 'loading')
+        ? '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">地图加载中…</div>' +
+          '<div style="color:var(--text-2);font-size:12.5px;">正在获取地图资源，稍候片刻即可；' +
+          '左侧客户列表、季度统计、录入与检索功能不受影响。</div>'
+        : '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">地图未能加载</div>' +
+          '<div style="color:var(--text-2);font-size:12.5px;">可能是当前网络无法访问地图服务，或线上部署尚未配置地图密钥。' +
+          '左侧客户列表、季度统计、录入与检索功能均不受影响；配置完成后刷新页面即可恢复地图。</div>';
+    }
+    el.classList.add('on');
+  }
+
+  function flushTMap(ok) {
+    var q = tmapWaiters.slice();
+    tmapWaiters.length = 0;
+    q.forEach(function (fn) { try { fn(ok); } catch (e) {} });
+  }
+
+  /* SDK 是否已经在全局就绪（可能由缓存、其它加载器或测试桩先行注入） */
+  function tmapReadyNow() {
+    return (typeof TMap !== 'undefined') && !!TMap.Map;
+  }
+
+  function loadTMap(cb) {
+    if (cb) tmapWaiters.push(cb);
+    if (tmapReadyNow()) { tmapState = 'ready'; flushTMap(true); return; }
+    if (tmapState === 'ready') { flushTMap(true); return; }
+    if (tmapState === 'loading' || tmapState === 'failed') return;
+    tmapState = 'loading';
+    var key = String(window.TMAP_KEY || '').replace(/\s+/g, '');
+    var s = document.createElement('script');
+    s.async = true;
+    s.src = 'https://map.qq.com/api/gljs?v=1.exp&libraries=service' + (key ? '&key=' + encodeURIComponent(key) : '');
+    s.onload = function () {
+      tmapState = 'ready';
+      if (tmapTimer) { clearTimeout(tmapTimer); tmapTimer = null; }
+      flushTMap(true);
+    };
+    s.onerror = function () {
+      tmapState = 'failed';
+      if (!map) tmapHint('fail');
+      flushTMap(false);
+    };
+    tmapTimer = setTimeout(function () {
+      if (tmapState !== 'loading') return;
+      tmapState = 'failed';
+      if (!map) tmapHint('fail');
+      flushTMap(false);
+    }, 15000);
+    (document.head || document.documentElement).appendChild(s);
+  }
+
   function initMap() {
-    if (typeof TMap === 'undefined' || !TMap.Map) {
-      document.getElementById('mapFail').classList.add('on');
+    if (map) return;                                  /* 只初始化一次 */
+    if (tmapReadyNow()) tmapState = 'ready';
+    if (tmapState !== 'ready') {
+      /* SDK 尚未就绪：异步等待，绝不同步阻塞首屏；失败时图区给出提示 */
+      if (tmapState === 'failed') tmapHint('fail'); else tmapHint('loading');
+      loadTMap(function (ok) { if (ok) { tmapHint('off'); initMap(); } });
       return;
     }
+    tmapHint('off');
     try {
       map = new TMap.Map('map', {
         zoom: 6,
         center: new TMap.LatLng(38.6, 114.2)
       });
     } catch (e) {
-      document.getElementById('mapFail').classList.add('on');
+      tmapHint('fail');
       return;
     }
 
@@ -3583,6 +3651,13 @@
       AUTH.scope = '';
       showAuth();
     }
+    /* 登录界面已渲染 → 等首屏 load 之后再异步预热地图 SDK。
+       不放文档头部同步加载，也不在 load 之前注入：只要地图域名响应慢/不可达，
+       同步加载会阻塞整个文档解析（登录框永不出现），load 之前注入则会拖住浏览器加载指示。
+       预热失败不影响任何其它功能，用户登录后仍会按需重试。 */
+    var warm = function () { loadTMap(); };
+    if (document.readyState === 'complete') setTimeout(warm, 600);
+    else window.addEventListener('load', function () { setTimeout(warm, 600); });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
