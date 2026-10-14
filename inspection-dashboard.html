@@ -471,7 +471,7 @@
         </div>
         <button type="submit" class="auth-btn" id="btnLogin">登 录</button>
       </form>
-      <div class="auth-foot">数据保存在本浏览器本地，不上传服务器。更换设备或浏览器时，可通过「导出数据 / 导入数据」迁移台账。</div>
+      <div class="auth-foot">数据保存在服务端（Cloudflare D1），登录同一账号即可在任意设备上看到同一份台账；各账号数据相互隔离。</div>
     </div>
   </div>
 </div>
@@ -555,6 +555,12 @@
           <div style="color:var(--text-2);font-size:12.5px;">
             可能是当前网络无法访问地图服务，或线上部署尚未配置地图密钥。
             左侧客户列表、季度统计、录入与检索功能均不受影响；配置完成后刷新页面即可恢复地图。
+          </div>
+          <div id="mapDiagBox" style="display:none;margin-top:12px;">
+            <button type="button" class="btn sm" id="btnMapDiag">复制环境诊断信息</button>
+            <div id="mapDiagOut" style="display:none;margin-top:8px;padding:8px 10px;border-radius:6px;
+                 background:rgba(127,127,127,.08);color:var(--text-2);font-size:11.5px;
+                 line-height:1.7;white-space:pre-wrap;word-break:break-all;max-height:210px;overflow:auto;"></div>
           </div>
         </div>
       </div>
@@ -936,6 +942,10 @@
       <button type="button" class="icon-btn" data-close="maskPwd">✕</button>
     </div>
     <div class="modal-body">
+      <div id="forcePwdTip" style="display:none;margin:0 0 12px;padding:10px 12px;border-radius:8px;background:#FDF6E6;border:1px solid #F0D9A0;color:#8A6410;font-size:12px;line-height:1.7;">
+        <b>为安全起见，请先修改初始密码。</b><br>
+        本站为公网可访问的服务，当前口令仍是系统初始值，修改完成后才能正常使用。
+      </div>
       <div class="hint" id="pwdSub" style="margin:0 0 12px;"></div>
       <div class="field" id="pwdOldField">
         <label for="pwdOld">当前密码 <span class="req">*</span></label>
@@ -971,7 +981,10 @@
 <script>
 /* =========================================================================
  * 客户巡检管理看板
- * 数据存储：浏览器 localStorage（本地私有，不上传）
+ * 数据存储：服务端台账（Cloudflare Workers + D1）为唯一权威来源；
+ *           浏览器 localStorage 退化为「镜像缓存」——便于断网时继续录入，
+ *           联网后自动回推，且换电脑登录即可看到同一份数据。
+ * 鉴权：服务端签发 Bearer Token（30 天），会话不再依赖 localStorage 判断。
  * 地图：腾讯地图 GL JS（GCJ-02），仅用于区域级客户分布展示
  * ========================================================================= */
 (function () {
@@ -1304,18 +1317,21 @@
   var prefs = { autoRemind: true, mutedQuarters: [] };
   var map = null, markerLayer = null, focusLayer = null, infoWindow = null, mapReady = false;
   var regionPolyLayer = null, regionCircleLayer = null, regionLabelLayer = null, candidateLayer = null;
+  /* 客户名称标签层 + 当前悬浮的客户 id（悬浮即弹出巡检信息） */
+  var custLabelLayer = null, hoverId = null;
   var picking = { on: false, form: null };
   var candidates = [];        // 地点搜索候选列表
   var activeCandIdx = -1;     // 当前选中的候选序号
   var svcSuggestion = null, svcGeocoder = null;
 
   /* ---------------- 存储 ----------------
-     数据分层（V2）：
-       inspection_board_users_v1          账号注册表
-       inspection_board_v1::<用户名>       各账号独立的巡检台账
-       inspection_board_session_v1        登录会话
-     旧的单键 inspection_board_v1 仅作为 V1 升级来源被读取一次（见 ensureUsers）。
-     实际加载逻辑见 V2 区块的 load() / applyScope()。 */
+     权威数据在服务端（Cloudflare D1），本地只保留镜像缓存：
+       inspection_board_token_v1          服务端会话令牌（会话/记住登录）
+       inspection_board_users_v1          账号注册表镜像（version:2 表示来自服务端）
+       inspection_board_v1::<用户名>       各账号台账的本地镜像
+       inspection_board_pref_v1::<范围>    界面偏好（纯本地，不上传）
+     写入路径：业务改数据 → writeUserData() 落镜像 + 防抖 PUT /api/ledger。
+     路径迁移与升级逻辑见 V2 区块的 doLogin / signIn / load() / applyScope()。 */
 
   /* 旧版本数据迁移：把原来的 province/region 字符串升级为「区域 + 省份」模型 */
   function migrate() {
@@ -1642,21 +1658,93 @@
      15s 后按失败处理并在图区提示；若随后迟到成功，则自动恢复初始化。 */
   var tmapState = 'idle', tmapWaiters = [], tmapTimer = null;
 
+  /* ---------------- 环境能力检测与诊断 ----------------
+     腾讯地图 GL 依赖浏览器的 WebGL。若 WebGL 被禁用（关闭了硬件加速、
+     使用老旧显卡、远程桌面/虚拟机会话、部分企业浏览器策略），
+     地图区域会呈现空白，但页面其它功能完全正常 —— 这是「同一网址，
+     有的电脑能看到地图、有的看不到」最常见的原因。 */
+  function webglSupported() {
+    try {
+      var c = document.createElement('canvas');
+      var gl = c.getContext('webgl') || c.getContext('experimental-webgl')
+            || c.getContext('webgl2');
+      if (!gl) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+  function webglDetail() {
+    try {
+      var c = document.createElement('canvas');
+      var gl = c.getContext('webgl') || c.getContext('experimental-webgl') || c.getContext('webgl2');
+      if (!gl) return '不可用';
+      var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      var r = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+      return '可用（' + r + '）';
+    } catch (e) { return '检测失败：' + (e && e.message); }
+  }
+  function mapDiagText() {
+    var lines = [
+      '时间：' + (new Date()).toLocaleString('zh-CN'),
+      '页面地址：' + location.href,
+      '浏览器：' + navigator.userAgent,
+      'WebGL：' + webglDetail(),
+      '地图 SDK：' + (tmapReadyNow() ? '已加载' : ('未就绪（状态：' + tmapState + '）')),
+      '地图密钥：' + (String(window.TMAP_KEY || '').trim() ? '已配置' : '未配置'),
+      '地图实例：' + (map ? '已创建' : '未创建'),
+      '客户坐标数：' + (DB.customers || []).filter(function (c) {
+        return typeof c.lng === 'number' && typeof c.lat === 'number';
+      }).length,
+      '网络：' + (navigator.onLine ? '在线' : '离线')
+    ];
+    return lines.join('\n');
+  }
+  function showMapDiag() {
+    var out = document.getElementById('mapDiagOut');
+    if (!out) return;
+    out.textContent = mapDiagText();
+    out.style.display = 'block';
+    copyText(mapDiagText());
+  }
+
   function tmapHint(state) {
     var el = document.getElementById('mapFail');
     if (!el) return;
     if (state === 'off') { el.classList.remove('on'); return; }
     var box = el.querySelector('.box');
+    var diag = document.getElementById('mapDiagBox');
+    if (diag) diag.style.display = 'none';
     if (box) {
-      box.innerHTML = (state === 'loading')
-        ? '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">地图加载中…</div>' +
+      if (state === 'loading') {
+        box.innerHTML =
+          '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">地图加载中…</div>' +
           '<div style="color:var(--text-2);font-size:12.5px;">正在获取地图资源，稍候片刻即可；' +
-          '左侧客户列表、季度统计、录入与检索功能不受影响。</div>'
-        : '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">地图未能加载</div>' +
-          '<div style="color:var(--text-2);font-size:12.5px;">可能是当前网络无法访问地图服务，或线上部署尚未配置地图密钥。' +
-          '左侧客户列表、季度统计、录入与检索功能均不受影响；配置完成后刷新页面即可恢复地图。</div>';
+          '左侧客户列表、季度统计、录入与检索功能不受影响。</div>';
+      } else if (state === 'nowebgl') {
+        box.innerHTML =
+          '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">当前浏览器无法渲染地图</div>' +
+          '<div style="color:var(--text-2);font-size:12.5px;line-height:1.8;">' +
+            '腾讯地图需要浏览器支持 <b>WebGL</b> 图形加速，而本机检测结果为不可用。<br>' +
+            '常见原因与处理办法：<br>' +
+            '① 浏览器设置中开启了「关闭硬件加速」→ 打开并重启浏览器；<br>' +
+            '② 显卡驱动过旧或为远程桌面/虚拟机环境 → 更新驱动或改用本机浏览器；<br>' +
+            '③ 浏览器版本过旧 → 升级到最新版 Chrome / Edge。<br>' +
+            '<b>页面其它功能不受影响</b>：左侧客户列表、季度统计、录入与检索均可正常使用。' +
+          '</div>' +
+          '<div id="mapDiagMount"></div>';
+      } else {
+        box.innerHTML =
+          '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">地图未能加载</div>' +
+          '<div style="color:var(--text-2);font-size:12.5px;">可能是当前网络无法访问地图服务，' +
+          '或线上部署尚未配置地图密钥。左侧客户列表、季度统计、录入与检索功能均不受影响；' +
+          '配置完成后刷新页面即可恢复地图。</div>' +
+          '<div id="mapDiagMount"></div>';
+      }
     }
     el.classList.add('on');
+    /* 详情面板在每次重写 box 后需要重新挂载 */
+    var mount = document.getElementById('mapDiagMount');
+    if (mount && diag) mount.appendChild(diag);
+    if (diag) diag.style.display = 'block';
   }
 
   function flushTMap(ok) {
@@ -1715,7 +1803,8 @@
         center: new TMap.LatLng(38.6, 114.2)
       });
     } catch (e) {
-      tmapHint('fail');
+      /* 创建失败时再判定原因：WebGL 不可用给「环境不支持」的可操作说明，其余按通用失败处理 */
+      tmapHint(webglSupported() ? 'fail' : 'nowebgl');
       return;
     }
 
@@ -1736,6 +1825,35 @@
       var g = evt.geometry; if (!g) return;
       state.selectedId = g.id;
       renderList(); focusOn(g.id); openDetail(g.id);
+    });
+    /* 悬浮预览：hover 在「悬停对象改变」时触发，geometry 为 null 表示已移出全部标记。
+       注意腾讯 GL 的 MultiMarker 没有 mouseover/mouseout，只有 hover。 */
+    markerLayer.on('hover', function (evt) {
+      var g = evt && evt.geometry;
+      if (g && g.id) hoverCustomer(g.id);
+      else hoverLeave();
+    });
+    /* 客户名称标签层：与标记同源渲染；开启图层内碰撞，密集区域自动让位避免文字互相压盖 */
+    custLabelLayer = new TMap.MultiLabel({
+      map: map,
+      styles: {
+        name: new TMap.LabelStyle({
+          color: '#16233A', size: 11,
+          alignment: 'center', verticalAlignment: 'middle',
+          offset: { x: 0, y: -44 },
+          backgroundColor: 'rgba(255,255,255,0.92)',
+          borderColor: '#D8E0EE', borderWidth: 1, padding: '2px 6px', borderRadius: 5
+        }),
+        nameOn: new TMap.LabelStyle({
+          color: '#FFFFFF', size: 11,
+          alignment: 'center', verticalAlignment: 'middle',
+          offset: { x: 0, y: -44 },
+          backgroundColor: '#2563EB',
+          borderColor: '#1D4ED8', borderWidth: 1, padding: '2px 6px', borderRadius: 5
+        })
+      },
+      collisionOptions: { sameSource: true },
+      geometries: []
     });
     map.on('click', function (evt) {
       if (picking.on && evt.latLng) {
@@ -1995,15 +2113,30 @@
 
   function renderMarkers() {
     if (!mapReady) return;
-    var qk = state.quarter, geos = [];
+    var qk = state.quarter, geos = [], labels = [];
     DB.customers.forEach(function (c) {
       if (typeof c.lng !== 'number' || typeof c.lat !== 'number') return;
       var s = statusOf(c, qk);
       geos.push({ id: c.id, styleId: s.status, position: new TMap.LatLng(c.lat, c.lng) });
+      labels.push({
+        id: 'cl_' + c.id,
+        styleId: (c.id === state.selectedId) ? 'nameOn' : 'name',
+        position: new TMap.LatLng(c.lat, c.lng),
+        content: shortName(c.name),
+        rank: (c.id === state.selectedId ? 100 : 1)
+      });
     });
     markerLayer.setGeometries(geos);
+    if (custLabelLayer) custLabelLayer.setGeometries(labels);
+    hoverId = null;
     if (state.selectedId) focusOn(state.selectedId); else focusLayer.setGeometries([]);
     if (infoWindow) infoWindow.close();
+  }
+
+  /* 名称过长会横向压住相邻客户，标签订阅前先收敛 */
+  function shortName(n) {
+    n = String(n == null ? '' : n).trim();
+    return n.length > 12 ? n.slice(0, 12) + '…' : n;
   }
 
   function inView(c) {
@@ -2014,30 +2147,22 @@
     } catch (e) { return true; }
   }
 
-  function focusOn(id) {
-    if (!mapReady) return;
-    var c = DB.customers.filter(function (x) { return x.id === id; })[0];
-    if (!c || typeof c.lng !== 'number') return;
-    var z = 7;
-    try { z = map.getZoom(); } catch (e) {}
-    var radius = 8000 * Math.pow(1.7, Math.max(0, 9 - z));
-    focusLayer.setGeometries([{
-      id: 'focus', styleId: 'halo',
-      center: new TMap.LatLng(c.lat, c.lng), radius: radius
-    }]);
-    if (!inView(c)) {
-      try { map.setCenter(new TMap.LatLng(c.lat, c.lng)); } catch (e) {}
-    }
+  /* 信息窗内容：点击标记与悬浮标记共用同一份模板，保证口径一致 */
+  function infoHtmlFor(c) {
     var s = statusOf(c, state.quarter);
     var last = visitsOf(c.id)[0];
     var colorName = s.status === 'ok' ? '#0E9F6E' : (s.status === 'part' ? '#D97706' : '#DC2626');
-    var html =
-      '<div style="min-width:214px;font-family:system-ui,-apple-system,\'PingFang SC\',sans-serif;">' +
+    var miss = missingMonths(s);
+    return '<div style="min-width:214px;font-family:system-ui,-apple-system,\'PingFang SC\',sans-serif;">' +
         '<div style="font-weight:650;font-size:13px;color:#1B2333;margin-bottom:3px;">' + esc(c.name) + '</div>' +
         '<div style="font-size:11.5px;color:#5A6478;margin-bottom:7px;">' +
           esc(regionNameOf(c)) + ' · ' + esc(c.province || '') + (c.city ? ' · ' + esc(c.city) : '') + '</div>' +
         '<div style="font-size:11.5px;color:' + colorName + ';font-weight:600;margin-bottom:5px;">' +
-          esc(quarterLabel(state.quarter)) + '：' + statusText(c, s) + ' 次</div>' +
+          esc(quarterLabel(state.quarter)) + '：' + statusText(c, s) + '</div>' +
+        (miss.length
+          ? '<div style="font-size:11.5px;color:#D97706;margin-bottom:4px;">待补月份：' +
+            esc(miss.map(monthLabel).join('、')) + '</div>'
+          : '') +
         '<div style="font-size:11.5px;color:#5A6478;">最近巡检：' + (last ? fmtDate(last.date) : '无记录') + '</div>' +
         '<div style="font-size:11.5px;color:#5A6478;margin-top:2px;">频率要求：' + s.freq.label + '</div>' +
         (last && last.note ? '<div style="font-size:11.5px;color:#5A6478;margin-top:6px;padding-top:6px;border-top:1px solid #EEF1F6;line-height:1.5;">备注：' + esc(last.note) + '</div>' : '') +
@@ -2046,9 +2171,72 @@
           'border-radius:6px;padding:5px 11px;font-size:11.5px;cursor:pointer;user-select:none;">查看 / 登记巡检</span>' +
         '</div>' +
       '</div>';
+  }
+  function showInfoFor(c) {
+    if (!infoWindow) return;
     infoWindow.setPosition(new TMap.LatLng(c.lat, c.lng));
-    infoWindow.setContent(html);
+    infoWindow.setContent(infoHtmlFor(c));
     infoWindow.open();
+  }
+  function haloRadius() {
+    var z = 7;
+    try { z = map.getZoom(); } catch (e) {}
+    return 8000 * Math.pow(1.7, Math.max(0, 9 - z));
+  }
+
+  function focusOn(id) {
+    if (!mapReady) return;
+    var c = DB.customers.filter(function (x) { return x.id === id; })[0];
+    if (!c || typeof c.lng !== 'number') return;
+    focusLayer.setGeometries([{
+      id: 'focus', styleId: 'halo',
+      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius()
+    }]);
+    if (!inView(c)) {
+      try { map.setCenter(new TMap.LatLng(c.lat, c.lng)); } catch (e) {}
+    }
+    showInfoFor(c);
+  }
+
+  /* ---------------- 悬浮预览：不改变选中项、不移动视野 ---------------- */
+  function hoverCustomer(id) {
+    if (!mapReady || !id) return;
+    var c = DB.customers.filter(function (x) { return x.id === id; })[0];
+    if (!c || typeof c.lng !== 'number') return;
+    hoverId = id;
+    focusLayer.setGeometries([{
+      id: 'focus', styleId: 'halo',
+      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius()
+    }]);
+    showInfoFor(c);
+    if (custLabelLayer) {
+      try {
+        custLabelLayer.updateGeometries([{
+          id: 'cl_' + c.id, styleId: 'nameOn',
+          position: new TMap.LatLng(c.lat, c.lng), content: shortName(c.name), rank: 100
+        }]);
+      } catch (e) {}
+    }
+  }
+  /* 移出标记：若当前有选中客户则回落到选中项的信息窗，否则关闭 */
+  function hoverLeave() {
+    if (!hoverId) return;
+    var prev = hoverId;
+    hoverId = null;
+    var c = DB.customers.filter(function (x) { return x.id === prev; })[0];
+    if (c && custLabelLayer) {
+      try {
+        custLabelLayer.updateGeometries([{
+          id: 'cl_' + c.id,
+          styleId: (c.id === state.selectedId ? 'nameOn' : 'name'),
+          position: new TMap.LatLng(c.lat, c.lng), content: shortName(c.name),
+          rank: (c.id === state.selectedId ? 100 : 1)
+        }]);
+      } catch (e) {}
+    }
+    if (state.selectedId) { focusOn(state.selectedId); return; }
+    focusLayer.setGeometries([]);
+    if (infoWindow) infoWindow.close();
   }
 
   /* ---------------- 地点搜索：在线检索 → 地图预览 → 人工确认 ---------------- */
@@ -2827,6 +3015,11 @@
   /* ---------------- Modal / toast ---------------- */
   function openModal(id) { document.getElementById(id).classList.add('on'); }
   function closeModal(id) {
+    /* 强制改密期间不允许关闭改密弹窗（仍可退出登录以免被卡死） */
+    if (id === 'maskPwd' && PWD_FORCED) {
+      toast('请先完成密码修改');
+      return;
+    }
     document.getElementById(id).classList.remove('on');
     if (id === 'maskCust') clearCandidates();
   }
@@ -2849,6 +3042,9 @@
   /* ---------------- 事件绑定 ---------------- */
   function bind() {
     document.getElementById('btnAdd').onclick = function () { openCustModal(null); };
+    /* 地图异常时的环境诊断：一键生成可复制信息，便于跨设备排查 */
+    var bdiag = document.getElementById('btnMapDiag');
+    if (bdiag) bdiag.onclick = showMapDiag;
     document.getElementById('btnRegions').onclick = function () {
       renderRegionList();
       openModal('maskRegion');
@@ -3043,14 +3239,18 @@
   }
 
   /* ==================== V2：多用户 / 登录 / 权限 ==================== */
+  /* USERS_KEY / DATA_PREFIX 下的内容如今只是本地镜像，权威数据在服务端（/api/*）。 */
   var USERS_KEY   = 'inspection_board_users_v1';
   var DATA_PREFIX = 'inspection_board_v1::';
-  var SESSION_KEY = 'inspection_board_session_v1';
   var SCOPE_ALL   = '__all__';
-  var DEFAULT_ADMIN = { username: 'admin', password: 'admin888', name: '超级管理员' };
+  var API_BASE    = '/api';
+  /* 服务端签发的会话令牌；取代了旧版用于本地会话的 inspection_board_session_v1 */
+  var TOKEN_KEY   = 'inspection_board_token_v1';
 
   var AUTH = { user: null, scope: '' };
   var appBooted = false;
+  /* 与服务端的同步状态：dirty 表示本地有尚未推送成功的改动 */
+  var SYNC = { dirty: false, timer: null, warnShown: false, lastAt: '' };
 
   function isAdmin()    { return !!(AUTH.user && AUTH.user.role === 'admin'); }
   function isReadonly() { return AUTH.scope === SCOPE_ALL; }
@@ -3126,6 +3326,119 @@
     return x;
   }
 
+  /* ================= 服务端 API（Cloudflare Workers + D1） =================
+     台账已从「浏览器本地」升级为「服务端」：
+       · 登录、用户管理、台账读写全部走 /api/*，由服务端校验权限（前端校验仅作体验优化）
+       · 本地 localStorage 降级为「镜像缓存」：用于秒开渲染与断网时的临时兜底
+       · 写入策略：先写本地镜像（界面立即响应）→ 防抖推送服务端；失败保留 dirty 标记，联网后重试
+     ======================================================================= */
+  function readToken() {
+    try { return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || ''; }
+    catch (e) { return ''; }
+  }
+  function writeToken(t, remember) {
+    try {
+      if (remember) { localStorage.setItem(TOKEN_KEY, t); sessionStorage.removeItem(TOKEN_KEY); }
+      else { sessionStorage.setItem(TOKEN_KEY, t); localStorage.removeItem(TOKEN_KEY); }
+    } catch (e) {}
+  }
+  function clearToken() {
+    try { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  }
+
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = { 'content-type': 'application/json' };
+    var tk = readToken();
+    if (tk) headers.authorization = 'Bearer ' + tk;
+    var init = { method: opts.method || 'GET', headers: headers };
+    if (opts.body != null) init.body = JSON.stringify(opts.body);
+    return fetch(API_BASE + path, init).then(function (r) {
+      return r.text().then(function (txt) {
+        var j = null;
+        try { j = JSON.parse(txt); } catch (e) {}
+        if (!j || typeof j.ok !== 'boolean') {
+          return { ok: false, error: '服务响应异常（HTTP ' + r.status + '）', status: r.status };
+        }
+        if (!j.ok && r.status === 401) onAuthExpired();
+        return { ok: !!j.ok, data: j.data, error: j.error, status: r.status };
+      });
+    }, function (e) {
+      return { ok: false, offline: true, error: '无法连接服务器：' + (e && e.message ? e.message : '网络异常') };
+    });
+  }
+
+  /* 会话失效：清凭据并回到登录界面（避免继续在失效态下操作） */
+  function onAuthExpired() {
+    clearToken();
+    if (!AUTH.user) return;
+    AUTH.user = null; AUTH.scope = '';
+    clearMapLayers();
+    DB = { regions: [], customers: [], visits: [] };
+    closeUsersPage();
+    renderAll();
+    showAuth();
+    authError('登录状态已失效，请重新登录。');
+  }
+
+  /* ---------- 服务端快照 → 本地镜像 ---------- */
+  function applyServerUsers(users) {
+    writeUsers({ version: 2, users: (users || []).slice() });
+  }
+  function applyServerLedgers(ledgers) {
+    Object.keys(ledgers || {}).forEach(function (u) {
+      if (ledgers[u]) writeUserDataLocal(u, ledgers[u]);
+    });
+  }
+  function serverHasLedger(ledgers, username) {
+    return !!ledgers && Object.prototype.hasOwnProperty.call(ledgers, username) && !!ledgers[username];
+  }
+  /* 老的「换设备靠导出导入」在服务端模式下不再需要：这里负责把本地存量数据迁到服务端 */
+  function migrateLocalToServer(d) {
+    var me = d.user, out = { ledgers: 0, users: 0 };
+    if (!serverHasLedger(d.ledgers, me.username)) {
+      var local = readUserDataLocal(me.username);
+      var useIt = local && (local.customers.length || local.regions.length || local.visits.length);
+      writeUserData(me.username, useIt ? local : seedData());
+      out.ledgers++;
+    }
+    if (!d.admin) return out;
+    /* 超管：把本地遗留的其它账号与其台账一并迁到服务端，避免升级后数据不可见 */
+    var known = {};
+    userList().forEach(function (u) { known[u.username] = true; });
+    (d.users || []).forEach(function (u) { known[String(u.username)] = true; });
+    var legacy = readLegacyUsers();
+    (legacy || []).forEach(function (u) {
+      if (known[u.username] || !u.username) return;
+      known[u.username] = true;
+      out.users++;
+      api('/users', {
+        method: 'POST',
+        body: {
+          username: u.username, name: u.name || u.username, role: u.role === 'admin' ? 'admin' : 'user',
+          note: u.note || '由本地旧版迁移', salt: u.salt, hash: u.pwd
+        }
+      }).then(function () {
+        var ld = readUserDataLocal(u.username);
+        if (ld) api('/ledger', { method: 'PUT', body: { scope: u.username, data: ld } });
+      });
+    });
+    return out;
+  }
+  /* 读取「上一版」本地用户表（升级前写入的注册表），用于一次性迁移 */
+  function readLegacyUsers() {
+    try {
+      var raw = localStorage.getItem(USERS_KEY);
+      if (!raw) return null;
+      var o = JSON.parse(raw);
+      if (o && Array.isArray(o.users)) {
+        /* version 2 已是服务端镜像，不再当作待迁移数据 */
+        return o.version === 2 ? null : o.users;
+      }
+    } catch (e) {}
+    return null;
+  }
+
   /* ---------- 用户注册表 ---------- */
   function readUsers() {
     try {
@@ -3147,47 +3460,19 @@
   function countAdmins(excludeId) {
     return userList().filter(function (x) { return x.role === 'admin' && x.id !== excludeId; }).length;
   }
-  function ensureUsers() {
-    if (readUsers()) return;
-    var salt = makeSalt();
-    var admin = {
-      id: uid('u'), username: DEFAULT_ADMIN.username, name: DEFAULT_ADMIN.name,
-      role: 'admin', status: 'active', salt: salt,
-      pwd: hashPwd(DEFAULT_ADMIN.password, salt),
-      createdAt: todayStr(), lastLogin: '', note: '系统初始超级管理员'
-    };
-    writeUsers({ version: 1, users: [admin] });
-    /* 兼容 V1：把旧的单用户台账迁到超管账号下，避免升级后「数据不见了」 */
-    try {
-      var legacy = localStorage.getItem(STORE_KEY);
-      if (legacy && !localStorage.getItem(dataKeyOf(admin.username))) {
-        localStorage.setItem(dataKeyOf(admin.username), legacy);
-      }
-    } catch (e) {}
-  }
+  /* 账号注册表由服务端负责初始化（D1 中已预置初始超管），
+     本地不再自行播种，避免与服务端产生两套账号真相。 */
 
-  /* ---------- 会话 ---------- */
-  function readSession() {
-    try {
-      var raw = sessionStorage.getItem(SESSION_KEY) || localStorage.getItem(SESSION_KEY);
-      if (!raw) return null;
-      var o = JSON.parse(raw);
-      return (o && o.username) ? o : null;
-    } catch (e) { return null; }
-  }
-  function writeSession(username, remember) {
-    var s = JSON.stringify({ username: username, at: (new Date()).toISOString() });
-    try {
-      if (remember) { localStorage.setItem(SESSION_KEY, s); sessionStorage.removeItem(SESSION_KEY); }
-      else { sessionStorage.setItem(SESSION_KEY, s); localStorage.removeItem(SESSION_KEY); }
-    } catch (e) {}
-  }
-  function clearSession() {
-    try { localStorage.removeItem(SESSION_KEY); sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
-  }
+  /* ---------- 会话 ----------
+     会话改由服务端签发 Token（见 readToken/writeToken/api）。
+     下面两个函数仅用于「已失效但不影响继续使用」的兼容路径。 */
+  function readSession() { return readToken() ? { username: AUTH.user ? AUTH.user.username : '' } : null; }
+  function writeSession() {}
+  function clearSession() { clearToken(); }
 
-  /* ---------- 按用户隔离的台账数据 ---------- */
-  function readUserData(username) {
+  /* ---------- 台账：本地镜像 + 服务端同步 ----------
+     本地这份只是「镜像」，权威数据在服务端；保留它是为了界面秒开与断网兜底。 */
+  function readUserDataLocal(username) {
     try {
       var raw = localStorage.getItem(dataKeyOf(username));
       if (raw) {
@@ -3201,13 +3486,65 @@
     } catch (e) {}
     return null;
   }
-  function writeUserData(username, db) {
+  function readUserData(username) { return readUserDataLocal(username); }
+  function writeUserDataLocal(username, db) {
     try { localStorage.setItem(dataKeyOf(username), JSON.stringify(db)); }
-    catch (e) { toast('本地存储写入失败：' + e.message); }
+    catch (e) { toast('本地缓存写入失败：' + e.message); }
+  }
+  /* 业务侧统一入口：先落本地镜像（界面立即响应），再防抖推送服务端 */
+  function writeUserData(username, db) {
+    writeUserDataLocal(username, db);
+    queuePush(username);
+  }
+  function queuePush(username) {
+    if (!readToken()) return;                 /* 未登录（或降级模式）不推送 */
+    SYNC.dirty = true;
+    if (SYNC.timer) clearTimeout(SYNC.timer);
+    SYNC.timer = setTimeout(function () { pushLedger(username); }, 800);
+  }
+  function pushLedger(username) {
+    var d = readUserDataLocal(username);
+    if (!d) return;
+    api('/ledger', { method: 'PUT', body: { scope: username, data: d } }).then(function (r) {
+      if (r.ok) {
+        SYNC.dirty = false; SYNC.warnShown = false;
+        SYNC.lastAt = (new Date()).toISOString();
+        return;
+      }
+      if (r.offline) {
+        if (!SYNC.warnShown) {
+          SYNC.warnShown = true;
+          toast('服务器暂时不可用，数据已存在本地，恢复联网后会自动重试');
+        }
+        return;
+      }
+      toast('数据同步失败：' + (r.error || '未知错误'));
+    });
   }
   function userDataCount(username) {
-    var d = readUserData(username);
+    var d = readUserDataLocal(username);
     return d ? { customers: d.customers.length, visits: d.visits.length } : { customers: 0, visits: 0 };
+  }
+
+  /* ---------- 服务端数据刷新（多人协作：拉取他人最新改动） ---------- */
+  function refreshFromServer(silent) {
+    if (!AUTH.user || SYNC.dirty) return Promise.resolve(false);
+    return api('/ledger').then(function (r) {
+      if (!r.ok) return false;
+      var d = r.data || {};
+      applyServerUsers(d.users);
+      applyServerLedgers(d.ledgers);
+      var scope = isAdmin() ? AUTH.scope : AUTH.user.username;
+      if (scope !== SCOPE_ALL && d.ledgers && d.ledgers[scope]) {
+        DB = d.ledgers[scope];
+        migrate();
+        renderAll();
+        buildRegionLayers();
+      }
+      var fresh = (d.users || []).filter(function (x) { return x.username === AUTH.user.username; })[0];
+      if (fresh && fresh.mustChange !== AUTH.user.mustChange) AUTH.user.mustChange = fresh.mustChange;
+      return true;
+    }, function () { return false; });
   }
 
   /* ---------- 超管汇总视图：把各账号台账合并为一份只读数据集（id 加账号前缀避免冲突） ---------- */
@@ -3355,6 +3692,7 @@
   }
   function hideAuth() { document.getElementById('authView').classList.remove('on'); }
 
+  /* 登录改由服务端校验：口令不再在浏览器内比对，账号真相以 D1 为准 */
   function doLogin(e) {
     if (e && e.preventDefault) e.preventDefault();
     authError('');
@@ -3362,27 +3700,49 @@
     var pwd   = document.getElementById('loginPwd').value;
     var remember = document.getElementById('loginRemember').checked;
     if (!uname || !pwd) { authError('请输入用户名与密码。'); return; }
-    var u = findUser(uname);
-    /* 不区分「用户不存在」与「密码错误」，避免账号枚举 */
-    if (!u || hashPwd(pwd, u.salt) !== u.pwd) { authError('用户名或密码不正确。'); return; }
-    if (u.status !== 'active') { authError('该账号已被停用，请联系超级管理员。'); return; }
-    document.getElementById('loginPwd').value = '';
-    writeSession(u.username, remember);
-    signIn(u, { welcome: true });
+    var btn = document.getElementById('btnLogin');
+    if (btn) { btn.disabled = true; btn.textContent = '登录中…'; }
+    api('/auth/login', { method: 'POST', body: { username: uname, password: pwd } }).then(function (r) {
+      if (btn) { btn.disabled = false; btn.textContent = '登 录'; }
+      if (!r.ok) {
+        /* 服务端已统一「账号不存在 / 密码错误」的提示，此处只处理网络异常与直达错误 */
+        authError(r.offline ? '无法连接服务器，请检查网络后重试。' : (r.error || '用户名或密码不正确。'));
+        return;
+      }
+      var d = r.data || {};
+      writeToken(d.token, remember);
+      applyServerUsers(d.users);
+      applyServerLedgers(d.ledgers);
+      var mig = migrateLocalToServer(d);
+      if (mig.ledgers || mig.users) {
+        setTimeout(function () {
+          toast('已把本地台账迁移到服务端'
+            + (mig.users ? '（含 ' + mig.users + ' 个旧账号）' : ''));
+        }, 700);
+      }
+      document.getElementById('loginPwd').value = '';
+      signIn(d.user, { welcome: true });
+    });
   }
 
   function clearMapLayers() {
     /* 只移除区域类图层；标记/高亮图层保留对象，交由 renderMarkers 清空几何，
        否则在真实地图就绪时会命中空引用。 */
-    [regionPolyLayer, regionCircleLayer, regionLabelLayer].forEach(function (L) {
+    [regionPolyLayer, regionCircleLayer, regionLabelLayer, custLabelLayer].forEach(function (L) {
       if (L) { try { L.setMap(null); } catch (e) {} }
     });
-    regionPolyLayer = regionCircleLayer = regionLabelLayer = null;
+    regionPolyLayer = regionCircleLayer = regionLabelLayer = custLabelLayer = null;
+    hoverId = null;
     try { if (infoWindow) infoWindow.close(); } catch (e) {}
   }
 
   function doLogout() {
+    if (SYNC.dirty) pushLedger(AUTH.user ? AUTH.user.username : '');
+    /* 先通知服务端注销会话，再清本地凭据（失败也要清，避免卡在残留登录态） */
+    api('/auth/logout', { method: 'POST' }).then(function () {}, function () {});
     clearSession();
+    SYNC.dirty = false;
+    if (SYNC.timer) { clearTimeout(SYNC.timer); SYNC.timer = null; }
     AUTH.user = null;
     AUTH.scope = '';
     document.getElementById('userMenu').classList.remove('on');
@@ -3486,6 +3846,15 @@
     openModal('maskUser');
   }
 
+  /* 用户增删改全部以服务端为准：成功后拉取最新名单刷新镜像与界面 */
+  function refreshUsersThen(render) {
+    return api('/users').then(function (r) {
+      if (r.ok && r.data) applyServerUsers(r.data.users);
+      if (render) renderUsersPage();
+      return r;
+    });
+  }
+
   function saveUser() {
     var name = document.getElementById('uName').value.trim();
     var role = document.getElementById('uRole').value === 'admin' ? 'admin' : 'user';
@@ -3493,21 +3862,26 @@
     if (!name) { toast('请填写显示名称'); return; }
 
     if (editingUserId) {
-      var o = readUsers(); if (!o) return;
-      var target = o.users.filter(function (x) { return x.id === editingUserId; })[0];
+      var target = userList().filter(function (x) { return x.id === editingUserId; })[0];
       if (!target) return;
       if (target.role === 'admin' && role !== 'admin' && countAdmins(target.id) === 0) {
         toast('至少需要保留一个超级管理员，无法降级'); return;
       }
-      target.name = name; target.role = role; target.note = note;
-      writeUsers(o);
-      closeModal('maskUser');
-      if (target.id === AUTH.user.id) {
-        AUTH.user = target; renderUserChip();
-        if (!isAdmin()) applyScope(target.username);
-      }
-      renderUsersPage();
-      toast('用户「' + name + '」已更新');
+      api('/users/' + encodeURIComponent(target.username), {
+        method: 'PATCH', body: { name: name, role: role, note: note }
+      }).then(function (r) {
+        if (!r.ok) { toast(r.error || '保存失败'); return; }
+        closeModal('maskUser');
+        refreshUsersThen(true).then(function () {
+          if (target.username === AUTH.user.username) {
+            var me = findUser(AUTH.user.username);
+            if (me) { AUTH.user = me; renderUserChip(); }
+            if (!isAdmin()) applyScope(AUTH.user.username);
+            renderScopeSelect();
+          }
+          toast('用户「' + name + '」已更新');
+        });
+      });
       return;
     }
 
@@ -3519,20 +3893,20 @@
     var pwd = document.getElementById('uPwd').value;
     if (String(pwd).length < 6) { toast('密码至少 6 位'); return; }
 
-    var salt = makeSalt();
-    var o2 = readUsers() || { version: 1, users: [] };
-    o2.users.push({
-      id: uid('u'), username: username, name: name, role: role, status: 'active',
-      salt: salt, pwd: hashPwd(pwd, salt),
-      createdAt: todayStr(), lastLogin: '', note: note
-    });
-    writeUsers(o2);
-    /* 初始化该用户的台账：默认空台账，可选复制示例数据 */
     var mode = document.getElementById('uSeed').value;
-    writeUserData(username, mode === 'demo' ? seedData() : { regions: [], customers: [], visits: [] });
-    closeModal('maskUser');
-    renderUsersPage();
-    toast('用户「' + name + '」已创建，初始密码已生效');
+    api('/users', {
+      method: 'POST',
+      body: {
+        username: username, name: name, role: role, note: note, password: pwd,
+        data: mode === 'demo' ? seedData() : { regions: [], customers: [], visits: [] }
+      }
+    }).then(function (r) {
+      if (!r.ok) { toast(r.error || '创建失败'); return; }
+      closeModal('maskUser');
+      refreshUsersThen(true).then(function () {
+        toast('用户「' + name + '」已创建，首次登录后需修改初始密码');
+      });
+    });
   }
 
   var pwdTargetUser = null;
@@ -3550,45 +3924,47 @@
     openModal('maskPwd');
   }
 
+  /* 改密与重置均交由服务端执行；服务端会同步把 must_change 复位 */
   function savePwd() {
     var np = document.getElementById('pwdNew').value;
     var np2 = document.getElementById('pwdNew2').value;
     if (String(np).length < 6) { toast('新密码至少 6 位'); return; }
     if (np !== np2) { toast('两次输入的新密码不一致'); return; }
-    var o = readUsers(); if (!o) return;
 
     if (!pwdTargetUser) {
       var old = document.getElementById('pwdOld').value;
-      var me = o.users.filter(function (x) { return x.id === AUTH.user.id; })[0];
-      if (!me) return;
-      if (hashPwd(old, me.salt) !== me.pwd) { toast('当前密码不正确'); return; }
-      me.salt = makeSalt(); me.pwd = hashPwd(np, me.salt);
-      writeUsers(o);
-      AUTH.user = me;
-      closeModal('maskPwd');
-      toast('密码已修改');
+      api('/auth/password', { method: 'POST', body: { oldPassword: old, newPassword: np } }).then(function (r) {
+        if (!r.ok) { toast(r.error || '修改失败'); return; }
+        PWD_FORCED = false;
+        if (AUTH.user) AUTH.user.mustChange = false;
+        hideForcePwdGate();
+        closeModal('maskPwd');
+        toast('密码已修改');
+      });
       return;
     }
-    var t = o.users.filter(function (x) { return x.id === pwdTargetUser.id; })[0];
-    if (!t) return;
-    t.salt = makeSalt(); t.pwd = hashPwd(np, t.salt);
-    writeUsers(o);
-    closeModal('maskPwd');
-    renderUsersPage();
-    toast('已重置「' + t.name + '」的密码');
+    api('/users/' + encodeURIComponent(pwdTargetUser.username), { method: 'PATCH', body: { password: np } }).then(function (r) {
+      if (!r.ok) { toast(r.error || '重置失败'); return; }
+      closeModal('maskPwd');
+      refreshUsersThen(true).then(function () {
+        toast('已重置「' + pwdTargetUser.name + '」的密码，其首次登录后需再次修改');
+      });
+    });
   }
 
   function toggleUser(u) {
-    var o = readUsers(); if (!o) return;
-    var t = o.users.filter(function (x) { return x.id === u.id; })[0];
+    var t = userList().filter(function (x) { return x.id === u.id; })[0];
     if (!t) return;
     if (t.status === 'active' && t.role === 'admin' && countAdmins(t.id) === 0) {
       toast('至少保留一个启用的超级管理员'); return;
     }
-    t.status = t.status === 'active' ? 'disabled' : 'active';
-    writeUsers(o);
-    renderUsersPage();
-    toast('用户「' + t.name + '」已' + (t.status === 'active' ? '启用' : '停用'));
+    var next = t.status === 'active' ? 'disabled' : 'active';
+    api('/users/' + encodeURIComponent(t.username), { method: 'PATCH', body: { status: next } }).then(function (r) {
+      if (!r.ok) { toast(r.error || '操作失败'); return; }
+      refreshUsersThen(true).then(function () {
+        toast('用户「' + t.name + '」已' + (next === 'active' ? '启用' : '停用'));
+      });
+    });
   }
 
   function deleteUser(u) {
@@ -3597,14 +3973,15 @@
     var s = userDataCount(u.username);
     askConfirm('删除用户',
       '确认删除用户「<b>' + esc(u.name) + '</b>（' + esc(u.username) + '）」？<br>' +
-      '该账号的 <b>' + s.customers + ' 家客户</b>与 <b>' + s.visits + ' 条巡检记录</b>将被<b>永久删除</b>，操作不可恢复。',
+      '该账号在服务端的 <b>' + s.customers + ' 家客户</b>与 <b>' + s.visits + ' 条巡检记录</b>将被<b>永久删除</b>，操作不可恢复。',
       function () {
-        var o2 = readUsers(); if (!o2) return;
-        o2.users = o2.users.filter(function (x) { return x.id !== u.id; });
-        writeUsers(o2);
-        try { localStorage.removeItem(dataKeyOf(u.username)); } catch (e) {}
-        renderUsersPage();
-        toast('用户「' + u.name + '」及其台账已删除');
+        api('/users/' + encodeURIComponent(u.username), { method: 'DELETE' }).then(function (r) {
+          if (!r.ok) { toast(r.error || '删除失败'); return; }
+          try { localStorage.removeItem(dataKeyOf(u.username)); } catch (e) {}
+          refreshUsersThen(true).then(function () {
+            toast('用户「' + u.name + '」及其台账已删除');
+          });
+        });
       }, '确认删除');
   }
 
@@ -3692,6 +4069,7 @@
       appBooted = true;
       bind();       /* 业务事件绑定只做一次 */
       initMap();    /* 地图初始化只做一次 */
+      startAutoSync();
     }
     load();
     renderQuarters();
@@ -3700,30 +4078,65 @@
     renderUserChip();
     renderReadonlyBanner();
     renderScopeSelect();
-
-    var o = readUsers();
-    if (o) {
-      var stamp = (new Date()).toISOString().slice(0, 16).replace('T', ' ');
-      o.users.forEach(function (x) { if (x.id === user.id) x.lastLogin = stamp; });
-      writeUsers(o);
-    }
     if (opts && opts.welcome) toast('欢迎回来，' + user.name);
     if (!DB.customers.length) {
       setTimeout(function () { toast('当前台账暂无客户数据，点击右上角「新增客户」开始录入'); }, 500);
     } else {
       maybeAutoRemind();
     }
+    /* 口令为初始值或刚被重置 → 强制先改密（站点对公网开放，默认口令不可长期保留） */
+    if (user.mustChange) startForcePwdGate();
+  }
+
+  /* ---------- 强制改密门禁 ---------- */
+  var PWD_FORCED = false;
+  function startForcePwdGate() {
+    PWD_FORCED = true;
+    var tip = document.getElementById('forcePwdTip');
+    if (tip) tip.style.display = 'block';
+    setTimeout(function () { openPwdModal(null); }, 600);
+    toast('出于安全考虑，请先修改初始密码');
+  }
+  function hideForcePwdGate() {
+    PWD_FORCED = false;
+    var tip = document.getElementById('forcePwdTip');
+    if (tip) tip.style.display = 'none';
+  }
+
+  /* ---------- 自动同步：多人同时使用时能看到彼此的改动 ---------- */
+  function startAutoSync() {
+    setInterval(function () {
+      if (!AUTH.user) return;
+      if (SYNC.dirty) { pushLedger(AUTH.user.username); return; }   /* 先补推未成功的改动 */
+      refreshFromServer(true);
+    }, 90000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible') return;
+      if (!AUTH.user) return;
+      if (SYNC.dirty) { pushLedger(AUTH.user.username); return; }
+      refreshFromServer(true);
+    });
   }
 
   function boot() {
-    ensureUsers();
     bindAuth();
-    var sess = readSession();
-    var u = sess ? findUser(sess.username) : null;
-    if (u && u.status === 'active') {
-      signIn(u);
+    var tk = readToken();
+    if (tk) {
+      /* 有令牌 → 向服务端确认会话并拉取数据快照 */
+      api('/auth/me').then(function (r) {
+        if (r.ok && r.data) {
+          applyServerUsers(r.data.users);
+          applyServerLedgers(r.data.ledgers);
+          signIn(r.data.user);
+        } else {
+          clearToken();
+          AUTH.user = null;
+          AUTH.scope = '';
+          showAuth();
+          if (r.offline) authError('无法连接服务器，请检查网络后重试。');
+        }
+      });
     } else {
-      clearSession();
       AUTH.user = null;
       AUTH.scope = '';
       showAuth();
