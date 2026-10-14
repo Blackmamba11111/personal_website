@@ -426,6 +426,19 @@
   table.mini{width:100%;border-collapse:collapse;font-size:12px;}
   table.mini th,table.mini td{padding:6px 8px;border-bottom:1px solid var(--border-2);text-align:left;white-space:nowrap;}
   table.mini th{color:var(--text-3);font-weight:600;font-size:11px;background:var(--panel-2);}
+  /* 客户管理页表格：只展示客户主数据，不含巡检记录 */
+  .custs-scroll{overflow:auto;max-height:calc(100vh - 210px);}
+  table.custs{width:100%;border-collapse:collapse;font-size:12px;}
+  table.custs th,table.custs td{padding:7px 10px;border-bottom:1px solid var(--border-2);text-align:left;vertical-align:top;}
+  table.custs th{color:var(--text-3);font-weight:600;font-size:11px;background:var(--panel-2);white-space:nowrap;position:sticky;top:0;z-index:1;}
+  table.custs tbody tr:hover{background:var(--panel-2);}
+  table.custs .cname{font-weight:600;color:var(--text);white-space:nowrap;}
+  table.custs .addr{color:var(--text-2);max-width:250px;}
+  table.custs .dim{color:var(--text-3);}
+  table.custs .op{white-space:nowrap;}
+  table.custs .op .btn{margin:0 6px 4px 0;}
+  table.custs .own{display:inline-block;padding:1px 8px;border-radius:9px;background:var(--panel-2);border:1px solid var(--border);font-size:11px;color:var(--text-2);white-space:nowrap;}
+  .custs-empty{padding:34px 16px;text-align:center;color:var(--text-3);font-size:12.5px;}
   @media (max-width:980px){
     main{flex-direction:column-reverse;}
     aside{width:100%;flex:0 0 46vh;border-right:0;border-top:1px solid var(--border);}
@@ -496,6 +509,9 @@
     <button type="button" class="btn" id="btnImport">导入数据</button>
     <button type="button" class="btn" id="btnRegions" title="自定义区域分组，如「北京 + 天津 + 东北三省」">
       区域设置
+    </button>
+    <button type="button" class="btn" id="btnCusts" title="集中维护客户基本资料（增删改查，不含巡检记录）">
+      客户管理
     </button>
     <a class="btn" href="index.html" title="返回站点首页" style="text-decoration:none">首页</a>
     <button type="button" class="btn primary" id="btnAdd">+ 新增客户</button>
@@ -885,6 +901,38 @@
   </div>
 </div>
 
+<!-- ==================== V3：客户管理页（客户主数据，不含巡检记录） ==================== -->
+<div class="page" id="custsView">
+  <div class="page-head">
+    <button type="button" class="btn" id="btnCustsBack">← 返回看板</button>
+    <h2>客户管理</h2>
+    <span class="sub" id="custsSub">—</span>
+    <div class="spacer"></div>
+    <div class="qbox" id="custsScopeWrap" style="display:none;">
+      <label for="custsScope">数据范围</label>
+      <select id="custsScope"></select>
+    </div>
+    <button type="button" class="btn primary" id="btnCustsAdd">+ 新增客户</button>
+  </div>
+  <div class="page-body">
+    <div class="ucard">
+      <div class="list-tools" style="padding:12px 14px;border-bottom:1px solid var(--border-2);">
+        <div class="search" style="max-width:340px;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+            <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
+          <input type="text" id="custsSearch" placeholder="搜索客户名称 / 地址 / 联系人 / 省市">
+        </div>
+        <span class="hint" id="custsHint" style="display:inline-block;"></span>
+      </div>
+      <div class="custs-scroll" id="custsTableWrap"></div>
+    </div>
+    <p class="hint" style="margin:12px 2px 0;">
+      本页只维护<b>客户基本资料</b>，不含巡检记录；巡检完成情况请回看板在地图与客户卡片中查看。
+      删除客户会同时清掉该客户的巡检记录，操作不可恢复。所有改动实时同步到服务端对应账号的台账。
+    </p>
+  </div>
+</div>
+
 <!-- ==================== V2：新建 / 编辑用户 ==================== -->
 <div class="mask high" id="maskUser">
   <div class="modal" style="max-width:520px;">
@@ -975,7 +1023,7 @@
 
      ⚠️ 这里只声明 Key，绝不在此同步加载 SDK。
      SDK 由页面脚本在登录界面渲染完成后以 async 方式注入（见 loadTMap）。
-     原因：改为同步 <script> / document.write 加载时，只要地图域名响应慢或不可达，
+     原因：改为同步 script 标签 / document.write 加载时，只要地图域名响应慢或不可达，
      整个文档解析会被无限阻塞，脚本末尾的 boot() 永不执行 → 登录框不出现、页面一直转圈。 -->
 <script>window.TMAP_KEY = '5BDBZ-G6VEQ-SAM5O-BQSZP-FCV6T-DHFMA';</script>
 <script>
@@ -3037,6 +3085,8 @@
     renderRegionChips();
     renderList();
     renderMarkers();
+    /* 客户管理页打开时，任何数据变化（切换数据范围 / 增删改 / 他端同步）都即时反映到列表 */
+    if (CUSTS_OPEN) renderCustsPage();
   }
 
   /* ---------------- 事件绑定 ---------------- */
@@ -3747,6 +3797,8 @@
     AUTH.scope = '';
     document.getElementById('userMenu').classList.remove('on');
     document.getElementById('usersView').classList.remove('on');
+    CUSTS_OPEN = false;
+    document.getElementById('custsView').classList.remove('on');
     ['maskCust', 'maskDetail', 'maskRegion', 'maskImport', 'maskConfirm', 'maskRemind', 'maskUser', 'maskPwd'].forEach(function (id) {
       var el = document.getElementById(id); if (el) el.classList.remove('on');
     });
@@ -3775,6 +3827,136 @@
     document.getElementById('usersView').classList.add('on');
   }
   function closeUsersPage() { document.getElementById('usersView').classList.remove('on'); }
+
+  /* ---------- 客户管理：客户主数据（不含巡检记录） ----------
+     普通用户只能看到自己台账里的客户；超管可通过「数据范围」切换：
+     · 汇总 → 跨账号检索全部客户（只读，与看板汇总视图同一套守卫）
+     · 具体账号 → 在该账号台账上直接增删改
+     写入复用现有 save() 链路：本地镜像 + 防抖推送服务端，因此天然多端同步。 */
+  var CUSTS_OPEN = false;
+
+  function openCustsPage() {
+    if (!AUTH.user) return;
+    document.getElementById('userMenu').classList.remove('on');
+    CUSTS_OPEN = true;
+    renderCustsPage();
+    document.getElementById('custsView').classList.add('on');
+  }
+  function closeCustsPage() {
+    CUSTS_OPEN = false;
+    document.getElementById('custsView').classList.remove('on');
+  }
+  /* 汇总视图下本页的只读提示，指向页面自己的「数据范围」下拉 */
+  function custsGuardEdit() {
+    if (!isReadonly()) return true;
+    toast('汇总视图为只读，请先在上方「数据范围」选择具体账号');
+    return false;
+  }
+
+  function custsFreqLabel(f) {
+    var o = FREQ[String(f || 'quarter')];
+    return o ? o.label : FREQ.quarter.label;
+  }
+  function custsCoordText(c) {
+    return (isFinite(c.lng) && isFinite(c.lat)) ? Number(c.lng).toFixed(4) + ', ' + Number(c.lat).toFixed(4) : '未定位';
+  }
+  /* 查询：名称 / 地址 / 联系人 / 电话 / 省市 / 区域 任一字段命中即保留 */
+  function custsRows() {
+    var kwEl = document.getElementById('custsSearch');
+    var kw = String(kwEl ? kwEl.value : '').trim().toLowerCase();
+    var arr = (DB.customers || []).slice();
+    if (kw) {
+      arr = arr.filter(function (c) {
+        var fields = [c.name, c.addr, c.contact, c.phone, c.province, c.city, regionNameOf(c)];
+        for (var i = 0; i < fields.length; i++) {
+          if (String(fields[i] == null ? '' : fields[i]).toLowerCase().indexOf(kw) >= 0) return true;
+        }
+        return false;
+      });
+    }
+    arr.sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'); });
+    return arr;
+  }
+
+  function renderCustsPage() {
+    if (!AUTH.user) return;
+    var merged = (AUTH.scope === SCOPE_ALL);
+    var all = (DB.customers || []).length;
+    var rows = custsRows();
+
+    /* 数据范围下拉（仅超管可见）：切换即 applyScope，与看板共用同一份 DB */
+    var wrap = document.getElementById('custsScopeWrap');
+    if (isAdmin()) {
+      wrap.style.display = 'flex';
+      var sel = document.getElementById('custsScope');
+      sel.innerHTML = scopeOptions().map(function (o) {
+        return '<option value="' + esc(o.v) + '"' + (o.v === AUTH.scope ? ' selected' : '') + '>' + esc(o.t) + '</option>';
+      }).join('');
+    } else {
+      wrap.style.display = 'none';
+    }
+
+    var scopeLabel = merged ? '全部账号'
+      : (function () { var u = findUser(AUTH.scope); return u ? u.name : AUTH.scope; })();
+    document.getElementById('custsSub').textContent =
+      scopeLabel + ' · 客户 ' + all + ' 家' + (rows.length !== all ? ' · 命中 ' + rows.length + ' 家' : '');
+    document.getElementById('custsHint').textContent = merged
+      ? '汇总视图为只读：可跨账号检索全部客户，新增 / 编辑 / 删除请先在上方「数据范围」选择具体账号。'
+      : '';
+
+    var cols = 9 + (merged ? 1 : 0);
+    var head = '<tr><th>客户名称</th>' + (merged ? '<th>所属账号</th>' : '') +
+      '<th>所属区域</th><th>省市</th><th>详细地址</th><th>联系人</th><th>电话</th><th>坐标</th><th>频率要求</th><th>操作</th></tr>';
+
+    var dis = merged ? ' disabled title="汇总视图只读"' : '';
+    var body = rows.length ? rows.map(function (c) {
+      var rn = regionNameOf(c) || '—';
+      if (merged && c.ownerName && rn.indexOf(c.ownerName + ' · ') === 0) rn = rn.slice(c.ownerName.length + 3);
+      var pc = [c.province, c.city].filter(function (x) { return x; }).join(' · ');
+      return '<tr>' +
+        '<td class="cname">' + esc(c.name || '（未命名）') +
+          (c.note ? '<div class="dim" style="font-weight:400;white-space:normal;max-width:230px;">' + esc(c.note) + '</div>' : '') + '</td>' +
+        (merged ? '<td><span class="own">' + esc(c.ownerName || c.owner || '—') + '</span></td>' : '') +
+        '<td>' + esc(rn) + '</td>' +
+        '<td>' + esc(pc || '—') + '</td>' +
+        '<td class="addr">' + esc(c.addr || '—') + '</td>' +
+        '<td>' + esc(c.contact || '—') + '</td>' +
+        '<td class="dim">' + esc(c.phone || '—') + '</td>' +
+        '<td class="dim">' + custsCoordText(c) + '</td>' +
+        '<td>' + esc(custsFreqLabel(c.freq)) + '</td>' +
+        '<td class="op">' +
+          '<button type="button" class="btn sm" data-cact="edit" data-id="' + esc(c.id) + '"' + dis + '>编辑</button>' +
+          '<button type="button" class="btn sm" data-cact="del" data-id="' + esc(c.id) + '"' + dis + ' style="color:var(--miss);border-color:#F5C9C9;">删除</button>' +
+        '</td></tr>';
+    }).join('') : '<tr><td colspan="' + cols + '"><div class="custs-empty">' +
+      (all ? '没有符合搜索条件的客户' : '该账号还没有客户，点击右上角「+ 新增客户」开始录入') +
+      '</div></td></tr>';
+
+    document.getElementById('custsTableWrap').innerHTML =
+      '<table class="custs"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
+  }
+  /* 行内编辑 / 删除（事件委托，表格重绘不用重复绑定） */
+  function custsRowAction(e) {
+    var el = e.target;
+    while (el && el !== e.currentTarget && !(el.tagName === 'BUTTON' && el.getAttribute('data-cact'))) {
+      el = el.parentNode;
+    }
+    if (!el || el === e.currentTarget) return;
+    if (el.disabled) return;
+    var id = el.getAttribute('data-id');
+    var c = (DB.customers || []).filter(function (x) { return x.id === id; })[0];
+    if (!c) return;
+    if (el.getAttribute('data-cact') === 'edit') { openCustModal(c); return; }
+    askConfirm('删除客户',
+      '确认删除客户「<b>' + esc(c.name) + '</b>」？<br>该客户的全部巡检记录将一并删除，操作不可恢复。',
+      function () {
+        DB.customers = DB.customers.filter(function (x) { return x.id !== id; });
+        DB.visits = DB.visits.filter(function (v) { return v.customerId !== id; });
+        state.selectedId = null;
+        save(); renderAll(); renderCustsPage();
+        toast('客户「' + c.name + '」已删除');
+      }, '确认删除');
+  }
 
   function renderUsersPage() {
     var users = userList();
@@ -4018,6 +4200,21 @@
 
     document.getElementById('btnUsersBack').addEventListener('click', closeUsersPage);
     document.getElementById('btnNewUser').addEventListener('click', function () { openUserModal(null); });
+
+    /* 客户管理页 */
+    document.getElementById('btnCusts').addEventListener('click', openCustsPage);
+    document.getElementById('btnCustsBack').addEventListener('click', closeCustsPage);
+    document.getElementById('btnCustsAdd').addEventListener('click', function () {
+      if (custsGuardEdit()) openCustModal(null);
+    });
+    document.getElementById('custsScope').addEventListener('change', function () {
+      var v = this.value;
+      applyScope(v);
+      var u = findUser(v);
+      toast(v === SCOPE_ALL ? '已切换到汇总视图（只读）' : '已切换到「' + (u ? u.name : v) + '」的台账');
+    });
+    document.getElementById('custsSearch').addEventListener('input', renderCustsPage);
+    document.getElementById('custsTableWrap').addEventListener('click', custsRowAction);
     document.getElementById('btnSaveUser').addEventListener('click', saveUser);
     document.getElementById('btnSavePwd').addEventListener('click', savePwd);
 
