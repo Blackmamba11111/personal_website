@@ -341,6 +341,8 @@ function securityWrapped(res, request, url, env) {
        用部署版本号作 ETag，未变更时回 304（几百字节），内容一改版本号自然变。 */
     h.set('cache-control', 'no-cache, must-revalidate');
     const tag = deployTag(env);
+    /* 可观测：便于从响应头直接确认部署版本是否注入成功 */
+    h.set('x-deploy-ver', tag || 'none');
     if (tag) {
       const etag = 'W/"' + tag + '"';
       h.set('etag', etag);
