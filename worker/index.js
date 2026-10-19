@@ -335,19 +335,22 @@ function securityWrapped(res, request, url, env) {
   const ct = h.get('content-type') || '';
 
   if (ct.indexOf('text/html') >= 0) {
-    /* 网页文件仍要求每次验证（改版即时生效），但必须给出校验器：
-       Workers 静态资源不返回 ETag/Last-Modified，而 no-cache 又会强制重新验证，
-       两者叠加的结果是浏览器每次打开都完整重下整个页面——在跨洋链路上就是几十秒。
-       用部署版本号作 ETag，未变更时回 304（几百字节），内容一改版本号自然变。 */
-    h.set('cache-control', 'no-cache, must-revalidate');
+    /* 网页缓存策略：允许浏览器直接复用短时间内的副本。
+       背景：Workers 静态资源不返回 ETag/Last-Modified，若下发 no-cache，
+       浏览器每次打开都必须回源取完整页面（看板 565 KB / br 后 216 KB），
+       在跨洋链路上表现为几十秒等待；且实测 Cloudflare 边缘层会剥离 Worker
+       设置的 ETag，靠 304 省流量的路子走不通。
+       改为 max-age 短缓存 + stale-while-revalidate：3 分钟内重复打开零请求，
+       过期后先用旧副本渲染再后台更新。代价是改版后最多延迟 3 分钟可见，
+       数据本身走 /api（no-store），不受影响。 */
+    h.set('cache-control', 'public, max-age=180, stale-while-revalidate=600');
     const tag = deployTag(env);
-    /* 可观测：便于从响应头直接确认部署版本是否注入成功 */
+    /* 可观测：从响应头可确认部署版本 */
     h.set('x-deploy-ver', tag || 'none');
     if (tag) {
       const etag = 'W/"' + tag + '"';
       h.set('etag', etag);
       if (etagMatches(request.headers.get('if-none-match'), etag)) {
-        /* 304 不能带 body，也不需要 content-length */
         h.delete('content-length');
         h.delete('content-encoding');
         return new Response(null, { status: 304, statusText: 'Not Modified', headers: h });
