@@ -307,19 +307,54 @@ async function route(request, env) {
 }
 
 /* ---------------- 静态资源安全头 ---------------- */
-function securityWrapped(res, request, url) {
+
+/* 本次部署的版本号（wrangler.jsonc 的 version_metadata 绑定）。
+   本地 wrangler dev 或未注入时返回空串，此时不生成 ETag，退化为原有行为。 */
+function deployTag(env) {
+  try {
+    const m = env && env.CF_VERSION_METADATA;
+    return (m && m.id) ? String(m.id) : '';
+  } catch (e) { return ''; }
+}
+
+/* If-None-Match 可能带多个值、可能带 W/ 前缀，逐个比对 */
+function etagMatches(header, etag) {
+  if (!header) return false;
+  const bare = etag.replace(/^W\//, '');
+  return header.split(',').some(function (raw) {
+    const v = raw.trim();
+    return v === etag || v === bare || v === '*' ;
+  });
+}
+
+function securityWrapped(res, request, url, env) {
   const h = new Headers(res.headers);
   h.set('x-content-type-options', 'nosniff');
   h.set('referrer-policy', 'strict-origin-when-cross-origin');
   h.set('permissions-policy', 'geolocation=(), microphone=(), camera=(), payment=(), usb=()');
   const ct = h.get('content-type') || '';
+
   if (ct.indexOf('text/html') >= 0) {
-    /* 网页文件不缓存：改版即时生效，避免各设备拿到旧页面。
-       注意 CSP 由页面 meta 声明，此处不再重复下发，避免两套策略取交集。 */
+    /* 网页文件仍要求每次验证（改版即时生效），但必须给出校验器：
+       Workers 静态资源不返回 ETag/Last-Modified，而 no-cache 又会强制重新验证，
+       两者叠加的结果是浏览器每次打开都完整重下整个页面——在跨洋链路上就是几十秒。
+       用部署版本号作 ETag，未变更时回 304（几百字节），内容一改版本号自然变。 */
     h.set('cache-control', 'no-cache, must-revalidate');
+    const tag = deployTag(env);
+    if (tag) {
+      const etag = 'W/"' + tag + '"';
+      h.set('etag', etag);
+      if (etagMatches(request.headers.get('if-none-match'), etag)) {
+        /* 304 不能带 body，也不需要 content-length */
+        h.delete('content-length');
+        h.delete('content-encoding');
+        return new Response(null, { status: 304, statusText: 'Not Modified', headers: h });
+      }
+    }
   } else if (url.pathname.indexOf('/assets/') === 0) {
     h.set('cache-control', 'public, max-age=31536000, immutable');
   }
+
   const body = request.method === 'HEAD' ? null : res.body;
   return new Response(body, { status: res.status, statusText: res.statusText, headers: h });
 }
@@ -335,6 +370,6 @@ export default {
       }
     }
     const res = await env.ASSETS.fetch(request);
-    return securityWrapped(res, request, url);
+    return securityWrapped(res, request, url, env);
   }
 };

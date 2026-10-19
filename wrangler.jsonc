@@ -23,5 +23,12 @@
       "database_name": "inspection_ledger",
       "database_id": "af5622e3-6646-47e9-8cb8-63beef4addb3"
     }
-  ]
+  ],
+  /* 部署版本标识：用于给 HTML 生成 ETag。
+     Workers 静态资源本身不返回 ETag/Last-Modified，配合 cache-control: no-cache
+     会导致浏览器每次打开都完整重下整个页面（看板 600 KB 级别）。
+     有了版本 ID 作为强校验器，未变更时只回 304，二次打开几乎不消耗流量。 */
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  }
 }
