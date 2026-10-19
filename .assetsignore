@@ -15,6 +15,13 @@ worker/
 
 # 文档（不影响站点运行，README 在 GitHub 上即可查阅）
 README.md
+HANDOVER.md
+
+# 开发期依赖与测试（npm install 后会产生上万文件，绝不能进静态资源）
+node_modules/
+package.json
+package-lock.json
+tests/
 
 # 安全头说明：
 # 此前用 _headers 下发安全策略，但 Workers 静态资源不会更新「已存在」的 _headers 文件

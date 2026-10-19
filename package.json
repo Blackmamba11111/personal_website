@@ -1,0 +1,18 @@
+{
+  "name": "inspection-board",
+  "version": "1.0.0",
+  "private": true,
+  "description": "客户巡检管理看板：单文件前端 + Cloudflare Worker / D1 服务端",
+  "scripts": {
+    "test": "node tests/run-all.js",
+    "test:board": "node tests/test-board.js",
+    "test:auth": "node tests/test-auth.js",
+    "test:custs": "node tests/test-custs.js",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.2",
+    "wrangler": "^4.149.0"
+  }
+}

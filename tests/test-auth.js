@@ -1,0 +1,403 @@
+/* ============================================================
+   test-auth.js —— V2 登录 / 权限 / 数据隔离 / 用户管理 回归测试
+   ============================================================ */
+const { makeDom, mkUser, fixture, dataKey, hashPwd, SCOPE_ALL } = require('./test-helpers-server');
+
+const results = [];
+const errors = [];
+function check(l, c, e) { results.push([c ? 'PASS' : 'FAIL', l, e || '']); }
+const tick = ms => new Promise(r => setTimeout(r, ms));
+
+/* 构造一个小台账 */
+function mkDB(n, prefix) {
+  return {
+    regions: [{ id: 'r1', name: '片区', color: '#2563EB', provinces: ['河北'] }],
+    customers: Array.from({ length: n }, (_, i) => ({
+      id: prefix + 'c' + i, name: prefix + '客户' + i, regionId: 'r1', province: '河北',
+      city: '衡水', addr: '', lng: 115.7 + i * 0.01, lat: 37.7, freq: 'y4',
+      contact: '', phone: '', note: '', hasCoords: true
+    })),
+    visits: []
+  };
+}
+const idOf = (d, x) => d.getElementById(x);
+const click = (w, el) => el && el.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+const fire = (w, el, t) => el.dispatchEvent(new w.Event(t, { bubbles: true, cancelable: true }));
+const submit = (w, form) => form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v1')).users;
+
+(async function main() {
+
+  /* ================= 1. 登录门禁 ================= */
+  {
+    const dom = makeDom({ sessionUser: null, errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+
+    check('未登录时展示登录页', id('authView').classList.contains('on'));
+    check('未登录时看板不渲染客户', id('stTotal').textContent === '0', id('stTotal').textContent);
+
+    click(w, id('btnAdd'));
+    check('未登录时写操作未绑定（不打开抽屉）', !id('maskCust').classList.contains('on'));
+
+    submit(w, id('loginForm'));
+    check('空用户名/密码给出提示', id('authErr').classList.contains('on')
+      && id('authErr').textContent.indexOf('请输入') >= 0, id('authErr').textContent);
+
+    id('loginUser').value = 'demo';
+    id('loginPwd').value = 'wrong-password';
+    submit(w, id('loginForm'));
+    await tick(40);   /* 登录改走 /api/auth/login，需等异步返回 */
+    check('密码错误被拒绝', id('authView').classList.contains('on')
+      && id('authErr').textContent.indexOf('不正确') >= 0, id('authErr').textContent);
+
+    id('loginUser').value = 'no-such-user';
+    id('loginPwd').value = 'whatever';
+    submit(w, id('loginForm'));
+    await tick(40);
+    check('不存在的用户名同样报「不正确」（不泄露账号是否存在）',
+      id('authErr').textContent.indexOf('不正确') >= 0, id('authErr').textContent);
+
+    id('loginUser').value = 'demo';
+    id('loginPwd').value = 'demo888';
+    id('loginRemember').checked = true;
+    submit(w, id('loginForm'));
+    await tick(60);
+    check('正确密码登录成功', !id('authView').classList.contains('on'));
+    check('登录后加载到自己的台账（14 家示例客户）', id('stTotal').textContent === '14', id('stTotal').textContent);
+    check('勾选记住登录 → 持有服务端签发的会话令牌',
+      !!w.localStorage.getItem('inspection_board_token_v1'));
+    check('普通用户账号标识正确', id('userRoleText').textContent === '普通用户', id('userRoleText').textContent);
+    w.close();
+  }
+
+  /* ================= 2. 停用账号 / 会话失效 ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+      mkUser({ username: 'off', name: '已停用用户', role: 'user', password: 'off888', status: 'disabled' })
+    ] };
+    const dom = makeDom({ fixture: fx, sessionUser: null, errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    id('loginUser').value = 'off';
+    id('loginPwd').value = 'off888';
+    submit(w, id('loginForm'));
+    await tick(40);
+    check('停用账号拒绝登录并说明原因', id('authView').classList.contains('on')
+      && id('authErr').textContent.indexOf('停用') >= 0, id('authErr').textContent);
+    w.close();
+  }
+  {
+    /* 会话指向已被停用的账号 → 应回落到登录页 */
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+      mkUser({ username: 'off', name: '已停用用户', role: 'user', password: 'off888', status: 'disabled' })
+    ] };
+    const dom = makeDom({ fixture: fx, sessionUser: 'off', errors });
+    await tick(260);
+    check('存量会话对应的账号被停用后，直接回到登录页',
+      dom.window.document.getElementById('authView').classList.contains('on'));
+    dom.window.close();
+  }
+
+  /* ================= 3. 普通用户权限边界 ================= */
+  {
+    const dom = makeDom({ sessionUser: 'demo', errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+
+    click(w, id('userChip'));
+    check('账号菜单可打开', id('userMenu').classList.contains('on'));
+    check('普通用户菜单不显示「用户管理」入口', id('umUsers').style.display === 'none',
+      'display=' + id('umUsers').style.display);
+    check('普通用户菜单不显示「数据范围」选择器', id('umScopeWrap').style.display === 'none');
+    click(w, id('umUsers'));
+    check('普通用户即便触发入口也进不了用户管理页', !id('usersView').classList.contains('on'));
+    w.close();
+  }
+
+  /* ================= 4. 超管：汇总视图（只读） ================= */
+  {
+    const dom = makeDom({
+      sessionUser: 'admin',
+      data: { admin: mkDB(2, 'A-'), demo: mkDB(3, 'B-') },
+      errors
+    });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+
+    check('超管默认进入汇总视图', id('roBanner').classList.contains('on'));
+    check('汇总视图合并全部账号数据（2+3=5）', id('stTotal').textContent === '5', id('stTotal').textContent);
+    check('汇总视图按账号拆分区域（全部 + 2 个）',
+      d.querySelectorAll('#regionChips .chip').length === 3,
+      d.querySelectorAll('#regionChips .chip').length + ' 个 chip');
+    check('汇总视图账号标识显示「汇总」', id('userRoleText').textContent === '汇总', id('userRoleText').textContent);
+    check('汇总视图列表出现账号前缀分组',
+      id('custList').textContent.indexOf('超级管理员 · 片区') >= 0
+      && id('custList').textContent.indexOf('演示用户 · 片区') >= 0);
+
+    const before = {
+      admin: w.localStorage.getItem(dataKey('admin')),
+      demo: w.localStorage.getItem(dataKey('demo'))
+    };
+    click(w, id('btnAdd'));
+    check('汇总视图拦截「新增客户」', !id('maskCust').classList.contains('on'));
+    check('汇总视图给出只读提示', id('toast').textContent.indexOf('只读') >= 0, id('toast').textContent);
+    click(w, id('btnRegions'));
+    check('汇总视图拦截「区域设置」', !id('maskRegion').classList.contains('on'));
+    check('拦截后各账号台账未被写入',
+      w.localStorage.getItem(dataKey('admin')) === before.admin
+      && w.localStorage.getItem(dataKey('demo')) === before.demo);
+    w.close();
+  }
+
+  /* ================= 5. 超管：切换到具体用户（可编辑）+ 数据隔离 ================= */
+  {
+    const dom = makeDom({
+      sessionUser: 'admin',
+      data: { admin: mkDB(2, 'A-'), demo: mkDB(3, 'B-') },
+      errors
+    });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+
+    id('scopeSel').value = 'demo';
+    fire(w, id('scopeSel'), 'change');
+    await tick(40);
+    check('切换到具体用户后只读横幅消失', !id('roBanner').classList.contains('on'));
+    check('切换到「演示用户」后数据为该用户台账（3 家）', id('stTotal').textContent === '3', id('stTotal').textContent);
+    check('切换后账号标识回到角色名', id('userRoleText').textContent === '超级管理员', id('userRoleText').textContent);
+
+    /* 在该用户台账下新增客户 → 只影响该用户存储 */
+    const adminBefore = w.localStorage.getItem(dataKey('admin'));
+    click(w, id('btnAdd'));
+    check('切换到具体用户后可编辑（抽屉打开）', id('maskCust').classList.contains('on'));
+    id('fName').value = '超管代录客户';
+    click(w, id('btnSaveCust'));
+    await tick(40);
+    const demoDB = JSON.parse(w.localStorage.getItem(dataKey('demo')));
+    check('新增写入到被切换用户的台账', demoDB.customers.length === 4, demoDB.customers.length + ' 家');
+    check('新增不会污染超管自己的台账',
+      w.localStorage.getItem(dataKey('admin')) === adminBefore);
+    check('新增不会污染其他账号', JSON.parse(w.localStorage.getItem(dataKey('demo'))).customers
+      .filter(c => c.name === '超管代录客户').length === 1);
+    w.close();
+  }
+
+  /* ================= 6. 用户管理：新建 / 校验 / 唯一性 ================= */
+  {
+    const dom = makeDom({ sessionUser: 'admin', data: { admin: mkDB(1, 'A-') }, errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    check('超管可打开用户管理页', id('usersView').classList.contains('on'));
+    check('用户列表行数 = 2', d.querySelectorAll('#usersTableWrap tbody tr').length === 2,
+      d.querySelectorAll('#usersTableWrap tbody tr').length + ' 行');
+
+    /* 用户名非法 */
+    click(w, id('btnNewUser'));
+    check('新建用户弹窗打开', id('maskUser').classList.contains('on'));
+    id('uUsername').value = 'ab';                 // 太短
+    id('uName').value = '张三';
+    id('uPwd').value = 'zhang888';
+    click(w, id('btnSaveUser'));
+    check('用户名过短被拒绝', usersOf(w).length === 2 && id('maskUser').classList.contains('on'));
+    check('给出用户名规则提示', id('toast').textContent.indexOf('3–32') >= 0, id('toast').textContent);
+
+    /* 用户名重复 */
+    id('uUsername').value = 'demo';
+    click(w, id('btnSaveUser'));
+    check('用户名重复被拒绝', usersOf(w).length === 2);
+    check('给出重名提示', id('toast').textContent.indexOf('已存在') >= 0, id('toast').textContent);
+
+    /* 密码过短 */
+    id('uUsername').value = 'zhangsan';
+    id('uPwd').value = '123';
+    click(w, id('btnSaveUser'));
+    check('密码过短被拒绝', usersOf(w).length === 2);
+    check('给出密码长度提示', id('toast').textContent.indexOf('6 位') >= 0, id('toast').textContent);
+
+    /* 正常创建（复制示例数据） */
+    id('uPwd').value = 'zhang888';
+    id('uNote').value = '河北片区';
+    id('uSeed').value = 'demo';
+    click(w, id('btnSaveUser'));
+    await tick(40);
+    check('创建成功后用户数 = 3', usersOf(w).length === 3, usersOf(w).length + '');
+    check('新用户角色为普通用户', usersOf(w).filter(u => u.username === 'zhangsan')[0].role === 'user');
+    check('弹窗已关闭', !id('maskUser').classList.contains('on'));
+    const zs = w.__SRV__.ledgers['zhangsan'];
+    check('新用户台账已按选项初始化（复制示例数据 = 14 家）', zs && zs.customers.length === 14,
+      zs ? zs.customers.length + ' 家' : '无台账');
+    check('用户列表刷新为 3 行', d.querySelectorAll('#usersTableWrap tbody tr').length === 3);
+
+    /* 空台账选项 */
+    click(w, id('btnNewUser'));
+    id('uUsername').value = 'lisi';
+    id('uName').value = '李四';
+    id('uPwd').value = 'lisi8888';
+    id('uSeed').value = 'empty';
+    click(w, id('btnSaveUser'));
+    await tick(40);
+    const ls = w.__SRV__.ledgers['lisi'];
+    check('选择空台账时新用户数据为空', !!ls && ls.customers.length === 0 && ls.regions.length === 0);
+
+    /* 自我保护：不能删除自己 */
+    const rows = [...d.querySelectorAll('#usersTableWrap tbody tr')];
+    const adminRow = rows.filter(r => r.textContent.indexOf('admin') >= 0)[0];
+    const selfDel = adminRow.querySelector('[data-ua="del"]');
+    check('不能删除当前登录账号（按钮禁用）', selfDel.disabled === true);
+
+    /* 删除他人：确认后连台账一起清掉 */
+    const zsRow = rows.filter(r => r.textContent.indexOf('zhangsan') >= 0)[0];
+    click(w, zsRow.querySelector('[data-ua="del"]'));
+    check('删除用户弹出确认框', id('maskConfirm').classList.contains('on'));
+    click(w, id('cfOk'));
+    await tick(40);
+    check('用户已删除', usersOf(w).length === 3 && !usersOf(w).some(u => u.username === 'zhangsan'),
+      usersOf(w).map(u => u.username).join(','));
+    check('被删用户的台账已清除', !w.__SRV__.ledgers['zhangsan']
+      && w.localStorage.getItem(dataKey('zhangsan')) === null);
+    w.close();
+  }
+
+  /* ================= 7. 最后一个超管保护 ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '唯一超管', role: 'admin', password: 'admin888' })
+    ] };
+    const dom = makeDom({ fixture: fx, sessionUser: 'admin', errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    const row = d.querySelector('#usersTableWrap tbody tr');
+    check('唯一超管的「停用」被禁用', row.querySelector('[data-ua="toggle"]').disabled === true);
+    check('唯一超管的「删除」被禁用', row.querySelector('[data-ua="del"]').disabled === true);
+
+    /* 降级保护 */
+    click(w, row.querySelector('[data-ua="edit"]'));
+    id('uRole').value = 'user';
+    click(w, id('btnSaveUser'));
+    check('唯一超管不能被降级', usersOf(w)[0].role === 'admin');
+    check('降级被拒时给出说明', id('toast').textContent.indexOf('超级管理员') >= 0, id('toast').textContent);
+    w.close();
+  }
+
+  /* ================= 8. 重置密码 / 修改自己的密码 ================= */
+  {
+    const dom = makeDom({ sessionUser: 'admin', data: { admin: mkDB(1, 'A-') }, errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+
+    /* 超管重置 demo 的密码 */
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    const demoRow = [...d.querySelectorAll('#usersTableWrap tbody tr')]
+      .filter(r => r.textContent.indexOf('demo') >= 0)[0];
+    click(w, demoRow.querySelector('[data-ua="pwd"]'));
+    check('重置密码弹窗打开', id('maskPwd').classList.contains('on'));
+    check('重置他人密码时不要求原密码', id('pwdOldField').style.display === 'none');
+    id('pwdNew').value = 'newpass888';
+    id('pwdNew2').value = 'mismatch';
+    click(w, id('btnSavePwd'));
+    check('两次新密码不一致被拒绝', id('maskPwd').classList.contains('on')
+      && id('toast').textContent.indexOf('不一致') >= 0, id('toast').textContent);
+    id('pwdNew2').value = 'newpass888';
+    click(w, id('btnSavePwd'));
+    await tick(40);
+    check('重置密码成功', !id('maskPwd').classList.contains('on'));
+
+    /* 修改自己的密码：原密码校验 */
+    click(w, id('userChip'));
+    click(w, id('umPwd'));
+    check('修改自己的密码要求输入当前密码', id('pwdOldField').style.display === 'block');
+    id('pwdOld').value = 'wrong-old';
+    id('pwdNew').value = 'adminNew888';
+    id('pwdNew2').value = 'adminNew888';
+    click(w, id('btnSavePwd'));
+    await tick(40);   /* 改密走 /api/auth/password，异步返回 */
+    check('当前密码错误时拒绝修改', id('maskPwd').classList.contains('on')
+      && id('toast').textContent.indexOf('当前密码不正确') >= 0, id('toast').textContent);
+    id('pwdOld').value = 'admin888';
+    click(w, id('btnSavePwd'));
+    await tick(40);
+    check('修改自己的密码成功', !id('maskPwd').classList.contains('on'));
+
+    /* 重置行为校验：注册表中的哈希应等价于新密码（同一 DOM 内比对） */
+    const reg = usersOf(w);
+    const demoRec = reg.filter(u => u.username === 'demo')[0];
+    check('重置后 demo 的密码哈希与新密码一致',
+      demoRec.pwd === hashPwd('newpass888', demoRec.salt));
+    check('重置后 demo 的旧密码哈希不再匹配',
+      demoRec.pwd !== hashPwd('demo888', demoRec.salt));
+    const adminRec = reg.filter(u => u.username === 'admin')[0];
+    check('改密后超管的新密码哈希一致', adminRec.pwd === hashPwd('adminNew888', adminRec.salt));
+    check('改密后超管旧密码不再匹配', adminRec.pwd !== hashPwd('admin888', adminRec.salt));
+
+    /* 端到端验证：退出后用新密码重新登录 */
+    click(w, id('userChip'));
+    click(w, id('umLogout'));
+    await tick(30);
+    id('loginUser').value = 'admin';
+    id('loginPwd').value = 'admin888';
+    submit(w, id('loginForm'));
+    await tick(40);
+    check('改密后旧密码无法登录', id('authView').classList.contains('on')
+      && id('authErr').textContent.indexOf('不正确') >= 0, id('authErr').textContent);
+    id('loginUser').value = 'admin';
+    id('loginPwd').value = 'adminNew888';
+    submit(w, id('loginForm'));
+    await tick(60);
+    check('改密后新密码可以登录', !id('authView').classList.contains('on'));
+    click(w, id('userChip'));
+    click(w, id('umLogout'));
+    await tick(30);
+    id('loginUser').value = 'demo';
+    id('loginPwd').value = 'newpass888';
+    submit(w, id('loginForm'));
+    await tick(60);
+    check('被重置密码的账号可用新密码登录', !id('authView').classList.contains('on'));
+    w.close();
+  }
+
+  /* ================= 9. 退出登录 ================= */
+  {
+    const dom = makeDom({ sessionUser: 'demo', errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    click(w, id('userChip'));
+    click(w, id('umLogout'));
+    check('退出登录后回到登录页', id('authView').classList.contains('on'));
+    check('退出后会话已清除', !w.localStorage.getItem('inspection_board_token_v1')
+      && !w.localStorage.getItem('inspection_board_session_v1')
+      && !w.sessionStorage.getItem('inspection_board_session_v1'));
+    check('退出后看板数据已清空', id('stTotal').textContent === '0', id('stTotal').textContent);
+    w.close();
+  }
+
+  /* ================= 汇总 ================= */
+  const pass = results.filter(r => r[0] === 'PASS').length;
+  results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));
+  console.log('--------------------------------');
+  console.log('通过 ' + pass + ' / 共 ' + results.length + '，失败 ' + (results.length - pass));
+  if (errors.length) {
+    console.log('运行期错误:');
+    errors.forEach(x => console.log('  ' + x));
+  } else {
+    console.log('运行期错误: 无');
+  }
+  process.exit(pass === results.length && !errors.length ? 0 : 1);
+})();
