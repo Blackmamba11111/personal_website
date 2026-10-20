@@ -502,9 +502,12 @@ async function serveStatic(req, res, url) {
   const etag = 'W/"' + st.size.toString(16) + '-' + Math.floor(st.mtimeMs).toString(16) + '"';
 
   /* 页面必须回源校验（304 只几十字节），静态资源短缓存，便于内部改版即时生效 */
+  const IMG_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.ico'];
   const cc = ext === '.html'
     ? 'no-cache'
-    : (rel.indexOf('/assets/') === 0 ? 'public, max-age=600' : 'public, max-age=3600');
+    : (IMG_EXT.indexOf(ext) >= 0 ? 'no-cache'                       /* 图片换图即时生效，靠 ETag 304 省流量 */
+      : (rel.indexOf('/assets/') === 0 ? 'public, max-age=31536000, immutable'  /* 带 ?v= 的数据文件走长缓存 */
+        : 'public, max-age=3600'));
 
   const headers = {
     'content-type': mime,

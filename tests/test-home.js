@@ -165,16 +165,17 @@ async function main() {
     check('无运行时 JS 错误', (results.length && true) ? true : true);
   });
 
-  /* ---------- 4) 照片链路：本地缓存优先 ---------- */
-  await block('照片链路：本地缓存优先', async () => {
+  /* ---------- 4) 照片链路：不做本机缓存 ---------- */
+  await block('照片链路：不做本机缓存', async () => {
     const dom = makeDom({ resources: true, photo: 'data:image/jpeg;base64,AAAA' });
     await tick(120);
     const d = dom.window.document;
     const img = d.getElementById('heroPhoto');
-    check('localStorage 照片被采用', (img.getAttribute('src') || '').indexOf('data:image/jpeg;base64,AAAA') === 0);
+    check('localStorage 照片不再被采用', (img.getAttribute('src') || '').indexOf('data:image') !== 0,
+      img.getAttribute('src'));
+    check('页面源码不再读写照片缓存键', html.indexOf('inspection_home_photo_v1') < 0);
     await tick(250);
-    check('照片卡进入 has-photo 态', d.getElementById('photoCard').classList.contains('has-photo'));
-    check('提示更新为已设置', d.getElementById('photoHint').textContent.indexOf('已设置') >= 0);
+    check('改为探测服务器约定文件', !!d.querySelector('img[style*="-9999px"]'));
     check('无运行时 JS 错误', dom.__errors.length === 0, dom.__errors.join(' | ').slice(0, 200));
     dom.window.close();
   });
@@ -190,11 +191,11 @@ async function main() {
 
     const probeImg = d.querySelector('img[style*="-9999px"]');
     check('探测节点已挂载且首个候选为 assets/hero-photo.jpg',
-      !!probeImg && probeImg.getAttribute('src') === 'assets/hero-photo.jpg',
+      !!probeImg && (probeImg.getAttribute('src') || '').indexOf('assets/hero-photo.jpg') === 0,
       probeImg ? probeImg.getAttribute('src') : '探测节点不存在');
 
     probeImg.dispatchEvent(new dom.window.Event('load'));
-    check('探测成功后应用该候选', (img.getAttribute('src') || '') === 'assets/hero-photo.jpg');
+    check('探测成功后应用该候选', (img.getAttribute('src') || '').indexOf('assets/hero-photo.jpg') === 0);
     check('照片卡进入 has-photo 态', d.getElementById('photoCard').classList.contains('has-photo'));
     check('提示含来源说明', d.getElementById('photoHint').textContent.indexOf('assets/hero-photo.jpg') >= 0);
     check('探测节点已清理', !d.querySelector('img[style*="-9999px"]'));
@@ -213,17 +214,17 @@ async function main() {
     const img = d.getElementById('heroPhoto');
 
     const p1 = d.querySelector('img[style*="-9999px"]');
-    check('首个候选为 assets/hero-photo.jpg', p1 && p1.getAttribute('src') === 'assets/hero-photo.jpg');
+    check('首个候选为 assets/hero-photo.jpg', p1 && (p1.getAttribute('src') || '').indexOf('assets/hero-photo.jpg') === 0);
     p1.dispatchEvent(new dom.window.Event('error'));
     await tick(40);
     const p2 = d.querySelector('img[style*="-9999px"]');
     check('失败后自动探测下一候选 hero-photo.jpg',
-      !!p2 && p2 !== p1 && p2.getAttribute('src') === 'hero-photo.jpg',
+      !!p2 && p2 !== p1 && (p2.getAttribute('src') || '').indexOf('hero-photo.jpg') === 0,
       p2 ? p2.getAttribute('src') : '无探测节点');
     check('失败阶段未误设照片', (img.getAttribute('src') || '') === '');
 
     p2.dispatchEvent(new dom.window.Event('load'));
-    check('第二候选成功后应用', (img.getAttribute('src') || '') === 'hero-photo.jpg'
+    check('第二候选成功后应用', (img.getAttribute('src') || '').indexOf('hero-photo.jpg') === 0
       && d.getElementById('photoCard').classList.contains('has-photo'));
     check('无运行时 JS 错误', dom.__errors.length === 0, dom.__errors.join(' | ').slice(0, 200));
     dom.window.close();

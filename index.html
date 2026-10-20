@@ -516,9 +516,6 @@ html.still .mote{opacity:.55;transform:none;}
     <div class="col-left">
       <div class="eyebrow rise d1"><span class="pulse"></span>Personal Workspace · 2026</div>
       <h1 class="rise d2">把复杂的事<br><em>做得清晰而体面</em></h1>
-      <p class="sub rise d3">
-        这里放我自己做的小工具、走过的项目。
-      </p>
 
       <div class="photo-wrap rise d4">
         <div class="photo-card" id="photoCard" role="button" tabindex="0"
@@ -976,8 +973,10 @@ html.still .mote{opacity:.55;transform:none;}
 })();
 
 /* ==================== 照片位 ==================== */
+/* 设计约定：照片只认服务器上的约定文件（assets/hero-photo.jpg 等），不做本机缓存——
+   早期版本会把上传/首次加载的照片存进 localStorage，导致服务器换图后浏览器仍显示旧图。
+   现在每次进入页面都直接探测服务器文件；上传的图片仅本次会话显示。 */
 (function () {
-  var PHOTO_KEY = 'inspection_home_photo_v1';
   var MAX_EDGE = 1400;
   var card = document.getElementById('photoCard');
   var img = document.getElementById('heroPhoto');
@@ -1008,17 +1007,11 @@ html.still .mote{opacity:.55;transform:none;}
     img.classList.remove('show');
     card.classList.remove('has-photo');
     img.removeAttribute('src');
-    try { localStorage.removeItem(PHOTO_KEY); } catch (e) {}
     setHint('未设置照片');
     if (!silent) flash('已移除照片');
   }
 
-  /* 1) 本地缓存 */
-  var cached = null;
-  try { cached = localStorage.getItem(PHOTO_KEY); } catch (e) {}
-  if (cached) { apply(cached, '照片已设置（本机缓存）'); return; }
-
-  /* 2) 自动探测约定文件（探测图挂载到文档内，保证各环境均触发加载事件） */
+  /* 自动探测约定文件（探测图挂载到文档内，保证各环境均触发加载事件） */
   var idx = 0;
   (function probe() {
     if (idx >= CANDIDATES.length) { setHint('未设置照片'); return; }
@@ -1038,10 +1031,11 @@ html.still .mote{opacity:.55;transform:none;}
       if (t.parentNode) t.parentNode.removeChild(t);
       probe();
     };
-    t.src = url;
+    /* 加时间戳绕过 HTTP 缓存：服务器换图后刷新页面必须立即生效 */
+    t.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
   })();
 
-  /* 3) 上传 */
+  /* 3) 上传（仅本次会话显示；长期显示请替换服务器上的 assets/hero-photo.jpg） */
   function pick() { if (input) input.click(); }
 
   function handleFile(file) {
@@ -1066,12 +1060,8 @@ html.still .mote{opacity:.55;transform:none;}
         var out;
         try { out = cvs.toDataURL('image/jpeg', 0.86); }
         catch (e) { out = fr.result; }
-        var ok = true;
-        try { localStorage.setItem(PHOTO_KEY, out); }
-        catch (e) { ok = false; }
-        apply(out, ok ? ('照片已保存 · ' + cw + '×' + ch)
-                      : ('已显示，但本机存储空间不足，刷新后需重新选择'));
-        flash(ok ? '照片已保存到本机' : '存储空间不足，仅本次会话有效');
+        apply(out, '照片已显示（仅本次会话）· ' + cw + '×' + ch);
+        flash('照片仅本次会话有效；长期显示请替换服务器上的 assets/hero-photo.jpg');
       };
       raw.src = fr.result;
     };
@@ -1104,7 +1094,7 @@ html.still .mote{opacity:.55;transform:none;}
     if (dt && dt.files && dt.files[0]) handleFile(dt.files[0]);
   });
 
-  window.__homePhoto = { clear: clearPhoto, handleFile: handleFile, key: PHOTO_KEY };
+  window.__homePhoto = { clear: clearPhoto, handleFile: handleFile };
 
   /* 轻量提示条（不依赖外部资源） */
   function flash(msg) {
