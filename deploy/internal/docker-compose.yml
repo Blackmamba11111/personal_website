@@ -1,0 +1,19 @@
+services:
+  inspection:
+    build: .
+    image: inspection-ledger:1.1.0
+    container_name: inspection-ledger
+    restart: unless-stopped
+    init: true
+    ports:
+      - "18080:18080"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=18080
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

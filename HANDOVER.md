@@ -334,7 +334,24 @@ npm run test:board       # 单跑某一套
 
 ---
 
-## 11. 内部化改造建议（按优先级）
+## 11. 内部部署实例（2026-10-20 已完成）
+
+平台已按第 11 节 P0-4 的「替换 Worker 形态」思路完成一次内部部署，**接口契约与前端零改动**：
+
+| 项目 | 内容 |
+| --- | --- |
+| 地址 | `http://10.1.114.115:18080/inspection-dashboard`（首页 `/`） |
+| 形态 | Docker（node:24-bookworm-slim）+ Node 原生 http 服务端 + SQLite（Node 内置 `node:sqlite`，WAL） |
+| 位置 | `/opt/inspection`（数据 `data/inspection.db`，备份 `backup/`，cron 每天 02:30 保留 7 份） |
+| 初始账号 | `admin / admin888`，首登强制改密 |
+| 数据 | 平台自带演示数据（28 家客户示例），非真实台账 |
+| 运维手册 | `deploy/internal/DEPLOY.md`（同机 `/opt/inspection/DEPLOY.md`） |
+
+部署形态源码在仓库 `deploy/internal/`：`server.js`（与 Worker 版接口一一对应）、`Dockerfile`、`docker-compose.yml`。
+**坑**：该内网出口对 Cloudflare 网段（npmjs.org / nodejs.org）不可达，因此服务端刻意零 npm 依赖；
+引入第三方包时走 `registry.npmmirror.com` 且原生模块需另配头文件镜像。地图 Key 在该地址下实测可用。
+
+## 12. 内部化改造建议（按优先级）
 
 **P0 · 交接前/上线前必做**
 
@@ -359,7 +376,7 @@ npm run test:board       # 单跑某一套
 
 ---
 
-## 12. 交接清单
+## 13. 交接清单
 
 - [ ] 代码仓库权限（或内网仓库地址）
 - [ ] 演示地址与**独立**演示账号（不要给超管口令）

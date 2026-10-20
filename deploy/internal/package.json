@@ -1,0 +1,14 @@
+{
+  "name": "inspection-ledger-internal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "客户巡检台账 · 内部部署版（Node + 内置 SQLite，无第三方依赖）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

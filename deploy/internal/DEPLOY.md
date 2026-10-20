@@ -1,0 +1,92 @@
+# 客户巡检台账 · 内部部署运维手册
+
+> 部署时间：2026-10-20 · 部署人：潘超（AI 协助）
+> 访问地址：**http://10.1.114.115:18080**（首页）/ **http://10.1.114.115:18080/inspection-dashboard**（看板）
+
+## 1. 架构概览
+
+| 组件 | 选型 | 说明 |
+| --- | --- | --- |
+| 运行时 | Docker（node:24-bookworm-slim） | 宿主 CentOS 7 已 EOL，Node 22+ 需要 glibc 2.28，容器化规避 |
+| 服务端 | `server.js`（Node 原生 http） | 由 Cloudflare Workers 版等价移植，接口契约完全一致 |
+| 数据库 | SQLite（Node 24 内置 `node:sqlite`） | WAL 模式，单文件 `/data/inspection.db`，零第三方依赖 |
+| 静态资源 | 同进程直出 | brotli/gzip 按需压缩，页面 no-cache + ETag/304 |
+
+**为什么零依赖**：本机出口对 Cloudflare 网段（registry.npmjs.org / nodejs.org）不可达，
+原生模块（better-sqlite3）编译需下载 Node 头文件会失败；内置 SQLite 使镜像构建全程离线。
+
+## 2. 目录结构
+
+```
+/opt/inspection/
+├── server.js               # 服务端（静态资源 + /api）
+├── Dockerfile              # 构建文件
+├── docker-compose.yml      # 编排（端口 18080，数据卷 ./data）
+├── inspection-dashboard.html / index.html / 404.html / robots.txt / assets/
+├── data/                   # 挂载卷：inspection.db（SQLite，WAL）
+├── backup/                 # 每日备份快照（保留 7 份）
+├── backup.sh               # 备份脚本（cron 每天 02:30）
+└── reference/              # D1 建表语句、原交接文档
+```
+
+## 3. 初始账号
+
+| 账号 | 初始口令 | 说明 |
+| --- | --- | --- |
+| admin | `admin888` | **首次登录强制改密（must_change=1）**，请立即修改 |
+
+当前库内数据为平台自带的演示数据（28 家客户示例），可直接用于了解功能；
+接手开发时如需干净环境：登录 admin → 删除演示区域/客户，或停服后删除 `data/inspection.db` 重建。
+
+## 4. 日常运维
+
+```bash
+cd /opt/inspection
+docker compose ps                 # 状态（含健康检查）
+docker compose logs -f --tail=100 # 日志（含每个请求一行）
+docker compose restart            # 重启
+docker compose down && docker compose up -d   # 重建容器（数据在 ./data，不受影响）
+```
+
+### 更新页面/服务端
+
+```bash
+# 1. 覆盖 /opt/inspection 下对应文件（html/js 直接生效于下次请求，无需重启）
+# 2. server.js 有改动时：
+docker compose build && docker compose up -d
+```
+
+### 备份与恢复
+
+```bash
+/opt/inspection/backup.sh                          # 手动触发（cron 每天 02:30，保留 7 份）
+# 恢复：
+docker compose stop
+cp backup/inspection-YYYYMMDD-HHMM.db data/inspection.db
+docker compose start
+```
+
+### 修改端口
+
+编辑 `docker-compose.yml` 的 `ports` 与 `environment.PORT`，然后 `docker compose up -d`。
+
+## 5. 已知事项与坑
+
+1. **腾讯地图 Key**：页面内 Key（`window.TMAP_KEY`）在 `10.1.114.115:18080` 下已实测可用
+   （`mkey/check` 校验 200）。若后续在腾讯位置服务控制台为该 Key 配置了域名白名单，
+   需要把内网 IP 一并登记，否则地图会静默失败（图区出现「加载失败」提示）。
+2. **容器内出网受限**：对 Cloudflare 网段不可达；`docker build` 与运行时均不依赖外网。
+   后续如需引入 npm 依赖，走 `registry.npmmirror.com`，且原生模块编译需另配头文件镜像。
+3. **升级 Node 基础镜像**：`node:sqlite` 要求 Node ≥ 22.5（当前 24.x）。若改用
+   better-sqlite3 需恢复编译工具链并解决头文件下载。
+4. **改密口径**：前端与 `server.js` 共用「随机盐 + 400 轮 SHA-256」算法；
+   任何一侧改动必须同步（另有测试基线 tests/ 在仓库内可回归验证）。
+5. **`/assets/provinces.js` 带 `?v=` 版本号**：更换省界/城市数据时必须同步提升
+   `inspection-dashboard.html` 内 `PROV_SRC` 与 preload 两处的 `?v=`，否则浏览器用旧缓存。
+6. 防火墙（firewalld/iptables）当前均为放行状态；如后来开启，需放行 TCP 18080。
+
+## 6. 回归测试
+
+仓库 `tests/`（`npm install && npm test`，7 套 353 项）与内部服务端共用同一接口契约，
+改动 `server.js` 后建议先在开发机跑通再发布。`server.js` 内接口与线上 D1 版一一对应，
+便于对照 `HANDOVER.md` 的接口清单。
