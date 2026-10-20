@@ -340,8 +340,9 @@ npm run test:board       # 单跑某一套
 
 | 项目 | 内容 |
 | --- | --- |
-| 地址 | `http://10.1.114.115:18080/inspection-dashboard`（首页 `/`） |
-| 形态 | Docker（node:24-bookworm-slim）+ Node 原生 http 服务端 + SQLite（Node 内置 `node:sqlite`，WAL） |
+| 地址 | **`https://10.1.114.115/inspection-dashboard`**（首页 `/`；http 80 仅跳转） |
+| 形态 | Docker（node:24-bookworm-slim）+ Node 原生 https 服务端（TLS 进程内终止）+ SQLite（Node 内置 `node:sqlite`，WAL） |
+| 证书 | 内部 CA 自签（SAN 含 IP），首访浏览器需「继续前往」或安装 `certs/ca.crt` 到受信任根 |
 | 位置 | `/opt/inspection`（数据 `data/inspection.db`，备份 `backup/`，cron 每天 02:30 保留 7 份） |
 | 初始账号 | `admin / admin888`，首登强制改密 |
 | 数据 | 平台自带演示数据（28 家客户示例），非真实台账 |

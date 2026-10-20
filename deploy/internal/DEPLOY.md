@@ -1,13 +1,15 @@
 # 客户巡检台账 · 内部部署运维手册
 
-> 部署时间：2026-10-20 · 部署人：潘超（AI 协助）
-> 访问地址：**http://10.1.114.115:18080**（首页）/ **http://10.1.114.115:18080/inspection-dashboard**（看板）
+> 部署时间：2026-10-20 · 部署人：潘超（AI 协助） · 2026-10-20 起启用 HTTPS（443）
+> 访问地址：**https://10.1.114.115/inspection-dashboard**（看板）/ **https://10.1.114.115**（首页）
+> 明文入口 http://10.1.114.115 仅做 301 跳转到 HTTPS，不提供内容。
 
 ## 1. 架构概览
 
 | 组件 | 选型 | 说明 |
 | --- | --- | --- |
 | 运行时 | Docker（node:24-bookworm-slim） | 宿主 CentOS 7 已 EOL，Node 22+ 需要 glibc 2.28，容器化规避 |
+| TLS | Node 进程内终止（https.createServer） | 内部 CA 自签证书，SAN 含 IP 10.1.114.115，有效期至 2029-01 |
 | 服务端 | `server.js`（Node 原生 http） | 由 Cloudflare Workers 版等价移植，接口契约完全一致 |
 | 数据库 | SQLite（Node 24 内置 `node:sqlite`） | WAL 模式，单文件 `/data/inspection.db`，零第三方依赖 |
 | 静态资源 | 同进程直出 | brotli/gzip 按需压缩，页面 no-cache + ETag/304 |
@@ -19,15 +21,31 @@
 
 ```
 /opt/inspection/
-├── server.js               # 服务端（静态资源 + /api）
+├── server.js               # 服务端（静态资源 + /api + TLS 终止）
 ├── Dockerfile              # 构建文件
-├── docker-compose.yml      # 编排（端口 18080，数据卷 ./data）
+├── docker-compose.yml      # 编排（443→8443 HTTPS，80→8080 跳转）
+├── certs/                  # 内部 CA 与服务端证书（ca.crt / server.key / server-chain.crt）
 ├── inspection-dashboard.html / index.html / 404.html / robots.txt / assets/
 ├── data/                   # 挂载卷：inspection.db（SQLite，WAL）
 ├── backup/                 # 每日备份快照（保留 7 份）
 ├── backup.sh               # 备份脚本（cron 每天 02:30）
 └── reference/              # D1 建表语句、原交接文档
 ```
+
+### 端口与证书
+
+| 端口 | 用途 |
+| --- | --- |
+| TCP 443 | HTTPS 主入口（容器内 8443，Node 直接终止 TLS，HSTS 一年） |
+| TCP 80 | 仅 301 跳转到 https://，不承载内容 |
+
+**证书是自签的内部 CA 签发**，浏览器首次访问会出现「您的连接不是私密连接」：
+点击「高级」→「继续前往 10.1.114.115」即可使用；要消除告警，把 `certs/ca.crt`
+分发并安装到各终端的「受信任的根证书颁发机构」（macOS 钥匙串 / Windows certmgr）。
+`ca.crt` 也可直接从服务器拷贝：`/opt/inspection/certs/ca.crt`。
+
+**重签证书**：`rm -rf /opt/inspection/certs` 后按 DEPLOY 随附的 gen-certs.sh 流程重签
+（改 SAN 时编辑脚本里的 server.ext），然后 `docker compose restart`。
 
 ## 3. 初始账号
 
@@ -56,6 +74,8 @@ docker compose down && docker compose up -d   # 重建容器（数据在 ./data�
 docker compose build && docker compose up -d
 ```
 
+健康检查走容器内 https（自签证书，检查脚本已带 rejectUnauthorized:false），`docker ps` 显示 healthy 即正常。
+
 ### 备份与恢复
 
 ```bash
@@ -72,7 +92,7 @@ docker compose start
 
 ## 5. 已知事项与坑
 
-1. **腾讯地图 Key**：页面内 Key（`window.TMAP_KEY`）在 `10.1.114.115:18080` 下已实测可用
+1. **腾讯地图 Key**：页面内 Key（`window.TMAP_KEY`）在 `https://10.1.114.115` 下已实测可用
    （`mkey/check` 校验 200）。若后续在腾讯位置服务控制台为该 Key 配置了域名白名单，
    需要把内网 IP 一并登记，否则地图会静默失败（图区出现「加载失败」提示）。
 2. **容器内出网受限**：对 Cloudflare 网段不可达；`docker build` 与运行时均不依赖外网。
