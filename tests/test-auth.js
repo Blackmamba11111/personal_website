@@ -388,6 +388,58 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 10. 密码可见性切换 ================= */
+  {
+    const dom = makeDom({ sessionUser: null, errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    const eye = d.querySelector('.pwd-eye[data-eye="loginPwd"]');
+    const inp = id('loginPwd');
+    check('登录密码框带有查看按钮', !!eye);
+    check('默认为密文且按钮未激活',
+      inp.getAttribute('type') === 'password' && eye.getAttribute('aria-pressed') === 'false');
+    click(w, eye);
+    check('点击后显示当前密码（type=text）', inp.getAttribute('type') === 'text');
+    check('按钮状态与无障碍标签同步', eye.getAttribute('aria-pressed') === 'true'
+      && eye.getAttribute('aria-label') === '隐藏密码');
+    click(w, eye);
+    check('再次点击恢复密文', inp.getAttribute('type') === 'password'
+      && eye.getAttribute('aria-pressed') === 'false');
+    click(w, id('btnLogin'));
+    /* 填好可用凭据后再点按钮：若按钮触发了提交，这里会直接登录成功 */
+    id('loginUser').value = 'demo';
+    id('loginPwd').value = 'demo888';
+    click(w, eye);
+    await tick(80);
+    check('查看按钮不触发表单提交', id('authView').classList.contains('on')
+      && !w.localStorage.getItem('inspection_board_token_v1'));
+    w.close();
+  }
+
+  /* ================= 11. 改密弹窗的可见性切换 ================= */
+  {
+    const dom = makeDom({ sessionUser: 'demo', errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    click(w, id('userChip'));
+    click(w, id('umPwd'));
+    await tick(40);
+    const eye = d.querySelector('.pwd-eye[data-eye="pwdNew"]');
+    check('改密弹窗的新密码框带有查看按钮', !!eye);
+    click(w, eye);
+    check('改密弹窗内可显示新密码', id('pwdNew').getAttribute('type') === 'text');
+    click(w, d.querySelector('#maskPwd [data-close="maskPwd"]'));
+    await tick(20);
+    click(w, id('userChip'));
+    click(w, id('umPwd'));
+    await tick(40);
+    check('重新打开弹窗时恢复为隐藏', id('pwdNew').getAttribute('type') === 'password'
+      && eye.getAttribute('aria-pressed') === 'false');
+    w.close();
+  }
+
   /* ================= 汇总 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));

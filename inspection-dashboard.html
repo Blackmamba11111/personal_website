@@ -324,6 +324,19 @@
   /* ==================== V2：登录页 / 账号菜单 / 用户管理 ==================== */
   .field input[type=password]{width:100%;height:34px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:#fff;outline:none;}
   .field input[type=password]:focus{border-color:#AFC4F5;box-shadow:0 0 0 3px rgba(37,99,235,.08);}
+  /* 密码可见性切换：输入框右侧的眼睛按钮；切换为 text 后布局不变（右侧留出按钮位） */
+  .pwd-wrap{position:relative;}
+  .field .pwd-wrap>input[type=password],.field .pwd-wrap>input[type=text]{padding-right:38px;}
+  .pwd-eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:28px;height:28px;padding:0;
+    display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:var(--text-3);
+    cursor:pointer;line-height:0;}
+  .pwd-eye:hover{background:var(--panel-2);color:var(--text-2);}
+  .pwd-eye:focus-visible{outline:2px solid #AFC4F5;outline-offset:1px;}
+  .pwd-eye svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+  .pwd-eye .i-off{display:none;}
+  .pwd-eye[aria-pressed="true"]{color:var(--primary);}
+  .pwd-eye[aria-pressed="true"] .i-on{display:none;}
+  .pwd-eye[aria-pressed="true"] .i-off{display:block;}
 
   .auth{position:fixed;inset:0;z-index:200;display:none;align-items:center;justify-content:center;padding:24px;
     background:linear-gradient(140deg,#EEF2FB 0%,#F7F9FC 46%,#EAF0FE 100%);}
@@ -480,14 +493,16 @@
         </div>
         <div class="field">
           <label for="loginPwd">密码</label>
-          <input type="password" id="loginPwd" autocomplete="current-password" placeholder="请输入密码">
+          <div class="pwd-wrap">
+            <input type="password" id="loginPwd" autocomplete="current-password" placeholder="请输入密码">
+            <button type="button" class="pwd-eye" data-eye="loginPwd" aria-pressed="false" aria-label="显示密码" title="显示密码"><svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg><svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/><path d="m4 20 16-16"/></svg></button>
+          </div>
         </div>
         <div class="auth-row">
           <label class="auth-rem"><input type="checkbox" id="loginRemember" checked>记住登录状态</label>
         </div>
         <button type="submit" class="auth-btn" id="btnLogin">登 录</button>
       </form>
-      <div class="auth-foot">数据保存在服务端（Cloudflare D1），登录同一账号即可在任意设备上看到同一份台账；各账号数据相互隔离。</div>
     </div>
   </div>
 </div>
@@ -962,7 +977,10 @@
       </div>
       <div class="field" id="uPwdField">
         <label for="uPwd">初始密码 <span class="req">*</span></label>
-        <input type="password" id="uPwd" autocomplete="new-password" placeholder="至少 6 位">
+        <div class="pwd-wrap">
+          <input type="password" id="uPwd" autocomplete="new-password" placeholder="至少 6 位">
+          <button type="button" class="pwd-eye" data-eye="uPwd" aria-pressed="false" aria-label="显示密码" title="显示密码"><svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg><svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/><path d="m4 20 16-16"/></svg></button>
+        </div>
         <div class="hint" id="uPwdHint">该用户首次登录后建议自行修改密码。</div>
       </div>
       <div class="field">
@@ -1000,15 +1018,24 @@
       <div class="hint" id="pwdSub" style="margin:0 0 12px;"></div>
       <div class="field" id="pwdOldField">
         <label for="pwdOld">当前密码 <span class="req">*</span></label>
-        <input type="password" id="pwdOld" autocomplete="current-password" placeholder="请输入当前密码">
+        <div class="pwd-wrap">
+          <input type="password" id="pwdOld" autocomplete="current-password" placeholder="请输入当前密码">
+          <button type="button" class="pwd-eye" data-eye="pwdOld" aria-pressed="false" aria-label="显示密码" title="显示密码"><svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg><svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/><path d="m4 20 16-16"/></svg></button>
+        </div>
       </div>
       <div class="field">
         <label for="pwdNew">新密码 <span class="req">*</span></label>
-        <input type="password" id="pwdNew" autocomplete="new-password" placeholder="至少 6 位">
+        <div class="pwd-wrap">
+          <input type="password" id="pwdNew" autocomplete="new-password" placeholder="至少 6 位">
+          <button type="button" class="pwd-eye" data-eye="pwdNew" aria-pressed="false" aria-label="显示密码" title="显示密码"><svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg><svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/><path d="m4 20 16-16"/></svg></button>
+        </div>
       </div>
       <div class="field">
         <label for="pwdNew2">确认新密码 <span class="req">*</span></label>
-        <input type="password" id="pwdNew2" autocomplete="new-password" placeholder="请再次输入新密码">
+        <div class="pwd-wrap">
+          <input type="password" id="pwdNew2" autocomplete="new-password" placeholder="请再次输入新密码">
+          <button type="button" class="pwd-eye" data-eye="pwdNew2" aria-pressed="false" aria-label="显示密码" title="显示密码"><svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg><svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/><path d="m4 20 16-16"/></svg></button>
+        </div>
       </div>
     </div>
     <div class="modal-foot">
@@ -3018,8 +3045,48 @@
     return out;
   }
 
+  /* ---------------- 密码可见性切换 ---------------- */
+  /* 只切换 input 的 type：.pwd-wrap 规则让两种类型高度与右侧留白一致，切换不引起布局跳动。
+     弹窗打开时统一还原为隐藏态，避免上次的明文状态被无意保留。 */
+  function setPwdEye(btn, inp, show) {
+    inp.setAttribute('type', show ? 'text' : 'password');
+    btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    var label = show ? '隐藏密码' : '显示密码';
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('title', label);
+  }
+
+  function bindPwdEyes(root) {
+    Array.prototype.forEach.call((root || document).querySelectorAll('.pwd-eye'), function (btn) {
+      if (btn.getAttribute('data-bound')) return;
+      btn.setAttribute('data-bound', '1');
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var inp = document.getElementById(btn.getAttribute('data-eye'));
+        if (!inp) return;
+        setPwdEye(btn, inp, inp.getAttribute('type') !== 'text');
+        try {
+          inp.focus();
+          var n = String(inp.value || '').length;
+          inp.setSelectionRange(n, n);
+        } catch (err) {}
+      });
+    });
+  }
+
+  function resetPwdEyes(root) {
+    Array.prototype.forEach.call((root || document).querySelectorAll('.pwd-eye'), function (btn) {
+      var inp = document.getElementById(btn.getAttribute('data-eye'));
+      if (inp) setPwdEye(btn, inp, false);
+    });
+  }
+
   /* ---------------- Modal / toast ---------------- */
-  function openModal(id) { document.getElementById(id).classList.add('on'); }
+  function openModal(id) {
+    if (id === 'maskPwd' || id === 'maskUser') resetPwdEyes(document.getElementById(id));
+    document.getElementById(id).classList.add('on');
+  }
   function closeModal(id) {
     /* 强制改密期间不允许关闭改密弹窗（仍可退出登录以免被卡死） */
     if (id === 'maskPwd' && PWD_FORCED) {
@@ -4134,6 +4201,7 @@
   }
 
   function bindAuth() {
+    bindPwdEyes(document);
     document.getElementById('loginForm').addEventListener('submit', doLogin);
     document.getElementById('userChip').addEventListener('click', function (e) {
       e.stopPropagation();
