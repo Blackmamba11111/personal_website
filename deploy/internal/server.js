@@ -11,14 +11,19 @@
  * 只需一个 node 基础镜像即可交付。
  *
  * 启动环境变量：
- *   PORT      监听端口，默认 18080
- *   APP_DIR   静态资源根目录，默认 /app
- *   DATA_DIR  数据目录（挂载卷），默认 /data
+ *   PORT               监听端口，默认 8443
+ *   APP_DIR            静态资源根目录，默认 /app
+ *   DATA_DIR           数据目录（挂载卷），默认 /data
+ *   TLS_CERT/TLS_KEY   PEM 证书与私钥路径；两者都存在时启用 HTTPS，否则退回 HTTP
+ *   HTTPS_PORT         对外 HTTPS 端口（仅用于拼跳转地址），默认 443
+ *   HTTP_REDIRECT_PORT 额外监听一个明文端口并 301 跳到 HTTPS；0 表示不启用
+ *   TMAP_KEY           腾讯地图 WebService Key（地点检索代理），默认内置 Key
  * ==========================================================================*/
 
 'use strict';
 
 const http = require('node:http');
+const https = require('node:https');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -26,12 +31,21 @@ const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const PORT = parseInt(process.env.PORT || '18080', 10);
+const PORT = parseInt(process.env.PORT || '8443', 10);
 const APP_DIR = path.resolve(process.env.APP_DIR || '/app');
 const DATA_DIR = path.resolve(process.env.DATA_DIR || '/data');
 const SESSION_DAYS = 30;
 const HASH_ROUNDS = 400;
 const MAX_BODY = 32 * 1024 * 1024; // 台账 JSON 可能较大
+/* 腾讯地图 WebService Key（地点检索代理用）：页面已公开该 Key，此处仅作服务端默认值；
+   可用环境变量 TMAP_KEY 覆盖。浏览器直连 apis.map.qq.com 会被 CORS 拦截，必须走本代理。 */
+const DEFAULT_TMAP_KEY = '5BDBZ-G6VEQ-SAM5O-BQSZP-FCV6T-DHFMA';
+/* TLS：进程内终止（https.createServer），无需前置 nginx。
+   证书缺失时退回 HTTP 明文（便于本地调试），生产环境务必提供证书。 */
+const TLS_CERT = process.env.TLS_CERT || '/certs/server.crt';
+const TLS_KEY = process.env.TLS_KEY || '/certs/server.key';
+const HTTPS_PORT = parseInt(process.env.HTTPS_PORT || '443', 10);
+const REDIRECT_PORT = parseInt(process.env.HTTP_REDIRECT_PORT || '0', 10);
 
 /* ---------------- 数据库 ---------------- */
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -380,6 +394,37 @@ async function handleApi(req, res, url) {
     return bad(res, '不支持的请求方法', 405);
   }
 
+  /* --- 腾讯地图 WebService 代理（地点搜索 / 地理编码） ---
+     apis.map.qq.com 不返回跨域头，浏览器无法直连，由服务端代为请求；
+     腾讯的 status/message/data 原样透传，前端据此给出精确提示（如 121=当日配额用尽）。 */
+  if (p === '/api/place/search' && method === 'GET') {
+    const tkey = process.env.TMAP_KEY || DEFAULT_TMAP_KEY;
+    const type = url.searchParams.get('type') === 'geocode' ? 'geocode' : 'suggestion';
+    const wsParams = new URLSearchParams({ key: tkey });
+    if (type === 'geocode') {
+      const addr = String(url.searchParams.get('address') || '').trim().slice(0, 120);
+      if (!addr) return bad(res, '请输入地址');
+      wsParams.set('address', addr);
+    } else {
+      const kw = String(url.searchParams.get('keyword') || '').trim().slice(0, 100);
+      if (!kw) return bad(res, '请输入关键词');
+      wsParams.set('keyword', kw);
+      const region = String(url.searchParams.get('region') || '').trim().slice(0, 40);
+      if (region) wsParams.set('region', region);
+    }
+    const wsPath = type === 'geocode' ? '/geocoder/v1/' : '/place/v1/suggestion';
+    const ctrl = new AbortController();
+    const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 10000);
+    try {
+      const r = await fetch('https://apis.map.qq.com/ws' + wsPath + '?' + wsParams.toString(), { signal: ctrl.signal });
+      return ok(res, await r.json());
+    } catch (e) {
+      return bad(res, '检索服务连接失败，请稍后重试', 502);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   return bad(res, '接口不存在', 404);
 }
 
@@ -505,9 +550,28 @@ function serve404(req, res) {
 }
 
 /* ---------------- 服务器 ---------------- */
-const server = http.createServer(function (req, res) {
+let TLS_ON = false;
+let tlsOpts = null;
+try {
+  if (fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)) {
+    tlsOpts = {
+      cert: fs.readFileSync(TLS_CERT),
+      key: fs.readFileSync(TLS_KEY),
+      minVersion: 'TLSv1.2',
+      honorCipherOrder: true
+    };
+    TLS_ON = true;
+  }
+} catch (e) {
+  console.error('[tls] 证书读取失败，退回 HTTP：' + (e && e.message));
+}
+
+function handler(req, res) {
   const started = Date.now();
-  const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
+  const url = new URL(req.url, (TLS_ON ? 'https' : 'http') + '://' + (req.headers.host || 'localhost'));
+
+  /* 强制 HTTPS（1 年）：TLS 终止在本进程，无需代理头协商 */
+  if (TLS_ON) res.setHeader('strict-transport-security', 'max-age=31536000');
 
   res.on('finish', function () {
     const line = req.method + ' ' + url.pathname + ' ' + res.statusCode + ' ' + (Date.now() - started) + 'ms';
@@ -534,17 +598,38 @@ const server = http.createServer(function (req, res) {
     console.error('[error] static ' + (e && e.stack ? e.stack : e));
     if (!res.headersSent) serve404(req, res); else res.end();
   });
-});
+}
 
+const server = TLS_ON ? https.createServer(tlsOpts, handler) : http.createServer(handler);
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 70000;
 
 server.listen(PORT, '0.0.0.0', function () {
-  console.log('巡检台账服务已启动: http://0.0.0.0:' + PORT + '  APP_DIR=' + APP_DIR + '  DB=' + DB_FILE);
+  console.log('巡检台账服务已启动: ' + (TLS_ON ? 'https' : 'http') + '://0.0.0.0:' + PORT +
+    '  APP_DIR=' + APP_DIR + '  DB=' + DB_FILE + (TLS_ON ? '  TLS=on' : '  TLS=off（未找到证书）'));
 });
+
+/* 明文入口只做跳转，避免用户按 IP 直接访问时停在 http 上 */
+let redirectServer = null;
+if (REDIRECT_PORT) {
+  const suffix = HTTPS_PORT === 443 ? '' : ':' + HTTPS_PORT;
+  redirectServer = http.createServer(function (req, res) {
+    const host = String(req.headers.host || '').split(':')[0] || 'localhost';
+    res.writeHead(301, {
+      location: 'https://' + host + suffix + (req.url || '/'),
+      'cache-control': 'no-store',
+      'content-length': 0
+    });
+    res.end();
+  });
+  redirectServer.listen(REDIRECT_PORT, '0.0.0.0', function () {
+    console.log('HTTP 跳转已启用: http://0.0.0.0:' + REDIRECT_PORT + ' → https://…' + suffix);
+  });
+}
 
 function shutdown(sig) {
   console.log('[shutdown] 收到 ' + sig + '，正在关闭…');
+  try { if (redirectServer) redirectServer.close(); } catch (e) {}
   server.close(function () {
     try { db.close(); } catch (e) {}
     process.exit(0);

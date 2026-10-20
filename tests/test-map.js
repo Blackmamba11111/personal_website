@@ -135,6 +135,21 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
     ML ? ML.geometries.length + '' : '无');
   check('重新登录未重复初始化地图（地图对象唯一）', rec().layers.filter(L => L.handlers.click).length >= 1);
 
+  /* ================= N. 地图点选与地点搜索的防呆 ================= */
+  {
+    /* 页面源码级断言：这些路径依赖真实浏览器事件，jsdom 无法完整模拟 */
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'inspection-dashboard.html'), 'utf8');
+    check('点选横幅层级高于弹窗遮罩（z-index≥340）',
+      /\.pick-banner\{[^}]*z-index:(3[4-9]\d|[4-9]\d\d)/.test(src));
+    check('进入点选模式会先收起季度提醒弹窗（避免遮罩吃掉地图点击）',
+      /btnPick'\)\.onclick[\s\S]{0,400}maskRemind[\s\S]{0,120}classList\.remove\('on'\)/.test(src));
+    check('地点搜索经服务端代理（绕开腾讯接口的 CORS 限制）',
+      src.indexOf("wsApi('suggestion'") > 0
+      && src.indexOf("wsApi('geocode'") > 0
+      && src.indexOf("api('/place/search?type='") > 0);
+    check('检索配额用尽（121）有明确提示', src.indexOf('今日调用额度已用尽') > 0);
+  }
+
   w.close();
 
   const pass = results.filter(r => r[0] === 'PASS').length;
