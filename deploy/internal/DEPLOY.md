@@ -68,10 +68,13 @@ docker compose down && docker compose up -d   # 重建容器（数据在 ./data�
 
 ### 更新页面/服务端
 
+**注意：所有静态文件（html/assets）在构建时被 COPY 进镜像，宿主机上覆盖源文件不会改变线上内容**（容器没有 bind-mount 静态目录）。任何前端或服务端改动，都必须重建镜像：
+
 ```bash
-# 1. 覆盖 /opt/inspection 下对应文件（html/js 直接生效于下次请求，无需重启）
-# 2. server.js 有改动时：
+# 1. 先更新 /opt/inspection 下的源文件（保持与 git 仓库一致）
+# 2. 重建并重启（零依赖镜像，构建约数秒；会短暂中断服务几秒）
 docker compose build && docker compose up -d
+# 3. 验证：curl -sk https://127.0.0.1/inspection-dashboard | grep -c <新改动特征串>
 ```
 
 健康检查走容器内 https（自签证书，检查脚本已带 rejectUnauthorized:false），`docker ps` 显示 healthy 即正常。
