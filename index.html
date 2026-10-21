@@ -973,9 +973,10 @@ html.still .mote{opacity:.55;transform:none;}
 })();
 
 /* ==================== 照片位 ==================== */
-/* 设计约定：照片只认服务器上的约定文件（assets/hero-photo.jpg 等），不做本机缓存——
+/* 设计约定：照片只认服务器上的文件，不做任何本机缓存——
    早期版本会把上传/首次加载的照片存进 localStorage，导致服务器换图后浏览器仍显示旧图。
-   现在每次进入页面都直接探测服务器文件；上传的图片仅本次会话显示。 */
+   探测顺序：/api/photo/current（内网版上传的照片，存服务器持久卷）→ 仓库内置默认图。
+   上传成功即写服务器，刷新/换设备都是同一张；服务端不可用时退化为仅本次会话显示。 */
 (function () {
   var MAX_EDGE = 1400;
   var card = document.getElementById('photoCard');
@@ -986,12 +987,15 @@ html.still .mote{opacity:.55;transform:none;}
   var btnClear = document.getElementById('btnClear');
   if (!card || !img) return;
 
-  var CANDIDATES = ['assets/hero-photo.jpg', 'hero-photo.jpg', 'assets/hero-photo.png', 'assets/hero-photo.jpeg', 'hero-photo.jpeg'];
+  var SERVER_URL = '/api/photo/current';
+  var CANDIDATES = [SERVER_URL, 'assets/hero-photo.jpg', 'hero-photo.jpg', 'assets/hero-photo.png', 'assets/hero-photo.jpeg', 'hero-photo.jpeg'];
+  var onServer = false;   /* 当前显示的是否为服务器上的上传照片 */
 
   function setHint(t) { if (hint) hint.textContent = t; }
 
   /* 乐观应用：来源已确定即先切换状态，图片解码失败再回退（避免空态闪烁） */
-  function apply(src, note) {
+  function apply(src, note, fromServer) {
+    onServer = !!fromServer;
     card.classList.add('has-photo');
     setHint(note || '照片已设置');
     img.onload = function () { img.classList.add('show'); };
@@ -1003,19 +1007,34 @@ html.still .mote{opacity:.55;transform:none;}
     img.src = src;
   }
 
-  function clearPhoto(silent) {
+  function hide(note) {
+    onServer = false;
     img.classList.remove('show');
     card.classList.remove('has-photo');
     img.removeAttribute('src');
-    setHint('未设置照片');
-    if (!silent) flash('已移除照片');
+    setHint(note || '未设置照片');
   }
 
-  /* 自动探测约定文件（探测图挂载到文档内，保证各环境均触发加载事件） */
+  function clearPhoto(silent) {
+    if (!onServer) { hide(); if (!silent) flash('已移除照片'); return; }
+    setHint('正在移除…');
+    fetch(SERVER_URL, { method: 'DELETE' }).then(function (r) { return r.json(); }).then(function (j) {
+      if (!j || !j.ok) throw new Error((j && j.error) || '移除失败');
+      hide('已恢复默认照片');
+      if (!silent) flash('已移除上传的照片');
+      idx = 1; probe();          /* 回落到默认图 */
+    }).catch(function () {
+      hide('未设置照片');
+      if (!silent) flash('移除失败，请刷新后重试');
+    });
+  }
+
+  /* 自动探测（探测图挂载到文档内，保证各环境均触发加载事件） */
   var idx = 0;
-  (function probe() {
+  function probe() {
     if (idx >= CANDIDATES.length) { setHint('未设置照片'); return; }
     var url = CANDIDATES[idx++];
+    var isServer = url === SERVER_URL;
     var t = document.createElement('img');
     t.alt = '';
     t.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
@@ -1024,7 +1043,8 @@ html.still .mote{opacity:.55;transform:none;}
     t.onload = function () {
       if (settled) return; settled = true;
       if (t.parentNode) t.parentNode.removeChild(t);
-      apply(url, '照片来自 ' + url);
+      apply(url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(),
+        isServer ? '照片已保存到服务器' : '照片来自 ' + url, isServer);
     };
     t.onerror = function () {
       if (settled) return; settled = true;
@@ -1033,9 +1053,10 @@ html.still .mote{opacity:.55;transform:none;}
     };
     /* 加时间戳绕过 HTTP 缓存：服务器换图后刷新页面必须立即生效 */
     t.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
-  })();
+  }
+  probe();
 
-  /* 3) 上传（仅本次会话显示；长期显示请替换服务器上的 assets/hero-photo.jpg） */
+  /* 3) 上传：压缩后写入服务器（/api/photo），不做本机缓存 */
   function pick() { if (input) input.click(); }
 
   function handleFile(file) {
@@ -1060,8 +1081,20 @@ html.still .mote{opacity:.55;transform:none;}
         var out;
         try { out = cvs.toDataURL('image/jpeg', 0.86); }
         catch (e) { out = fr.result; }
-        apply(out, '照片已显示（仅本次会话）· ' + cw + '×' + ch);
-        flash('照片仅本次会话有效；长期显示请替换服务器上的 assets/hero-photo.jpg');
+        apply(out, '正在保存到服务器…');
+        fetch('/api/photo', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ data: out })
+        }).then(function (r) { return r.json(); }).then(function (j) {
+          if (!j || !j.ok) throw new Error((j && j.error) || '保存失败');
+          onServer = true;
+          apply(SERVER_URL + '?t=' + Date.now(), '照片已保存到服务器 · ' + cw + '×' + ch, true);
+          flash('照片已保存到服务器，所有设备刷新后一致');
+        }).catch(function (e) {
+          setHint('照片仅本次会话显示 · ' + cw + '×' + ch);
+          flash(((e && e.message) ? e.message : '未连接到服务器') + '；本次仅本机可见');
+        });
       };
       raw.src = fr.result;
     };

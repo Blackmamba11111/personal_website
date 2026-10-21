@@ -26,7 +26,7 @@
 ├── docker-compose.yml      # 编排（443→8443 HTTPS，80→8080 跳转）
 ├── certs/                  # 内部 CA 与服务端证书（ca.crt / server.key / server-chain.crt）
 ├── inspection-dashboard.html / index.html / 404.html / robots.txt / assets/
-├── data/                   # 挂载卷：inspection.db（SQLite，WAL）
+├── data/                   # 挂载卷：inspection.db（SQLite，WAL）+ photo/hero.jpg（首页照片）
 ├── backup/                 # 每日备份快照（保留 7 份）
 ├── backup.sh               # 备份脚本（cron 每天 02:30）
 └── reference/              # D1 建表语句、原交接文档
@@ -79,6 +79,18 @@ docker compose build && docker compose up -d
 
 健康检查走容器内 https（自签证书，检查脚本已带 rejectUnauthorized:false），`docker ps` 显示 healthy 即正常。
 
+### 首页照片（上传即持久）
+
+首页照片位点击/拖拽上传后，由 `POST /api/photo` 写入 **`data/photo/hero.jpg`**（挂载卷），
+`GET /api/photo/current` 直出（`no-cache` + ETag，换图刷新即生效），点「移除」走
+`DELETE /api/photo` 回落到镜像内置的 `assets/hero-photo.jpg`。
+
+- 照片进的是 `data/` 卷，**重建镜像不丢**；不要把上传写到 `/app/assets`（镜像内，rebuild 即失）。
+- 备份脚本只备 SQLite，照片请单独拷贝 `data/photo/hero.jpg`。
+- 上传接口不要求登录（首页无账号体系），但校验同源 Origin + 文件头（jpg/png/webp）+ 8MB 上限；
+  内网环境可接受，若将来开放到不可信网络，应加登录或独立口令。
+- 限尺寸：前端先缩到长边 1400、JPEG 质量 0.86 再上传，通常 200–500KB。
+
 ### 备份与恢复
 
 ```bash
@@ -110,6 +122,6 @@ docker compose start
 
 ## 6. 回归测试
 
-仓库 `tests/`（`npm install && npm test`，7 套 353 项）与内部服务端共用同一接口契约，
+仓库 `tests/`（`npm install && npm test`，8 套 381 项）与内部服务端共用同一接口契约，
 改动 `server.js` 后建议先在开发机跑通再发布。`server.js` 内接口与线上 D1 版一一对应，
 便于对照 `HANDOVER.md` 的接口清单。

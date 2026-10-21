@@ -12,7 +12,8 @@ const SUITES = [
   ['看板 · 账号鉴权', 'test-auth.js'],
   ['看板 · 地图图层', 'test-map.js'],
   ['看板 · 客户管理页', 'test-custs.js'],
-  ['首页 · 结构与部署产物', 'test-home.js']
+  ['首页 · 结构与部署产物', 'test-home.js'],
+  ['首页 · 照片服务端接口', 'test-photo-api.js']
 ];
 
 let failed = 0;

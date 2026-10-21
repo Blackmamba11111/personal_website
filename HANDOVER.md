@@ -244,6 +244,14 @@
 | POST | `/api/users` | 超管 | `{username, name, role, password}` 或 `{salt, hash}`（迁移） | `{user}` |
 | PATCH | `/api/users/:username` | 超管 | `{name?, role?, status?, note?, password?}` | `{user}` |
 | DELETE | `/api/users/:username` | 超管 | — | `null`（连带删台账与会话） |
+| GET/HEAD | `/api/photo/current` | 公开 | — | 二进制图片（`no-cache` + ETag；无图 404）※仅内部版 |
+| POST | `/api/photo` | 公开（同源） | `{data:"data:image/(jpeg\|png\|webp);base64,…"}` | `{url, size, ext, at}` ※仅内部版 |
+| DELETE | `/api/photo` | 公开（同源） | — | `{removed:true\|false}` ※仅内部版 |
+
+照片三接口只在内部部署版（`deploy/internal/server.js`）实现：首页无账号体系，故不要求登录，
+但校验同源 `Origin`、文件头（jpg/png/webp）与 8MB 上限；文件落 `DATA_DIR/photo/hero.<ext>`
+（挂载卷，重建镜像不丢）。前端探测顺序为 `/api/photo/current` → `assets/hero-photo.jpg`，
+在 Cloudflare 版上第一个请求 404 后自动回落，行为不变。
 
 规则要点：
 - `username` 3–32 位 `[A-Za-z0-9_.-]`，入库前转小写；口令 ≥ 6 位。

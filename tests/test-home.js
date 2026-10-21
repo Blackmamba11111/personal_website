@@ -190,18 +190,18 @@ async function main() {
     const img = d.getElementById('heroPhoto');
 
     const probeImg = d.querySelector('img[style*="-9999px"]');
-    check('探测节点已挂载且首个候选为 assets/hero-photo.jpg',
-      !!probeImg && (probeImg.getAttribute('src') || '').indexOf('assets/hero-photo.jpg') === 0,
+    check('探测节点已挂载且首个候选为服务器上传图 /api/photo/current',
+      !!probeImg && (probeImg.getAttribute('src') || '').indexOf('/api/photo/current') === 0,
       probeImg ? probeImg.getAttribute('src') : '探测节点不存在');
 
     probeImg.dispatchEvent(new dom.window.Event('load'));
-    check('探测成功后应用该候选', (img.getAttribute('src') || '').indexOf('assets/hero-photo.jpg') === 0);
+    check('探测成功后应用该候选', (img.getAttribute('src') || '').indexOf('/api/photo/current') === 0);
     check('照片卡进入 has-photo 态', d.getElementById('photoCard').classList.contains('has-photo'));
-    check('提示含来源说明', d.getElementById('photoHint').textContent.indexOf('assets/hero-photo.jpg') >= 0);
+    check('提示含来源说明', d.getElementById('photoHint').textContent.indexOf('服务器') >= 0);
     check('探测节点已清理', !d.querySelector('img[style*="-9999px"]'));
-    check('候选清单首项为 assets/hero-photo.jpg',
-      html.indexOf("'assets/hero-photo.jpg'") >= 0
-      && html.indexOf("'assets/hero-photo.jpg'") < html.indexOf("'assets/hero-photo.jpeg'"));
+    check('候选清单首项为 /api/photo/current，其次是内置默认图',
+      html.indexOf("var SERVER_URL = '/api/photo/current'") >= 0
+      && html.indexOf("var CANDIDATES = [SERVER_URL, 'assets/hero-photo.jpg'") >= 0);
     check('无运行时 JS 错误', dom.__errors.length === 0, dom.__errors.join(' | ').slice(0, 200));
     dom.window.close();
   });
@@ -214,17 +214,17 @@ async function main() {
     const img = d.getElementById('heroPhoto');
 
     const p1 = d.querySelector('img[style*="-9999px"]');
-    check('首个候选为 assets/hero-photo.jpg', p1 && (p1.getAttribute('src') || '').indexOf('assets/hero-photo.jpg') === 0);
+    check('首个候选为 /api/photo/current', p1 && (p1.getAttribute('src') || '').indexOf('/api/photo/current') === 0);
     p1.dispatchEvent(new dom.window.Event('error'));
     await tick(40);
     const p2 = d.querySelector('img[style*="-9999px"]');
-    check('失败后自动探测下一候选 hero-photo.jpg',
-      !!p2 && p2 !== p1 && (p2.getAttribute('src') || '').indexOf('hero-photo.jpg') === 0,
+    check('失败后自动探测下一候选 assets/hero-photo.jpg',
+      !!p2 && p2 !== p1 && (p2.getAttribute('src') || '').indexOf('assets/hero-photo.jpg') === 0,
       p2 ? p2.getAttribute('src') : '无探测节点');
     check('失败阶段未误设照片', (img.getAttribute('src') || '') === '');
 
     p2.dispatchEvent(new dom.window.Event('load'));
-    check('第二候选成功后应用', (img.getAttribute('src') || '').indexOf('hero-photo.jpg') === 0
+    check('第二候选成功后应用', (img.getAttribute('src') || '').indexOf('assets/hero-photo.jpg') === 0
       && d.getElementById('photoCard').classList.contains('has-photo'));
     check('无运行时 JS 错误', dom.__errors.length === 0, dom.__errors.join(' | ').slice(0, 200));
     dom.window.close();
@@ -237,6 +237,11 @@ async function main() {
     check('暴露 window.__homePhoto 调试接口', !!(dom.window.__homePhoto && dom.window.__homePhoto.clear));
     dom.window.__homePhoto.clear(true);
     check('clear 后退出 has-photo 态', !dom.window.document.getElementById('photoCard').classList.contains('has-photo'));
+    check('未向 localStorage 写任何照片缓存（换图即时生效）',
+      Object.keys(dom.window.localStorage).every(k => k.indexOf('photo') < 0),
+      Object.keys(dom.window.localStorage).join(','));
+    check('上传走服务器接口 /api/photo', html.indexOf("fetch('/api/photo'") >= 0
+      && html.indexOf("method: 'POST'") >= 0);
     dom.window.close();
   });
 

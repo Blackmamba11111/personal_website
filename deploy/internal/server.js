@@ -49,6 +49,10 @@ const REDIRECT_PORT = parseInt(process.env.HTTP_REDIRECT_PORT || '0', 10);
 
 /* ---------------- 数据库 ---------------- */
 fs.mkdirSync(DATA_DIR, { recursive: true });
+/* 首页照片存放目录：必须落在 DATA_DIR（挂载卷）内。
+   静态文件在构建时 COPY 进镜像，写 /app/assets 会在下次 rebuild 后丢失。 */
+const PHOTO_DIR = path.join(DATA_DIR, 'photo');
+fs.mkdirSync(PHOTO_DIR, { recursive: true });
 const DB_FILE = path.join(DATA_DIR, 'inspection.db');
 const db = new DatabaseSync(DB_FILE);
 db.exec('PRAGMA journal_mode = WAL');
@@ -223,6 +227,56 @@ function readBody(req) {
   });
 }
 
+/* ---------------- 首页照片存储 ---------------- */
+const PHOTO_EXTS = ['.jpg', '.png', '.webp'];
+const PHOTO_MIME = { '.jpg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
+const PHOTO_MAX = 8 * 1024 * 1024;
+
+/* 按文件头判断真实格式，不信任前端声明的 MIME */
+function sniffImage(buf) {
+  if (!buf || buf.length < 16) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return '.jpg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return '.png';
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return '.webp';
+  return null;
+}
+
+/* 当前生效的上传照片（至多一张；清掉其它扩展名，避免探测命中旧图） */
+function findStoredPhoto() {
+  for (let i = 0; i < PHOTO_EXTS.length; i++) {
+    const fp = path.join(PHOTO_DIR, 'hero' + PHOTO_EXTS[i]);
+    try {
+      const st = fs.statSync(fp);
+      if (st.isFile() && st.size > 0) return { file: fp, ext: PHOTO_EXTS[i], size: st.size, mtimeMs: st.mtimeMs };
+    } catch (e) {}
+  }
+  return null;
+}
+
+function sendPhoto(req, res, p) {
+  const st = p.mtimeMs + ':' + p.size;
+  const etag = 'W/"photo-' + Math.floor(p.mtimeMs).toString(16) + '-' + p.size.toString(16) + '"';
+  const headers = {
+    'content-type': PHOTO_MIME[p.ext] || 'application/octet-stream',
+    'cache-control': 'no-cache',
+    'etag': etag,
+    'x-content-type-options': 'nosniff'
+  };
+  const inm = req.headers['if-none-match'];
+  if (inm && inm.split(',').some(function (v) { return v.trim() === etag || v.trim() === '*'; })) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  let buf;
+  try { buf = fs.readFileSync(p.file); } catch (e) {
+    return sendJson(res, { ok: false, error: '照片读取失败' }, 500);
+  }
+  headers['content-length'] = buf.length;
+  headers['x-photo-stamp'] = st;
+  res.writeHead(200, headers);
+  res.end(req.method === 'HEAD' ? undefined : buf);
+}
+
 /* ---------------- API 路由 ---------------- */
 async function handleApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, '') || '/api';
@@ -257,6 +311,54 @@ async function handleApi(req, res, url) {
     const payload = bundleFor(u);
     payload.token = token;
     return ok(res, payload);
+  }
+
+  /* --- 首页照片：读取 / 上传 / 移除 ---
+     首页本身没有账号体系，故不要求登录；但仅接受同源请求（校验 Origin），
+     且只接受文件头合法的 jpg/png/webp。照片存 DATA_DIR/photo（挂载卷），
+     重建镜像不丢；前端不做任何本机缓存，换图后所有设备刷新即生效。 */
+  if (p === '/api/photo/current' && (method === 'GET' || method === 'HEAD')) {
+    const cur = findStoredPhoto();
+    if (!cur) return sendJson(res, { ok: false, error: '未设置照片' }, 404);
+    return sendPhoto(req, res, cur);
+  }
+
+  if (p === '/api/photo' && method === 'POST') {
+    const origin = String(req.headers.origin || '');
+    if (origin) {
+      let oh = '';
+      try { oh = new URL(origin).host; } catch (e) { oh = ''; }
+      if (oh !== String(req.headers.host || '')) return bad(res, '仅允许本站页面上传照片', 403);
+    }
+    const m = /^data:image\/(?:png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\s]+)$/.exec(String(body.data || ''));
+    if (!m) return bad(res, '不是有效的图片数据（需为 jpg / png / webp）');
+    const buf = Buffer.from(m[1].replace(/\s+/g, ''), 'base64');
+    if (buf.length < 1024) return bad(res, '图片数据过小，已忽略');
+    if (buf.length > PHOTO_MAX) return bad(res, '图片超过 8MB，请压缩后再上传');
+    const ext = sniffImage(buf);
+    if (!ext) return bad(res, '文件内容不是有效的 jpg / png / webp 图片');
+    try {
+      PHOTO_EXTS.forEach(function (e) {
+        if (e === ext) return;
+        try { fs.unlinkSync(path.join(PHOTO_DIR, 'hero' + e)); } catch (err) {}
+      });
+      /* 先写临时文件再改名，避免读到写了一半的图 */
+      const tmp = path.join(PHOTO_DIR, 'hero' + ext + '.tmp');
+      fs.writeFileSync(tmp, buf);
+      fs.renameSync(tmp, path.join(PHOTO_DIR, 'hero' + ext));
+      cache.clear();
+    } catch (e) {
+      return bad(res, '保存失败：' + (e && e.message ? e.message : '磁盘写入错误'), 500);
+    }
+    return ok(res, { url: '/api/photo/current', size: buf.length, ext: ext, at: Date.now() });
+  }
+
+  if (p === '/api/photo' && method === 'DELETE') {
+    const cur = findStoredPhoto();
+    if (!cur) return ok(res, { removed: false });
+    try { fs.unlinkSync(cur.file); } catch (e) { return bad(res, '删除失败：' + (e && e.message ? e.message : '磁盘错误'), 500); }
+    cache.clear();
+    return ok(res, { removed: true });
   }
 
   /* --- 以下均需登录 --- */
