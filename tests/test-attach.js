@@ -118,6 +118,36 @@ function freePort() {
     check('图片按 image/jpeg 返回', g2.status === 200 && g2.headers.get('content-type') === 'image/jpeg');
     check('图片内联（浏览器可直接显示）', /inline/.test(g2.headers.get('content-disposition') || ''));
 
+    /* 5b) 回归：文件名后缀与实际字节不一致（前端把 PNG 重编码成 JPEG 后仍叫 xx.png）
+       存盘用嗅探出的 .jpg，读取必须按「存盘真实扩展名」而不是文件名后缀去找。 */
+    let up3 = await api('/api/attach', {
+      method: 'POST', token: token,
+      body: { name: '调整图片尺寸.png', mime: 'image/png', data: jpgB64 }
+    });
+    check('PNG 名 + JPEG 字节：上传成功并纠正为 image/jpeg',
+      up3.j.ok && up3.j.data.mime === 'image/jpeg', JSON.stringify(up3.j && up3.j.data));
+    const att3 = up3.j.data;
+    check('存盘按嗅探结果落 .jpg（与文件名后缀不同）',
+      fs.existsSync(path.join(DATA, 'uploads', att3.id + '.jpg'))
+      && !fs.existsSync(path.join(DATA, 'uploads', att3.id + '.png')));
+    let g3 = await fetch(BASE + att3.url);
+    check('PNG 名 + JPEG 字节：仍可正常读取（曾 404 附件已不存在）', g3.status === 200,
+      'status=' + g3.status);
+    check('下载文件名跟随真实扩展名（.png → .jpg）',
+      /\.jpg"/.test(g3.headers.get('content-disposition') || ''), g3.headers.get('content-disposition'));
+
+    /* 5c) 兼容历史脏数据：ext 为空、文件名后缀也错的旧记录，靠扫目录兜底仍能读 */
+    const legacyId = 'legacy' + Date.now().toString(16).slice(-6);
+    fs.copyFileSync(path.join(DATA, 'uploads', att3.id + '.jpg'), path.join(DATA, 'uploads', legacyId + '.jpg'));
+    const { DatabaseSync } = require('node:sqlite');
+    const tdb = new DatabaseSync(path.join(DATA, 'inspection.db'));
+    tdb.prepare("INSERT INTO attachments (id, name, mime, size, owner, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(legacyId, '老记录.png', 'image/jpeg', fs.statSync(path.join(DATA, 'uploads', legacyId + '.jpg')).size, 'admin', new Date().toISOString());
+    tdb.close();
+    let g4 = await fetch(BASE + '/api/attach/' + legacyId);
+    check('历史记录（无 ext 列值）仍能读取', g4.status === 200, 'status=' + g4.status);
+
+
     /* 6) 非法内容 / 不支持的类型 */
     let bad1 = await api('/api/attach', {
       method: 'POST', token: token,

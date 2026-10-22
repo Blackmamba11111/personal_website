@@ -204,7 +204,7 @@
 | `users` | username(PK), name, role(`admin`/`user`), status(`active`/`disabled`), note, salt, hash, must_change, created_at, last_login | 账号与口令哈希 |
 | `ledgers` | username(PK), data(JSON TEXT), updated_at, updated_by | 一人一份台账，`data` 为整份 JSON |
 | `sessions` | token(PK), username, created_at, expires_at | Bearer 令牌，30 天 |
-| `attachments` | id(PK, 24 位随机 hex), name, mime, size, owner, created_at, data | 巡检附件；Cloudflare 版把文件 base64 存 `data`（D1 单行上限 2MB → 单文件 1MB）；内网版只存元数据，文件落 `DATA_DIR/uploads/` |
+| `attachments` | id(PK, 24 位随机 hex), name, mime, size, owner, created_at, ext(内网版), data(Cloudflare 版) | 巡检附件；Cloudflare 版把文件 base64 存 `data`（D1 单行上限 2MB → 单文件 1MB）；内网版只存元数据，文件落 `DATA_DIR/uploads/<id><ext>`。**`ext` 存的是按文件头嗅探出的真实扩展名，不能用文件名后缀推断**——前端会把图片统一重编码成 JPEG（文件名仍是 `.png`），只按名字找文件会 404 |
 
 ### 5.2 台账 JSON 结构（`ledgers.data`）
 

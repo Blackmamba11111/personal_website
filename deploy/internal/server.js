@@ -94,10 +94,22 @@ CREATE TABLE IF NOT EXISTS attachments (
   mime       TEXT NOT NULL,
   size       INTEGER NOT NULL,
   owner      TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  ext        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(owner);
 `);
+
+/* 老库补列：attachments.ext（存盘真实扩展名）。SQLite 无 ADD COLUMN IF NOT EXISTS，先查 pragma */
+try {
+  const cols = db.prepare('PRAGMA table_info(attachments)').all().map(function (c) { return c.name; });
+  if (cols.length && cols.indexOf('ext') < 0) {
+    db.exec("ALTER TABLE attachments ADD COLUMN ext TEXT NOT NULL DEFAULT ''");
+    console.log('[migrate] attachments 增加 ext 列');
+  }
+} catch (e) {
+  console.error('[migrate] attachments.ext 处理失败：' + (e && e.message));
+}
 
 /* ---------------- 基础工具 ---------------- */
 function sha256Hex(s) {
@@ -324,19 +336,53 @@ function contentDisposition(kind, name) {
   const ascii = safeFileName(name).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   return kind + '; filename="' + ascii + '"; filename*=UTF-8\'\'' + encodeURIComponent(safeFileName(name));
 }
+/* 附件在磁盘上的真实扩展名。不能只看文件名后缀：
+   前端会把图片统一重编码成 JPEG（文件名可能仍是 xx.png），服务端按文件头存成 .jpg，
+   所以「存盘用的 ext」必须持久化，读取时优先用它，否则会去找不存在的 <id>.png。 */
+function attachExtResolve(row) {
+  const stored = String(row.ext || '').toLowerCase();
+  if (stored && ATTACH_MIME[stored]) return stored;
+  return attachExtOf(row.name, String(row.mime || '').split(';')[0]) || '';
+}
+/* 定位附件文件：先按记录里的 ext，再按 mime 推断，最后扫目录兜底（兼容历史脏数据） */
+function findAttachFile(row) {
+  const tries = [];
+  const byRow = attachExtResolve(row);
+  if (byRow) tries.push(byRow);
+  const byMime = Object.keys(ATTACH_MIME).filter(function (e) {
+    return ATTACH_MIME[e].split(';')[0] === String(row.mime || '').split(';')[0];
+  })[0];
+  if (byMime && tries.indexOf(byMime) < 0) tries.push(byMime);
+  for (let i = 0; i < tries.length; i++) {
+    const fp = path.join(UPLOAD_DIR, row.id + tries[i]);
+    try { if (fs.statSync(fp).isFile()) return fp; } catch (e) {}
+  }
+  try {
+    const hit = fs.readdirSync(UPLOAD_DIR).filter(function (f) { return f.indexOf(row.id + '.') === 0; })[0];
+    if (hit) return path.join(UPLOAD_DIR, hit);
+  } catch (e) {}
+  return '';
+}
 function serveAttachment(req, res, row) {
-  const fp = path.join(UPLOAD_DIR, row.id + (attachExtOf(row.name, String(row.mime).split(';')[0]) || ''));
+  const fp = findAttachFile(row);
+  if (!fp) return sendJson(res, { ok: false, error: '附件已不存在' }, 404);
   let st;
   try { st = fs.statSync(fp); } catch (e) { return sendJson(res, { ok: false, error: '附件已不存在' }, 404); }
-  const mime = ATTACH_MIME[path.extname(fp).toLowerCase()] || row.mime || 'application/octet-stream';
+  const realExt = path.extname(fp).toLowerCase();
+  const mime = ATTACH_MIME[realExt] || row.mime || 'application/octet-stream';
   const inline = INLINE_MIME.test(mime);
   const etag = 'W/"att-' + row.id + '-' + st.size.toString(16) + '"';
+  /* 下载文件名跟随真实扩展名，避免「下了个 .png 打不开」 */
+  let dlName = safeFileName(row.name);
+  if (realExt && ATTACH_MIME[realExt] && path.extname(dlName).toLowerCase() !== realExt) {
+    dlName = dlName.replace(/\.[^.]*$/, '') + realExt;
+  }
   const headers = {
     'content-type': mime,
     'cache-control': 'private, max-age=86400',
     'etag': etag,
     'x-content-type-options': 'nosniff',
-    'content-disposition': contentDisposition(inline ? 'inline' : 'attachment', row.name)
+    'content-disposition': contentDisposition(inline ? 'inline' : 'attachment', dlName)
   };
   const inm = req.headers['if-none-match'];
   if (inm && inm.split(',').some(function (v) { return v.trim() === etag; })) {
@@ -437,7 +483,7 @@ async function handleApi(req, res, url) {
   /* --- 附件读取（公开、按不可猜 id） --- */
   const ma = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
   if (ma && (method === 'GET' || method === 'HEAD')) {
-    const row = db.prepare('SELECT id, name, mime, size FROM attachments WHERE id = ?').get(ma[1]);
+    const row = db.prepare('SELECT id, name, mime, size, ext FROM attachments WHERE id = ?').get(ma[1]);
     if (!row) return sendJson(res, { ok: false, error: '附件已删除' }, 404);
     return serveAttachment(req, res, row);
   }
@@ -495,8 +541,8 @@ async function handleApi(req, res, url) {
     const id = randHex(12);
     try {
       fs.writeFileSync(path.join(UPLOAD_DIR, id + ext), buf);
-      db.prepare('INSERT INTO attachments (id, name, mime, size, owner, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(id, name, finalMime, buf.length, me.username, nowIso());
+      db.prepare('INSERT INTO attachments (id, name, mime, size, owner, created_at, ext) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, name, finalMime, buf.length, me.username, nowIso(), ext);
     } catch (e) {
       return bad(res, '附件保存失败：' + (e && e.message ? e.message : '磁盘错误'), 500);
     }
@@ -508,12 +554,11 @@ async function handleApi(req, res, url) {
 
   const mAt = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
   if (mAt && method === 'DELETE') {
-    const row = db.prepare('SELECT id, name, mime, owner FROM attachments WHERE id = ?').get(mAt[1]);
+    const row = db.prepare('SELECT id, name, mime, owner, ext FROM attachments WHERE id = ?').get(mAt[1]);
     if (!row) return ok(res, { removed: false });
     if (!isAdmin && row.owner !== me.username) return bad(res, '无权删除该附件', 403);
-    try {
-      fs.unlinkSync(path.join(UPLOAD_DIR, row.id + (attachExtOf(row.name, row.mime) || '')));
-    } catch (e) {}
+    const fp = findAttachFile(row);
+    if (fp) { try { fs.unlinkSync(fp); } catch (e) {} }
     db.prepare('DELETE FROM attachments WHERE id = ?').run(row.id);
     return ok(res, { removed: true });
   }
@@ -614,9 +659,10 @@ async function handleApi(req, res, url) {
       db.exec('BEGIN IMMEDIATE');
       try {
         /* 一并清理该账号的附件文件与记录，避免磁盘残留 */
-        const atts = db.prepare('SELECT id, name, mime FROM attachments WHERE owner = ?').all(target);
+        const atts = db.prepare('SELECT id, name, mime, ext FROM attachments WHERE owner = ?').all(target);
         atts.forEach(function (a) {
-          try { fs.unlinkSync(path.join(UPLOAD_DIR, a.id + (attachExtOf(a.name, a.mime) || ''))); } catch (e) {}
+          const fp = findAttachFile(a);
+          if (fp) { try { fs.unlinkSync(fp); } catch (e) {} }
         });
         db.prepare('DELETE FROM attachments WHERE owner = ?').run(target);
         db.prepare('DELETE FROM sessions WHERE username = ?').run(target);
