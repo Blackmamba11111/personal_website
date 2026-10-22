@@ -313,6 +313,47 @@
   .tl-note{font-size:12px;color:var(--text-2);margin-top:2px;}
   .tl-del{font-size:11px;color:var(--text-3);cursor:pointer;border:0;background:0;padding:0;}
   .tl-del:hover{color:var(--miss);}
+
+  /* 巡检方式 / 结果 标签 */
+  .vtag{font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:99px;white-space:nowrap;border:1px solid transparent;}
+  .vtag.mode{background:#EEF2F9;color:#475569;}
+  .vtag.res-ok{background:var(--ok-soft);color:#0F7B4F;}
+  .vtag.res-issue{background:var(--miss-soft);color:#B91C1C;}
+  .vtag.res-other{background:#F1F5F9;color:#64748B;}
+
+  /* 附件选择区 */
+  .attach-box{margin-top:8px;border:1px dashed var(--border);border-radius:9px;padding:8px 10px;background:var(--panel-2);}
+  .attach-head{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text-3);}
+  .attach-head .btn{margin-left:auto;}
+  .attach-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;}
+  .attach-list:empty{display:none;}
+  .att-chip{display:flex;align-items:center;gap:7px;max-width:240px;padding:4px 7px 4px 4px;
+    border:1px solid var(--border);border-radius:8px;background:#fff;font-size:11.5px;}
+  .att-chip img{width:36px;height:28px;object-fit:cover;border-radius:5px;background:#F1F5F9;}
+  .att-ico{width:36px;height:28px;border-radius:5px;background:#EEF2F9;display:grid;place-items:center;
+    font-size:9.5px;color:#475569;font-weight:700;letter-spacing:.3px;}
+  .att-txt{min-width:0;display:flex;flex-direction:column;}
+  .att-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);}
+  .att-meta{color:var(--text-3);font-size:10.5px;}
+  .att-x{border:0;background:0;color:var(--text-3);cursor:pointer;font-size:13px;line-height:1;padding:0 2px;}
+  .att-x:hover{color:var(--miss);}
+  .att-chip.up{opacity:.7;}
+  .att-chip.err{border-color:#F5C9C9;background:#FFF7F7;}
+
+  /* 时间线里的附件 */
+  .tl-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;}
+  .tl-att{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2);
+    background:#fff;border:1px solid var(--border);border-radius:7px;padding:2px 7px 2px 2px;cursor:pointer;max-width:230px;}
+  .tl-att img{width:28px;height:22px;object-fit:cover;border-radius:4px;}
+  .tl-att .att-ico{width:28px;height:22px;font-size:8.5px;}
+  .tl-att:hover{border-color:#AFC4F5;}
+
+  /* 在线预览 */
+  .modal.viewer{width:min(900px,94vw);max-height:90vh;}
+  #vwBody{display:flex;align-items:center;justify-content:center;min-height:180px;background:#F7F9FC;border-radius:8px;overflow:auto;}
+  #vwBody img{max-width:100%;max-height:66vh;object-fit:contain;border-radius:6px;background:#fff;}
+  #vwBody iframe{width:100%;height:66vh;border:0;border-radius:6px;background:#fff;}
+  #vwBody .vw-none{font-size:12.5px;color:var(--text-3);padding:26px;text-align:center;}
   .toast{
     position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(10px);z-index:200;
     background:#1B2333;color:#fff;padding:9px 16px;border-radius:9px;font-size:12.5px;
@@ -744,7 +785,29 @@
           <input type="date" id="dVisitDate">
           <input type="text" id="dVisitBy" placeholder="巡检人（选填）">
         </div>
+        <div class="grid2" style="margin-top:8px;">
+          <select id="dVisitMode" aria-label="巡检方式">
+            <option value="onsite">巡检方式：现场</option>
+            <option value="remote">巡检方式：远程</option>
+          </select>
+          <select id="dVisitResult" aria-label="巡检结果">
+            <option value="ok">巡检结果：正常</option>
+            <option value="issue">巡检结果：异常</option>
+            <option value="other">巡检结果：其他（未巡检）</option>
+          </select>
+        </div>
         <textarea id="dVisitNote" placeholder="巡检备注：本次巡检内容、发现问题、处理结果等" style="margin-top:8px;"></textarea>
+
+        <div class="attach-box" id="visitAttachBox">
+          <div class="attach-head">
+            <span id="attachTip">附件：图片 / 文件，可多选，图片与 PDF 可在线浏览</span>
+            <button type="button" class="btn sm" id="btnPickAttach">＋ 添加附件</button>
+            <input type="file" id="visitAttachInput" multiple style="display:none"
+              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.log,.zip,.rar,.7z,.eml">
+          </div>
+          <div class="attach-list" id="visitAttachList"></div>
+        </div>
+
         <div style="margin-top:8px;">
           <button type="button" class="btn primary sm" id="btnAddVisit">保存巡检记录</button>
         </div>
@@ -760,6 +823,27 @@
       <div style="flex:1"></div>
       <button type="button" class="btn" data-close="maskDetail">关闭</button>
       <button type="button" class="btn primary" id="btnEditCust">编辑客户资料</button>
+    </div>
+  </div>
+</div>
+
+<!-- 附件在线预览（图片灯箱 / PDF 内嵌 / 其他下载） -->
+<div class="mask high" id="maskViewer">
+  <div class="modal viewer">
+    <div class="modal-head">
+      <h3 id="vwName">附件预览</h3>
+      <div class="sub" id="vwMeta"></div>
+      <button type="button" class="icon-btn" data-close="maskViewer">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="vwBody"></div>
+      <div class="hint" style="margin-top:8px;" id="vwHint"></div>
+    </div>
+    <div class="modal-foot">
+      <div style="flex:1"></div>
+      <a class="btn" id="vwOpen" target="_blank" rel="noopener">新窗口打开</a>
+      <a class="btn primary" id="vwDownload" download>下载</a>
+      <button type="button" class="btn" data-close="maskViewer">关闭</button>
     </div>
   </div>
 </div>
@@ -1229,6 +1313,21 @@
     y12:     { label: '一年12次',  perQuarter: 3, perYear: 12, perMonth: 1, desc: '全年 12 次，按月考核，每月 1 次（季度 3 次）' }
   };
 
+  /* ---------------- 巡检方式 / 巡检结果 ----------------
+     结果 other =「其他（未巡检）」：仅作为记录留痕，不计入季度/年度巡检次数，
+     也不参与达标判定（isCountedVisit 是唯一判定入口，统计函数都经它过滤）。 */
+  var VISIT_MODES = { onsite: '现场', remote: '远程' };
+  var VISIT_RESULTS = {
+    ok:    { label: '正常',          cls: 'res-ok' },
+    issue: { label: '异常',          cls: 'res-issue' },
+    other: { label: '其他（未巡检）', cls: 'res-other', uncounted: true }
+  };
+  function isCountedVisit(v) { return !(v && v.result === 'other'); }
+  function visitModeLabel(v) { return (v && VISIT_MODES[v.mode]) || ''; }
+  function visitResultOf(v) {
+    return VISIT_RESULTS[v && v.result] || { label: '', cls: '' };
+  }
+
   /* ---------------- 示例数据 ---------------- */
   var SEED = {
     regions: [
@@ -1416,10 +1515,13 @@
       .sort(function (a, b) { return (a.date < b.date ? 1 : -1); });
   }
   function visitsInQuarter(cid, qk) {
-    return visitsOf(cid).filter(function (v) { return quarterOfVisit(v) === qk; });
+    return visitsOf(cid).filter(function (v) { return quarterOfVisit(v) === qk && isCountedVisit(v); });
   }
   function visitsInYear(cid, year) {
-    return visitsOf(cid).filter(function (v) { var d = parseDate(v.date); return d && d.getFullYear() === year; });
+    return visitsOf(cid).filter(function (v) {
+      var d = parseDate(v.date);
+      return d && d.getFullYear() === year && isCountedVisit(v);
+    });
   }
   function statusOf(c, qk) {
     var f = FREQ[c.freq] || FREQ.quarter;
@@ -2534,6 +2636,203 @@
     renderMarkers();
   }
 
+  /* ---------------- 巡检附件（上传 / 预览 / 删除） ----------------
+     流程：选文件 → 本地队列（图片给缩略图）→ 保存巡检记录时逐个 POST /api/attach
+     → 拿到 {id,url} 后随巡检记录一起落到台账。附件本身独立存储，不进台账 JSON。 */
+  var ATTACH_MAX_FALLBACK = 20 * 1024 * 1024;
+  var pendingAtts = [];
+  var ATT_SEQ = 0;
+
+  function attachLimit() {
+    return (AUTH && AUTH.attachMax) || ATTACH_MAX_FALLBACK;
+  }
+  function fmtSize(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+  function isImgMime(m) { return /^image\//.test(String(m || '')); }
+  function attKind(name, mime) {
+    if (isImgMime(mime)) return 'IMG';
+    var ext = String(name || '').split('.').pop().toLowerCase();
+    var map = { pdf: 'PDF', doc: 'DOC', docx: 'DOC', xls: 'XLS', xlsx: 'XLS', ppt: 'PPT', pptx: 'PPT',
+      txt: 'TXT', csv: 'CSV', log: 'LOG', zip: 'ZIP', rar: 'RAR', '7z': '7Z', eml: 'EML' };
+    return map[ext] || (ext ? ext.slice(0, 4).toUpperCase() : 'FILE');
+  }
+  function canPreview(mime) {
+    return /^image\//.test(mime || '') || /^application\/pdf/.test(mime || '') || /^text\//.test(mime || '');
+  }
+
+  function renderPendingAtts() {
+    var box = document.getElementById('visitAttachList');
+    if (!box) return;
+    var html = '';
+    pendingAtts.forEach(function (a) {
+      var thumb = isImgMime(a.mime) && a.preview
+        ? '<img src="' + esc(a.preview) + '" alt="">'
+        : '<span class="att-ico">' + esc(attKind(a.name, a.mime)) + '</span>';
+      var meta = a.status === 'uploading' ? '上传中…'
+        : (a.status === 'error' ? '上传失败' : fmtSize(a.size));
+      html += '<div class="att-chip' + (a.status === 'uploading' ? ' up' : '') +
+        (a.status === 'error' ? ' err' : '') + '" data-key="' + a.key + '">' + thumb +
+        '<span class="att-txt"><span class="att-name" title="' + esc(a.name) + '">' + esc(a.name) +
+        '</span><span class="att-meta">' + meta + '</span></span>' +
+        '<button type="button" class="att-x" data-del="' + a.key + '" title="移除">✕</button></div>';
+    });
+    box.innerHTML = html;
+    Array.prototype.forEach.call(box.querySelectorAll('[data-del]'), function (b) {
+      b.onclick = function () { removePendingAtt(b.getAttribute('data-del')); };
+    });
+  }
+
+  function removePendingAtt(key) {
+    pendingAtts = pendingAtts.filter(function (a) { return a.key !== key; });
+    renderPendingAtts();
+  }
+  function clearPendingAtts() {
+    pendingAtts = [];
+    renderPendingAtts();
+  }
+
+  function readAsDataURL(file) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onerror = function () { reject(new Error('读取「' + file.name + '」失败')); };
+      fr.onload = function () { resolve(String(fr.result || '')); };
+      fr.readAsDataURL(file);
+    });
+  }
+  /* 图片先缩到长边 1600 再转 JPEG：既省流量，也避免超过服务端单文件上限 */
+  function compressImage(file, dataUrl) {
+    return new Promise(function (resolve) {
+      var img = new Image();
+      img.onerror = function () { resolve(dataUrl); };
+      img.onload = function () {
+        try {
+          var MAX = 1600;
+          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+          var k = Math.min(1, MAX / Math.max(w, h));
+          if (k >= 1 && dataUrl.length < 900000) { resolve(dataUrl); return; }
+          var cvs = document.createElement('canvas');
+          cvs.width = Math.max(1, Math.round(w * k));
+          cvs.height = Math.max(1, Math.round(h * k));
+          cvs.getContext('2d').drawImage(img, 0, 0, cvs.width, cvs.height);
+          resolve(cvs.toDataURL('image/jpeg', 0.82));
+        } catch (e) { resolve(dataUrl); }
+      };
+      img.src = dataUrl;
+    });
+  }
+
+  function addFiles(files) {
+    var list = Array.prototype.slice.call(files || []);
+    if (!list.length) return;
+    var limit = attachLimit();
+    var added = 0;
+    list.forEach(function (file) {
+      if (file.size > limit) {
+        toast('「' + file.name + '」超过 ' + fmtSize(limit) + '，已跳过');
+        return;
+      }
+      var item = {
+        key: 'a' + (++ATT_SEQ) + '_' + Date.now().toString(36),
+        file: file, name: file.name, mime: file.type || 'application/octet-stream',
+        size: file.size, preview: '', status: 'pending', id: '', url: ''
+      };
+      pendingAtts.push(item);
+      added++;
+      if (isImgMime(item.mime)) {
+        readAsDataURL(file).then(function (d) {
+          item.preview = d;
+          return compressImage(file, d);
+        }).then(function (compressed) {
+          item.upload = compressed;
+          renderPendingAtts();
+        }).catch(function () {});
+      }
+    });
+    renderPendingAtts();
+    if (added) toast('已加入 ' + added + ' 个附件，保存巡检记录时一并上传');
+  }
+
+  /* 顺序上传；任一失败即中止并抛出（已成功的保留，重试时跳过） */
+  function uploadPendingAtts() {
+    var out = [];
+    return pendingAtts.reduce(function (chain, item) {
+      return chain.then(function () {
+        if (item.status === 'done' && item.id) {
+          out.push({ id: item.id, name: item.name, mime: item.mime, size: item.size, url: item.url });
+          return null;
+        }
+        item.status = 'uploading';
+        renderPendingAtts();
+        var ready = item.upload ? Promise.resolve(item.upload) : readAsDataURL(item.file)
+          .then(function (d) { return isImgMime(item.mime) ? compressImage(item.file, d) : d; });
+        return ready.then(function (dataUrl) {
+          var base64 = String(dataUrl).replace(/^data:[^,]*,/, '');
+          return api('/attach', {
+            method: 'POST',
+            body: { name: item.name, mime: item.mime, data: base64 }
+          });
+        }).then(function (r) {
+          if (!r.ok) {
+            item.status = 'error';
+            renderPendingAtts();
+            throw new Error(r.error || '附件上传失败');
+          }
+          item.status = 'done';
+          item.id = r.data.id; item.url = r.data.url;
+          item.size = r.data.size || item.size; item.mime = r.data.mime || item.mime;
+          renderPendingAtts();
+          out.push({ id: item.id, name: item.name, mime: item.mime, size: item.size, url: item.url });
+        });
+      });
+    }, Promise.resolve()).then(function () { return out; });
+  }
+
+  /* 删除记录/客户时顺带清理附件，避免磁盘与 D1 里长期留垃圾 */
+  function dropAttachments(list) {
+    (list || []).forEach(function (a) {
+      if (a && a.id) api('/attach/' + encodeURIComponent(a.id), { method: 'DELETE' }).then(function () {});
+    });
+  }
+
+  function openAttachment(att) {
+    if (!att || !att.url) return;
+    document.getElementById('vwName').textContent = att.name || '附件';
+    document.getElementById('vwMeta').textContent =
+      (att.mime || '未知类型') + (att.size ? ' · ' + fmtSize(att.size) : '');
+    var body = document.getElementById('vwBody');
+    if (isImgMime(att.mime)) {
+      body.innerHTML = '<img src="' + esc(att.url) + '" alt="' + esc(att.name || '') + '">';
+    } else if (canPreview(att.mime)) {
+      body.innerHTML = '<iframe src="' + esc(att.url) + '" title="' + esc(att.name || '') + '"></iframe>';
+    } else {
+      body.innerHTML = '<div class="vw-none">该类型不支持在线预览<br>可点击下方「下载」或「新窗口打开」</div>';
+    }
+    document.getElementById('vwOpen').href = att.url;
+    var dl = document.getElementById('vwDownload');
+    dl.href = att.url;
+    dl.setAttribute('download', att.name || 'download');
+    document.getElementById('vwHint').textContent =
+      canPreview(att.mime) ? '附件存放于服务器，跨设备、刷新后均可查看。' : '';
+    openModal('maskViewer');
+  }
+
+  function attachChips(list, vid) {
+    if (!list || !list.length) return '';
+    return '<div class="tl-atts">' + list.map(function (a, i) {
+      var thumb = isImgMime(a.mime)
+        ? '<img src="' + esc(a.url) + '" alt="">'
+        : '<span class="att-ico">' + esc(attKind(a.name, a.mime)) + '</span>';
+      return '<span class="tl-att" role="button" tabindex="0" data-vid="' + esc(vid || '') +
+        '" data-att="' + i + '">' + thumb +
+        '<span class="att-name" style="max-width:150px;" title="' + esc(a.name || '') + '">' +
+        esc(a.name || '附件') + '</span></span>';
+    }).join('') + '</div>';
+  }
+
   /* ---------------- 客户详情 ---------------- */
   function openDetail(id) {
     var c = DB.customers.filter(function (x) { return x.id === id; })[0];
@@ -2595,18 +2894,34 @@
     var tl = visitsOf(id), html = '';
     if (!tl.length) html = '<div class="hint" style="padding:4px 0;">暂无巡检记录</div>';
     tl.forEach(function (v) {
+      var res = visitResultOf(v), mode = visitModeLabel(v);
       html += '<div class="tl-item' + (quarterOfVisit(v) === qk ? ' cur' : '') + '">' +
         '<div class="tl-date">' + fmtDate(v.date) +
         '<span class="q">' + quarterOfVisit(v).replace('Q', ' 年 Q') + '</span>' +
         (v.by ? '<span class="q">· ' + esc(v.by) + '</span>' : '') +
+        (mode ? '<span class="vtag mode">' + mode + '</span>' : '') +
+        (res.label ? '<span class="vtag ' + res.cls + '">' + res.label + '</span>' : '') +
         '<button type="button" class="tl-del" data-vid="' + v.id + '">删除</button></div>' +
-        (v.note ? '<div class="tl-note">' + esc(v.note) + '</div>' : '') + '</div>';
+        (v.note ? '<div class="tl-note">' + esc(v.note) + '</div>' : '') +
+        attachChips(v.atts, v.id) + '</div>';
     });
     document.getElementById('dTimeline').innerHTML = html;
+    Array.prototype.forEach.call(document.querySelectorAll('#dTimeline .tl-att'), function (el) {
+      var act = function (e) {
+        if (e) { e.preventDefault(); e.stopPropagation(); }
+        var v = DB.visits.filter(function (x) { return x.id === el.getAttribute('data-vid'); })[0];
+        var a = v && v.atts && v.atts[Number(el.getAttribute('data-att'))];
+        if (a) openAttachment(a);
+      };
+      el.onclick = act;
+      el.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') act(e); };
+    });
     Array.prototype.forEach.call(document.querySelectorAll('#dTimeline .tl-del'), function (b) {
       b.onclick = function () {
         var vid = b.getAttribute('data-vid');
         askConfirm('删除巡检记录', '确认删除这条巡检记录？删除后不可恢复。', function () {
+          var del = DB.visits.filter(function (v) { return v.id === vid; })[0];
+          dropAttachments(del && del.atts);
           DB.visits = DB.visits.filter(function (v) { return v.id !== vid; });
           save(); renderAll(); openDetail(id); toast('巡检记录已删除');
         }, '确认删除');
@@ -2616,22 +2931,43 @@
     document.getElementById('dVisitDate').value = todayStr();
     document.getElementById('dVisitBy').value = '';
     document.getElementById('dVisitNote').value = '';
+    document.getElementById('dVisitMode').value = 'onsite';
+    document.getElementById('dVisitResult').value = 'ok';
+    clearPendingAtts();
+    document.getElementById('attachTip').textContent =
+      '附件：图片 / 文件，可多选，图片与 PDF 可在线浏览（单个上限 ' + fmtSize(attachLimit()) + '）';
     document.getElementById('btnAddVisit').onclick = function () {
       var date = document.getElementById('dVisitDate').value;
       if (!date) { toast('请选择巡检日期'); return; }
-      DB.visits.push({
-        id: uid('v'), customerId: id, date: date,
-        by: document.getElementById('dVisitBy').value.trim(),
-        note: document.getElementById('dVisitNote').value.trim()
-      });
-      save(); renderAll(); openDetail(id);
-      toast('已登记 ' + fmtDate(date) + ' 的巡检记录');
+      var btn = this;
+      if (btn.disabled) return;
+      var commit = function (atts) {
+        DB.visits.push({
+          id: uid('v'), customerId: id, date: date,
+          by: document.getElementById('dVisitBy').value.trim(),
+          note: document.getElementById('dVisitNote').value.trim(),
+          mode: document.getElementById('dVisitMode').value,
+          result: document.getElementById('dVisitResult').value,
+          atts: atts
+        });
+        clearPendingAtts();
+        save(); renderAll(); openDetail(id);
+        toast('已登记 ' + fmtDate(date) + ' 的巡检记录' + (atts.length ? '（含 ' + atts.length + ' 个附件）' : ''));
+      };
+      /* 没有附件时保持同步写入（避免多一次事件循环，行为与旧版一致） */
+      if (!pendingAtts.length) { commit([]); return; }
+      btn.disabled = true;
+      uploadPendingAtts().then(commit).catch(function (e) {
+        toast((e && e.message) || '附件上传失败，请重试');
+      }).then(function () { btn.disabled = false; });
     };
     document.getElementById('btnEditCust').onclick = function () { closeModal('maskDetail'); openCustModal(c); };
     document.getElementById('btnDelCust').onclick = function () {
       askConfirm('删除客户',
         '确认删除客户「<b>' + esc(c.name) + '</b>」？<br>该客户的全部巡检记录将一并删除，操作不可恢复。',
         function () {
+          var gone = DB.visits.filter(function (v) { return v.customerId === id; });
+          gone.forEach(function (v) { dropAttachments(v.atts); });
           DB.customers = DB.customers.filter(function (x) { return x.id !== id; });
           DB.visits = DB.visits.filter(function (v) { return v.customerId !== id; });
           state.selectedId = null;
@@ -3138,6 +3474,35 @@
   /* ---------------- 事件绑定 ---------------- */
   function bind() {
     document.getElementById('btnAdd').onclick = function () { openCustModal(null); };
+    /* 巡检附件：选文件只入队，点「保存巡检记录」时才真正上传 */
+    var btnAtt = document.getElementById('btnPickAttach');
+    var inpAtt = document.getElementById('visitAttachInput');
+    if (btnAtt && inpAtt) {
+      btnAtt.onclick = function () { inpAtt.click(); };
+      inpAtt.onchange = function () { addFiles(inpAtt.files); inpAtt.value = ''; };
+      var boxAtt = document.getElementById('visitAttachBox');
+      if (boxAtt) {
+        ['dragenter', 'dragover'].forEach(function (t) {
+          boxAtt.addEventListener(t, function (e) { e.preventDefault(); boxAtt.style.borderColor = '#AFC4F5'; });
+        });
+        ['dragleave', 'drop'].forEach(function (t) {
+          boxAtt.addEventListener(t, function () { boxAtt.style.borderColor = ''; });
+        });
+        boxAtt.addEventListener('drop', function (e) {
+          if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
+        });
+      }
+      /* 调试/测试入口：无 UI 依赖地驱动附件队列 */
+      window.__visitAtts = {
+        add: function (files) { addFiles(files); },
+        pending: function () {
+          return pendingAtts.map(function (a) {
+            return { key: a.key, name: a.name, status: a.status, size: a.size, id: a.id, url: a.url };
+          });
+        },
+        clear: function () { clearPendingAtts(); }
+      };
+    }
     /* 地图异常时的环境诊断：一键生成可复制信息，便于跨设备排查 */
     var bdiag = document.getElementById('btnMapDiag');
     if (bdiag) bdiag.onclick = showMapDiag;
@@ -3347,7 +3712,7 @@
   /* 服务端签发的会话令牌；取代了旧版用于本地会话的 inspection_board_session_v1 */
   var TOKEN_KEY   = 'inspection_board_token_v1';
 
-  var AUTH = { user: null, scope: '' };
+  var AUTH = { user: null, scope: '', attachMax: 0 };
   var appBooted = false;
   /* 与服务端的同步状态：dirty 表示本地有尚未推送成功的改动 */
   var SYNC = { dirty: false, timer: null, warnShown: false, lastAt: '' };
@@ -3821,7 +4186,7 @@
         }, 700);
       }
       document.getElementById('loginPwd').value = '';
-      signIn(d.user, { welcome: true });
+      signIn(d.user, { welcome: true, attachMax: d.attachMax });
     });
   }
 
@@ -4292,7 +4657,7 @@
     /* 汇总（只读）视图的写入拦截：捕获阶段先于业务处理器生效 */
     var WRITE_SEL = '#btnAdd,#btnRegions,#btnImport,#btnAddRegion,#btnSaveCust,#btnDoImport,' +
       '#btnResetDemo,#btnPick,#btnAddVisit,#btnEditCust,#btnDelCust,#dTimeline .tl-del,' +
-      '#regionList [data-act],#regionList input';
+      '#btnPickAttach,#regionList [data-act],#regionList input';
     document.addEventListener('click', function (e) {
       if (!isReadonly()) return;
       var el = e.target;
@@ -4312,6 +4677,7 @@
   function signIn(user, opts) {
     AUTH.user = user;
     AUTH.scope = (user.role === 'admin') ? SCOPE_ALL : user.username;
+    AUTH.attachMax = (opts && opts.attachMax) || 0;
     hideAuth();
     if (!appBooted) {
       appBooted = true;
@@ -4375,7 +4741,7 @@
         if (r.ok && r.data) {
           applyServerUsers(r.data.users);
           applyServerLedgers(r.data.ledgers);
-          signIn(r.data.user);
+          signIn(r.data.user, { attachMax: r.data.attachMax });
         } else {
           clearToken();
           AUTH.user = null;

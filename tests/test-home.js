@@ -273,6 +273,15 @@ async function main() {
     check('Worker 给 /assets/ 下发长缓存', /\/assets\//.test(worker) && /immutable/.test(worker));
     check('看板 CSP 由页面 meta 声明', /http-equiv="Content-Security-Policy"/.test(fs.readFileSync(DASH, 'utf8')));
 
+    /* 附件能力在两个服务端实现上必须同时存在（否则一端上传会静默失败） */
+    check('Worker 含附件上传路由 POST /api/attach', worker.indexOf("p === '/api/attach'") >= 0);
+    check('Worker 含附件读取路由 /api/attach/:id', /\/api\\\/attach\\\//.test(worker));
+    check('Worker 附件走 D1 attachments 表', /CREATE TABLE IF NOT EXISTS attachments/.test(worker));
+    check('Worker 附件限额受 D1 行上限约束（≤1MB）', /ATTACH_MAX = 1024 \* 1024/.test(worker));
+    const schema = fs.readFileSync(path.join(DIR, 'worker/schema.sql'), 'utf8');
+    check('D1 schema 含 attachments 表（含 data 列）',
+      /CREATE TABLE IF NOT EXISTS attachments/.test(schema) && /data\s+TEXT NOT NULL/.test(schema));
+
     const notFound = fs.readFileSync(path.join(DIR, '404.html'), 'utf8');
     check('404 页可回到首页与看板', notFound.indexOf('href="/"') >= 0 && notFound.indexOf('inspection-dashboard.html') >= 0);
     check('README 含 Cloudflare Pages 步骤', /Cloudflare Pages/.test(fs.readFileSync(path.join(DIR, 'README.md'), 'utf8')));

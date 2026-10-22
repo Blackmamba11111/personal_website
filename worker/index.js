@@ -122,7 +122,7 @@ async function bundleFor(env, u) {
     const d = await readLedger(env, u.username);
     if (d) ledgers[u.username] = d;
   }
-  return { user: mapUser(u), users: users, ledgers: ledgers, admin: isAdmin };
+  return { user: mapUser(u), users: users, ledgers: ledgers, admin: isAdmin, attachMax: ATTACH_MAX };
 }
 
 async function activeAdminCount(env, exclude) {
@@ -132,6 +132,77 @@ async function activeAdminCount(env, exclude) {
   const st = env.DB.prepare(sql);
   const row = await (exclude ? st.bind(exclude) : st).first();
   return row ? row.n : 0;
+}
+
+/* ---------------- 巡检附件（D1 存放 base64） ---------------- */
+/* D1 单行/单值上限 2MB（官方 limits），base64 膨胀 4/3，故文件上限取 1MB。
+   id 为 24 位随机十六进制，读取接口公开（<img>/<iframe> 无法带 Authorization），
+   但 id 不可枚举；上传/删除需登录。 */
+const ATTACH_MAX = 1024 * 1024;
+const ATTACH_MIME = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain; charset=utf-8', '.csv': 'text/csv; charset=utf-8', '.log': 'text/plain; charset=utf-8',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.zip': 'application/zip', '.rar': 'application/vnd.rar', '.7z': 'application/x-7z-compressed',
+  '.eml': 'message/rfc822'
+};
+const INLINE_MIME = /^(image\/(jpeg|png|webp|gif)|application\/pdf|text\/(plain|csv))/;
+
+let attachTableReady = false;
+async function ensureAttachTable(env) {
+  if (attachTableReady) return;
+  try {
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, name TEXT NOT NULL, mime TEXT NOT NULL, ' +
+      'size INTEGER NOT NULL, owner TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL)'
+    ).run();
+    attachTableReady = true;
+  } catch (e) { /* 只读或 DDL 受限时忽略，后续查询会给出明确错误 */ }
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function bytesToB64(bytes) {
+  let s = '';
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  }
+  return btoa(s);
+}
+function sniffImage(bytes) {
+  if (!bytes || bytes.length < 16) return null;
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return '.jpg';
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return '.png';
+  const head = String.fromCharCode.apply(null, bytes.subarray(0, 4));
+  const webp = String.fromCharCode.apply(null, bytes.subarray(8, 12));
+  if (head === 'RIFF' && webp === 'WEBP') return '.webp';
+  return null;
+}
+function attachExtOf(name, mime) {
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(String(name || ''));
+  const byName = m ? ('.' + m[1]).toLowerCase() : '';
+  if (ATTACH_MIME[byName]) return byName;
+  const hit = Object.keys(ATTACH_MIME).filter(function (e) { return ATTACH_MIME[e].split(';')[0] === mime; })[0];
+  return hit || '';
+}
+function safeFileName(name) {
+  const base = String(name || 'file').replace(/^.*[\\/]/, '').replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').slice(0, 120);
+  return base || 'file';
+}
+function contentDisposition(kind, name) {
+  const ascii = safeFileName(name).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return kind + '; filename="' + ascii + '"; filename*=UTF-8\'\'' + encodeURIComponent(safeFileName(name));
 }
 
 /* ---------------- 路由 ---------------- */
@@ -169,6 +240,26 @@ async function route(request, env) {
     return ok(payload);
   }
 
+  /* --- 附件读取（公开，按不可猜 id） --- */
+  const ma = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
+  if (ma && (method === 'GET' || method === 'HEAD')) {
+    await ensureAttachTable(env);
+    const row = await env.DB.prepare('SELECT id, name, mime, size, data FROM attachments WHERE id = ?').bind(ma[1]).first();
+    if (!row) return bad('附件已删除', 404);
+    const bytes = b64ToBytes(String(row.data || ''));
+    const inline = INLINE_MIME.test(String(row.mime || ''));
+    return new Response(method === 'HEAD' ? null : bytes, {
+      status: 200,
+      headers: {
+        'content-type': row.mime || 'application/octet-stream',
+        'content-length': String(bytes.length),
+        'content-disposition': contentDisposition(inline ? 'inline' : 'attachment', row.name),
+        'cache-control': 'private, max-age=86400',
+        'x-content-type-options': 'nosniff'
+      }
+    });
+  }
+
   /* --- 以下均需登录 --- */
   const me = await currentUser(env, request);
   if (!me) return bad('登录已失效，请重新登录。', 401);
@@ -194,6 +285,51 @@ async function route(request, env) {
     /* 保留当前会话，踢掉其它设备上的会话 */
     await env.DB.prepare('DELETE FROM sessions WHERE username = ? AND token <> ?').bind(me.username, me.token).run();
     return ok(null);
+  }
+
+  /* --- 巡检附件：上传 / 删除（需登录；读取见上） --- */
+  if (p === '/api/attach' && method === 'POST') {
+    await ensureAttachTable(env);
+    const name = safeFileName(body.name);
+    const mime = String(body.mime || '').toLowerCase().split(';')[0].trim();
+    const raw = String(body.data || '');
+    const m = /^data:[^,]*,([A-Za-z0-9+/=\s]+)$/.exec(raw) || /^([A-Za-z0-9+/=\s]+)$/.exec(raw);
+    if (!m) return bad('附件数据格式不正确');
+    let bytes;
+    try { bytes = b64ToBytes(m[1].replace(/\s+/g, '')); } catch (e) { return bad('附件数据格式不正确'); }
+    if (!bytes.length) return bad('附件内容为空');
+    if (bytes.length > ATTACH_MAX) {
+      return bad('当前站点单文件上限 ' + Math.round(ATTACH_MAX / 1024) + 'KB（D1 存储限制），请压缩后重试');
+    }
+    const sniffed = sniffImage(bytes);
+    let finalMime, ext;
+    if (sniffed) {
+      finalMime = sniffed === '.jpg' ? 'image/jpeg' : (sniffed === '.png' ? 'image/png' : 'image/webp');
+      ext = sniffed;
+    } else {
+      ext = attachExtOf(name, mime);
+      if (!ext) return bad('不支持的文件类型（支持图片、PDF、Office、文本、压缩包）');
+      finalMime = ATTACH_MIME[ext].split(';')[0];
+    }
+    const id = randHex(12);
+    try {
+      await env.DB.prepare(
+        'INSERT INTO attachments (id, name, mime, size, owner, created_at, data) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(id, name, finalMime, bytes.length, me.username, nowIso(), bytesToB64(bytes)).run();
+    } catch (e) {
+      return bad('附件保存失败：' + (e && e.message ? e.message : '数据库写入错误'), 500);
+    }
+    return ok({ id: id, name: name, mime: finalMime, size: bytes.length, url: '/api/attach/' + id });
+  }
+
+  const mAt = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
+  if (mAt && method === 'DELETE') {
+    await ensureAttachTable(env);
+    const row = await env.DB.prepare('SELECT id, owner FROM attachments WHERE id = ?').bind(mAt[1]).first();
+    if (!row) return ok({ removed: false });
+    if (!isAdmin && row.owner !== me.username) return bad('无权删除该附件', 403);
+    await env.DB.prepare('DELETE FROM attachments WHERE id = ?').bind(row.id).run();
+    return ok({ removed: true });
   }
 
   /* --- 台账读写：scope = 用户名；超管可读写任何人 --- */
@@ -298,6 +434,8 @@ async function route(request, env) {
         env.DB.prepare('DELETE FROM ledgers WHERE username = ?').bind(target),
         env.DB.prepare('DELETE FROM users WHERE username = ?').bind(target)
       ]);
+      /* 附件表可能尚未创建（从未上传过附件），失败不影响删号 */
+      try { await env.DB.prepare('DELETE FROM attachments WHERE owner = ?').bind(target).run(); } catch (e) {}
       return ok(null);
     }
     return bad('不支持的请求方法', 405);

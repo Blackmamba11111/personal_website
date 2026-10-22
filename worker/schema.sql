@@ -26,6 +26,18 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(username);
 CREATE INDEX IF NOT EXISTS idx_sessions_exp  ON sessions(expires_at);
 
+-- 巡检附件：文件内容以 base64 存 data 列（D1 单行上限 2MB，故单文件上限 1MB）
+CREATE TABLE IF NOT EXISTS attachments (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  mime       TEXT NOT NULL,
+  size       INTEGER NOT NULL,
+  owner      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  data       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(owner);
+
 -- 初始超级管理员：口令为既有默认值，标记必须首次登录后立即修改（must_change=1）
 -- 已存在则不覆盖，保证改密后重复执行不会回退
 INSERT OR IGNORE INTO users (username, name, role, status, note, salt, hash, must_change, created_at, last_login)

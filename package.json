@@ -8,6 +8,8 @@
     "test:board": "node tests/test-board.js",
     "test:auth": "node tests/test-auth.js",
     "test:custs": "node tests/test-custs.js",
+    "test:visits": "node tests/test-visits.js",
+    "test:attach": "node tests/test-attach.js",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },

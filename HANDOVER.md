@@ -127,6 +127,20 @@
 
 一句话：**看「哪几个月去过」，不看「一共去了几次」。**
 
+### 巡检方式与巡检结果（2026-10-21 新增）
+
+| 字段 | 取值 | 是否计入次数 |
+| --- | --- | --- |
+| `mode` 巡检方式 | `onsite` 现场 / `remote` 远程 | 不影响计数 |
+| `result` 巡检结果 | `ok` 正常 / `issue` 异常 / `other` 其他（未巡检） | **`other` 不计入**季度次数与年度累计，也不参与达标判定 |
+
+判定入口唯一：`isCountedVisit(v)`（看板约 1325 行），`visitsInQuarter` / `visitsInYear` 都经它过滤；
+历史记录没有 `mode`/`result` 时视为有效巡检（向后兼容），时间线不显示标签。
+
+附件：一条巡检记录可带多个附件（图片/PDF/Office/文本/压缩包），文件独立存储、记录里只存
+`{id,name,mime,size,url}`；图片与 PDF 可在看板内直接预览，其他类型给下载。删除记录/客户时
+一并调用 `DELETE /api/attach/:id` 清理。
+
 对应实现：`statusOf(c, qk)`（看板 1398 行附近），测试 `tests/test-monthly.js`（41 项）专门守这套口径。
 
 ---
@@ -190,6 +204,7 @@
 | `users` | username(PK), name, role(`admin`/`user`), status(`active`/`disabled`), note, salt, hash, must_change, created_at, last_login | 账号与口令哈希 |
 | `ledgers` | username(PK), data(JSON TEXT), updated_at, updated_by | 一人一份台账，`data` 为整份 JSON |
 | `sessions` | token(PK), username, created_at, expires_at | Bearer 令牌，30 天 |
+| `attachments` | id(PK, 24 位随机 hex), name, mime, size, owner, created_at, data | 巡检附件；Cloudflare 版把文件 base64 存 `data`（D1 单行上限 2MB → 单文件 1MB）；内网版只存元数据，文件落 `DATA_DIR/uploads/` |
 
 ### 5.2 台账 JSON 结构（`ledgers.data`）
 
@@ -211,7 +226,13 @@
   ],
   "visits": [                                    // 巡检记录（明细，不预设上限）
     { "id": "v01", "customerId": "c01", "date": "2026-10-08",
-      "by": "潘超", "note": "机房环境温湿度正常，核心交换机无异常告警" }
+      "by": "潘超", "note": "机房环境温湿度正常，核心交换机无异常告警",
+      "mode": "onsite",                          // onsite 现场 | remote 远程（旧数据缺省为未填）
+      "result": "ok",                            // ok 正常 | issue 异常 | other 其他（未巡检）
+      "atts": [                                  // 附件引用（文件本身不进 JSON）
+        { "id": "9f2c…", "name": "机房照片.jpg", "mime": "image/jpeg",
+          "size": 182344, "url": "/api/attach/9f2c…" }
+      ] }
   ]
 }
 ```
@@ -247,6 +268,9 @@
 | GET/HEAD | `/api/photo/current` | 公开 | — | 二进制图片（`no-cache` + ETag；无图 404）※仅内部版 |
 | POST | `/api/photo` | 公开（同源） | `{data:"data:image/(jpeg\|png\|webp);base64,…"}` | `{url, size, ext, at}` ※仅内部版 |
 | DELETE | `/api/photo` | 公开（同源） | — | `{removed:true\|false}` ※仅内部版 |
+| POST | `/api/attach` | 登录 | `{name, mime, data:base64}` | `{id, name, mime, size, url}` |
+| GET/HEAD | `/api/attach/:id` | 公开（id 不可猜） | — | 二进制附件；图片/PDF/文本 `inline`，其余 `attachment` |
+| DELETE | `/api/attach/:id` | 登录（本人或超管） | — | `{removed:true\|false}` |
 
 照片三接口只在内部部署版（`deploy/internal/server.js`）实现：首页无账号体系，故不要求登录，
 但校验同源 `Origin`、文件头（jpg/png/webp）与 8MB 上限；文件落 `DATA_DIR/photo/hero.<ext>`

@@ -26,7 +26,7 @@
 ├── docker-compose.yml      # 编排（443→8443 HTTPS，80→8080 跳转）
 ├── certs/                  # 内部 CA 与服务端证书（ca.crt / server.key / server-chain.crt）
 ├── inspection-dashboard.html / index.html / 404.html / robots.txt / assets/
-├── data/                   # 挂载卷：inspection.db（SQLite，WAL）+ photo/hero.jpg（首页照片）
+├── data/                   # 挂载卷：inspection.db（SQLite，WAL）+ photo/hero.jpg（首页照片）+ uploads/（巡检附件）
 ├── backup/                 # 每日备份快照（保留 7 份）
 ├── backup.sh               # 备份脚本（cron 每天 02:30）
 └── reference/              # D1 建表语句、原交接文档
@@ -91,6 +91,18 @@ docker compose build && docker compose up -d
   内网环境可接受，若将来开放到不可信网络，应加登录或独立口令。
 - 限尺寸：前端先缩到长边 1400、JPEG 质量 0.86 再上传，通常 200–500KB。
 
+### 巡检附件（图片 / 文件，可在线浏览）
+
+登记巡检记录时可添加多个附件：文件写入 **`data/uploads/<id>.<ext>`**，元数据入 `attachments` 表，
+台账 JSON 里只保存 `{id,name,mime,size,url}` 引用。
+
+- 读取走 `GET /api/attach/<id>`（公开但 id 为 96 bit 随机值，不可枚举）：图片 / PDF / 文本
+  `Content-Disposition: inline` 可直接在页面内预览，Office、压缩包等强制下载。
+- 上传 `POST /api/attach` 需登录，单文件上限 **20MB**；只接受图片、PDF、Office、文本、压缩包，
+  图片按文件头校验真实类型，拒绝 HTML/SVG 之类可执行内联的内容。
+- 删除记录/客户时前端会调用 `DELETE /api/attach/<id>` 清理文件，避免磁盘堆积。
+- 备份脚本只备 SQLite，**`data/uploads/` 需要纳入文件级备份**（与 `data/photo/` 一样）。
+
 ### 备份与恢复
 
 ```bash
@@ -122,6 +134,6 @@ docker compose start
 
 ## 6. 回归测试
 
-仓库 `tests/`（`npm install && npm test`，8 套 381 项）与内部服务端共用同一接口契约，
+仓库 `tests/`（`npm install && npm test`，10 套 448 项）与内部服务端共用同一接口契约，
 改动 `server.js` 后建议先在开发机跑通再发布。`server.js` 内接口与线上 D1 版一一对应，
 便于对照 `HANDOVER.md` 的接口清单。

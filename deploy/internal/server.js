@@ -53,6 +53,9 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
    静态文件在构建时 COPY 进镜像，写 /app/assets 会在下次 rebuild 后丢失。 */
 const PHOTO_DIR = path.join(DATA_DIR, 'photo');
 fs.mkdirSync(PHOTO_DIR, { recursive: true });
+/* 巡检附件（图片/文件）：同样必须落在挂载卷内 */
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const DB_FILE = path.join(DATA_DIR, 'inspection.db');
 const db = new DatabaseSync(DB_FILE);
 db.exec('PRAGMA journal_mode = WAL');
@@ -85,6 +88,15 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(username);
 CREATE INDEX IF NOT EXISTS idx_sessions_exp  ON sessions(expires_at);
+CREATE TABLE IF NOT EXISTS attachments (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  mime       TEXT NOT NULL,
+  size       INTEGER NOT NULL,
+  owner      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(owner);
 `);
 
 /* ---------------- 基础工具 ---------------- */
@@ -191,7 +203,7 @@ function bundleFor(u) {
     const d = readLedger(u.username);
     if (d) ledgers[u.username] = d;
   }
-  return { user: mapUser(u), users: users, ledgers: ledgers, admin: isAdmin };
+  return { user: mapUser(u), users: users, ledgers: ledgers, admin: isAdmin, attachMax: ATTACH_MAX };
 }
 function activeAdminCount(exclude) {
   const row = exclude
@@ -273,6 +285,67 @@ function sendPhoto(req, res, p) {
   }
   headers['content-length'] = buf.length;
   headers['x-photo-stamp'] = st;
+  res.writeHead(200, headers);
+  res.end(req.method === 'HEAD' ? undefined : buf);
+}
+
+/* ---------------- 巡检附件 ---------------- */
+/* 附件按「不可猜的随机 id」存放并对外只读：<img src> / <iframe src> 无法携带
+   Authorization 头，所以读取接口不校验登录；id 为 24 位随机十六进制（96 bit），
+   不泄露即不可枚举。只有上传/删除需要登录。 */
+const ATTACH_MAX = 20 * 1024 * 1024;
+const ATTACH_MIME = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain; charset=utf-8', '.csv': 'text/csv; charset=utf-8', '.log': 'text/plain; charset=utf-8',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.zip': 'application/zip', '.rar': 'application/vnd.rar', '.7z': 'application/x-7z-compressed',
+  '.eml': 'message/rfc822'
+};
+/* 可在浏览器内直接打开的类型（其余一律以附件形式下载，避免 html/svg 之类被 inline 执行） */
+const INLINE_MIME = /^(image\/(jpeg|png|webp|gif)|application\/pdf|text\/(plain|csv))/;
+
+function attachExtOf(name, mime) {
+  const byName = path.extname(String(name || '')).toLowerCase();
+  if (ATTACH_MIME[byName]) return byName;
+  const hit = Object.keys(ATTACH_MIME).filter(function (e) { return ATTACH_MIME[e].split(';')[0] === mime; })[0];
+  return hit || '';
+}
+function safeFileName(name) {
+  const base = path.basename(String(name || 'file')).replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').slice(0, 120);
+  return base || 'file';
+}
+function contentDisposition(kind, name) {
+  const ascii = safeFileName(name).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return kind + '; filename="' + ascii + '"; filename*=UTF-8\'\'' + encodeURIComponent(safeFileName(name));
+}
+function serveAttachment(req, res, row) {
+  const fp = path.join(UPLOAD_DIR, row.id + (attachExtOf(row.name, String(row.mime).split(';')[0]) || ''));
+  let st;
+  try { st = fs.statSync(fp); } catch (e) { return sendJson(res, { ok: false, error: '附件已不存在' }, 404); }
+  const mime = ATTACH_MIME[path.extname(fp).toLowerCase()] || row.mime || 'application/octet-stream';
+  const inline = INLINE_MIME.test(mime);
+  const etag = 'W/"att-' + row.id + '-' + st.size.toString(16) + '"';
+  const headers = {
+    'content-type': mime,
+    'cache-control': 'private, max-age=86400',
+    'etag': etag,
+    'x-content-type-options': 'nosniff',
+    'content-disposition': contentDisposition(inline ? 'inline' : 'attachment', row.name)
+  };
+  const inm = req.headers['if-none-match'];
+  if (inm && inm.split(',').some(function (v) { return v.trim() === etag; })) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  let buf;
+  try { buf = fs.readFileSync(fp); } catch (e) { return sendJson(res, { ok: false, error: '附件读取失败' }, 500); }
+  headers['content-length'] = buf.length;
   res.writeHead(200, headers);
   res.end(req.method === 'HEAD' ? undefined : buf);
 }
@@ -361,6 +434,14 @@ async function handleApi(req, res, url) {
     return ok(res, { removed: true });
   }
 
+  /* --- 附件读取（公开、按不可猜 id） --- */
+  const ma = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
+  if (ma && (method === 'GET' || method === 'HEAD')) {
+    const row = db.prepare('SELECT id, name, mime, size FROM attachments WHERE id = ?').get(ma[1]);
+    if (!row) return sendJson(res, { ok: false, error: '附件已删除' }, 404);
+    return serveAttachment(req, res, row);
+  }
+
   /* --- 以下均需登录 --- */
   const me = currentUser(req);
   if (!me) return bad(res, '登录已失效，请重新登录。', 401);
@@ -386,6 +467,55 @@ async function handleApi(req, res, url) {
     /* 保留当前会话，踢掉其它设备上的会话 */
     db.prepare('DELETE FROM sessions WHERE username = ? AND token <> ?').run(me.username, me.token);
     return ok(res, null);
+  }
+
+  /* --- 巡检附件：上传 / 删除（需登录；读取见上方公开路由） --- */
+  if (p === '/api/attach' && method === 'POST') {
+    const name = safeFileName(body.name);
+    const mime = String(body.mime || '').toLowerCase().split(';')[0].trim();
+    const raw = String(body.data || '');
+    const m = /^data:[^,]*,([A-Za-z0-9+/=\s]+)$/.exec(raw) || /^([A-Za-z0-9+/=\s]+)$/.exec(raw);
+    if (!m) return bad(res, '附件数据格式不正确');
+    const buf = Buffer.from(m[1].replace(/\s+/g, ''), 'base64');
+    if (!buf.length) return bad(res, '附件内容为空');
+    if (buf.length > ATTACH_MAX) {
+      return bad(res, '单个附件不能超过 ' + Math.round(ATTACH_MAX / 1024 / 1024) + 'MB');
+    }
+    /* 图片按文件头纠正类型与扩展名，防止把任意内容伪装成图片/PDF 内联执行 */
+    const sniffed = sniffImage(buf);
+    let finalMime, ext;
+    if (sniffed) {
+      finalMime = PHOTO_MIME[sniffed];
+      ext = sniffed;
+    } else {
+      ext = attachExtOf(name, mime);
+      if (!ext) return bad(res, '不支持的文件类型（支持图片、PDF、Office、文本、压缩包）');
+      finalMime = ATTACH_MIME[ext].split(';')[0];
+    }
+    const id = randHex(12);
+    try {
+      fs.writeFileSync(path.join(UPLOAD_DIR, id + ext), buf);
+      db.prepare('INSERT INTO attachments (id, name, mime, size, owner, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, name, finalMime, buf.length, me.username, nowIso());
+    } catch (e) {
+      return bad(res, '附件保存失败：' + (e && e.message ? e.message : '磁盘错误'), 500);
+    }
+    return ok(res, {
+      id: id, name: name, mime: finalMime,
+      size: buf.length, url: '/api/attach/' + id
+    });
+  }
+
+  const mAt = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
+  if (mAt && method === 'DELETE') {
+    const row = db.prepare('SELECT id, name, mime, owner FROM attachments WHERE id = ?').get(mAt[1]);
+    if (!row) return ok(res, { removed: false });
+    if (!isAdmin && row.owner !== me.username) return bad(res, '无权删除该附件', 403);
+    try {
+      fs.unlinkSync(path.join(UPLOAD_DIR, row.id + (attachExtOf(row.name, row.mime) || '')));
+    } catch (e) {}
+    db.prepare('DELETE FROM attachments WHERE id = ?').run(row.id);
+    return ok(res, { removed: true });
   }
 
   /* --- 台账读写：scope = 用户名；超管可读写任何人 --- */
@@ -483,6 +613,12 @@ async function handleApi(req, res, url) {
       }
       db.exec('BEGIN IMMEDIATE');
       try {
+        /* 一并清理该账号的附件文件与记录，避免磁盘残留 */
+        const atts = db.prepare('SELECT id, name, mime FROM attachments WHERE owner = ?').all(target);
+        atts.forEach(function (a) {
+          try { fs.unlinkSync(path.join(UPLOAD_DIR, a.id + (attachExtOf(a.name, a.mime) || ''))); } catch (e) {}
+        });
+        db.prepare('DELETE FROM attachments WHERE owner = ?').run(target);
         db.prepare('DELETE FROM sessions WHERE username = ?').run(target);
         db.prepare('DELETE FROM ledgers WHERE username = ?').run(target);
         db.prepare('DELETE FROM users WHERE username = ?').run(target);

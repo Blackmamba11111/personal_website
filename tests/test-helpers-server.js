@@ -43,7 +43,8 @@ function installApiStub(window, opts) {
   try { reg = JSON.parse(ls.getItem(H.USERS_KEY)); } catch (e) {}
   const srv = {
     users: (reg && reg.users) ? reg.users.slice() : [],
-    ledgers: {}
+    ledgers: {},
+    attachments: {}          /* id -> {id,name,mime,size,data(base64),owner} */
   };
   for (let i = 0; i < ls.length; i++) {
     const k = ls.key(i);
@@ -87,13 +88,13 @@ function installApiStub(window, opts) {
       users: isAdmin ? srv.users.map(userView) : [userView(u)],
       ledgers: ledgers,
       admin: isAdmin,
-      token: TOKEN
+      token: TOKEN,
+      attachMax: 20 * 1024 * 1024
     };
   };
 
   function route(p, method, body) {
-    if (p === '/auth/login' && method === 'POST') {
-      const u = findUser(body.username);
+    if (p === '/auth/login' && method === 'POST') {      const u = findUser(body.username);
       if (!u) return bad('用户名或密码不正确。', 401);
       if (H.hashPwd(String(body.password || ''), u.salt) !== u.pwd) return bad('用户名或密码不正确。', 401);
       if ((u.status || 'active') !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
@@ -102,8 +103,37 @@ function installApiStub(window, opts) {
       return ok(bundle(u));
     }
 
+    /* 附件读取：公开（<img>/<iframe> 带不了 Authorization），id 不可猜 */
+    const ma = /^\/attach\/([A-Za-z0-9]+)$/.exec(p);
+    if (ma && (method === 'GET' || method === 'HEAD')) {
+      const rec = srv.attachments[ma[1]];
+      if (!rec) return jsonRes({ ok: false, error: '附件已删除' }, 404);
+      return new Response(Buffer.from(rec.data, 'base64'), {
+        status: 200,
+        headers: { 'content-type': rec.mime }
+      });
+    }
+
     const auth = currentUser();
     if (!auth) return bad('登录已失效，请重新登录。', 401);
+
+    if (p === '/attach' && method === 'POST') {
+      const data = String(body.data || '');
+      if (!data) return bad('附件内容为空');
+      const size = Buffer.from(data, 'base64').length;
+      const id = 'att' + (Object.keys(srv.attachments).length + 1) + Date.now().toString(36);
+      srv.attachments[id] = {
+        id: id, name: String(body.name || 'file'), mime: String(body.mime || 'application/octet-stream'),
+        size: size, data: data, owner: auth.username
+      };
+      return ok({ id: id, name: srv.attachments[id].name, mime: srv.attachments[id].mime, size: size, url: '/api/attach/' + id });
+    }
+    const md = /^\/attach\/([A-Za-z0-9]+)$/.exec(p);
+    if (md && method === 'DELETE') {
+      if (!srv.attachments[md[1]]) return ok({ removed: false });
+      delete srv.attachments[md[1]];
+      return ok({ removed: true });
+    }
 
     if (p === '/auth/me' && method === 'GET') return ok(bundle(auth));
     if (p === '/auth/logout') { ls.removeItem(TOKEN_KEY); me = null; return ok(null); }

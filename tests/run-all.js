@@ -13,7 +13,9 @@ const SUITES = [
   ['看板 · 地图图层', 'test-map.js'],
   ['看板 · 客户管理页', 'test-custs.js'],
   ['首页 · 结构与部署产物', 'test-home.js'],
-  ['首页 · 照片服务端接口', 'test-photo-api.js']
+  ['首页 · 照片服务端接口', 'test-photo-api.js'],
+  ['看板 · 巡检登记增强', 'test-visits.js'],
+  ['看板 · 附件服务端接口', 'test-attach.js']
 ];
 
 let failed = 0;
