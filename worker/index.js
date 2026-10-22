@@ -205,6 +205,32 @@ function contentDisposition(kind, name) {
   return kind + '; filename="' + ascii + '"; filename*=UTF-8\'\'' + encodeURIComponent(safeFileName(name));
 }
 
+/* ---------------- 首页照片存储 ---------------- */
+/* 与内网版同一套接口（/api/photo/current、POST/DELETE /api/photo）。
+   差异仅在存储介质：这里以 base64 存 D1（单行上限 2MB → 二进制上限 1.4MB，
+   前端压缩后约 100KB，余量充足）。读取公开；上传/删除仅接受同源请求。 */
+const PHOTO_MIME = { '.jpg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
+const PHOTO_MAX = 1400 * 1024;
+
+let photoTableReady = false;
+async function ensurePhotoTable(env) {
+  if (photoTableReady) return;
+  try {
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS home_photo (id INTEGER PRIMARY KEY CHECK (id = 1), ' +
+      'data TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, updated_at TEXT NOT NULL)'
+    ).run();
+    photoTableReady = true;
+  } catch (e) { /* DDL 受限时忽略，后续查询会给出明确错误 */ }
+}
+function sameOriginPhoto(request) {
+  const origin = request.headers.get('origin') || '';
+  if (!origin) return true;
+  let oh = '';
+  try { oh = new URL(origin).host; } catch (e) { oh = ''; }
+  return oh === new URL(request.url).host;
+}
+
 /* ---------------- 路由 ---------------- */
 async function route(request, env) {
   const url = new URL(request.url);
@@ -258,6 +284,61 @@ async function route(request, env) {
         'x-content-type-options': 'nosniff'
       }
     });
+  }
+
+  /* --- 首页照片：读取（公开，no-cache + ETag；无图 404） --- */
+  if (p === '/api/photo/current' && (method === 'GET' || method === 'HEAD')) {
+    await ensurePhotoTable(env);
+    const row = await env.DB.prepare('SELECT data, mime, size, updated_at FROM home_photo WHERE id = 1').first();
+    if (!row || !row.data) return bad('未设置照片', 404);
+    const bytes = b64ToBytes(String(row.data));
+    const stamp = Math.floor((Date.parse(row.updated_at) || Date.now()) / 1000).toString(16);
+    const etag = 'W/"photo-' + stamp + '-' + (row.size || bytes.length).toString(16) + '"';
+    const headers = {
+      'content-type': row.mime || 'image/jpeg',
+      'cache-control': 'no-cache',
+      'etag': etag,
+      'x-content-type-options': 'nosniff'
+    };
+    const inm = request.headers.get('if-none-match');
+    if (inm && inm.split(',').some(function (v) { return v.trim() === etag || v.trim() === '*'; })) {
+      return new Response(null, { status: 304, headers: headers });
+    }
+    return new Response(method === 'HEAD' ? null : bytes, { status: 200, headers: headers });
+  }
+
+  /* --- 首页照片：上传（同源；文件头校验；1.4MB 上限受 D1 单行限制） --- */
+  if (p === '/api/photo' && method === 'POST') {
+    if (!sameOriginPhoto(request)) return bad('仅允许本站页面上传照片', 403);
+    const m = /^data:image\/(?:png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\s]+)$/.exec(String(body.data || ''));
+    if (!m) return bad('不是有效的图片数据（需为 jpg / png / webp）');
+    let bytes;
+    try { bytes = b64ToBytes(m[1].replace(/\s+/g, '')); } catch (e) { return bad('不是有效的图片数据'); }
+    if (bytes.length < 1024) return bad('图片数据过小，已忽略');
+    if (bytes.length > PHOTO_MAX) {
+      return bad('当前站点图片上限 ' + Math.round(PHOTO_MAX / 1024) + 'KB（D1 存储限制），请压缩后再上传');
+    }
+    const ext = sniffImage(bytes);
+    if (!ext) return bad('文件内容不是有效的 jpg / png / webp 图片');
+    await ensurePhotoTable(env);
+    try {
+      await env.DB.prepare(
+        'INSERT INTO home_photo (id, data, mime, size, updated_at) VALUES (1, ?, ?, ?, ?) ' +
+        'ON CONFLICT(id) DO UPDATE SET data = excluded.data, mime = excluded.mime, ' +
+        'size = excluded.size, updated_at = excluded.updated_at'
+      ).bind(bytesToB64(bytes), PHOTO_MIME[ext], bytes.length, nowIso()).run();
+    } catch (e) {
+      return bad('照片保存失败：' + (e && e.message ? e.message : '数据库写入错误'), 500);
+    }
+    return ok({ url: '/api/photo/current', size: bytes.length, ext: ext, at: Date.now() });
+  }
+
+  /* --- 首页照片：移除（同源；删后前端回落内置默认图） --- */
+  if (p === '/api/photo' && method === 'DELETE') {
+    if (!sameOriginPhoto(request)) return bad('仅允许本站页面操作', 403);
+    await ensurePhotoTable(env);
+    const r = await env.DB.prepare('DELETE FROM home_photo WHERE id = 1').run();
+    return ok({ removed: (r.meta && r.meta.changes) ? true : false });
   }
 
   /* --- 以下均需登录 --- */

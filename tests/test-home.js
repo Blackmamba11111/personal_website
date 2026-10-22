@@ -282,6 +282,17 @@ async function main() {
     check('D1 schema 含 attachments 表（含 data 列）',
       /CREATE TABLE IF NOT EXISTS attachments/.test(schema) && /data\s+TEXT NOT NULL/.test(schema));
 
+    /* 首页照片：两个服务端实现必须都有接口，否则某一站点上传只能"本次会话可见" */
+    check('Worker 含照片读取路由 /api/photo/current', worker.indexOf("p === '/api/photo/current'") >= 0);
+    check('Worker 含照片上传路由 POST /api/photo', /p === '\/api\/photo' && method === 'POST'/.test(worker));
+    check('Worker 含照片删除路由 DELETE /api/photo', /p === '\/api\/photo' && method === 'DELETE'/.test(worker));
+    check('Worker 照片走 D1 home_photo 表', /CREATE TABLE IF NOT EXISTS home_photo/.test(worker));
+    check('Worker 照片限额受 D1 行上限约束（≤1.4MB）', /PHOTO_MAX = 1400 \* 1024/.test(worker));
+    check('D1 schema 含 home_photo 表（单行约束）',
+      /CREATE TABLE IF NOT EXISTS home_photo/.test(schema) && /CHECK \(id = 1\)/.test(schema));
+    check('内网服务端与 Worker 同款照片接口', /p === '\/api\/photo' && method === 'POST'/.test(
+      fs.readFileSync(path.join(DIR, 'deploy/internal/server.js'), 'utf8')));
+
     const notFound = fs.readFileSync(path.join(DIR, '404.html'), 'utf8');
     check('404 页可回到首页与看板', notFound.indexOf('href="/"') >= 0 && notFound.indexOf('inspection-dashboard.html') >= 0);
     check('README 含 Cloudflare Pages 步骤', /Cloudflare Pages/.test(fs.readFileSync(path.join(DIR, 'README.md'), 'utf8')));

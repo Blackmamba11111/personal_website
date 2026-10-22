@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(owner);
 
+-- 首页照片：全站单行（id 恒为 1），base64 存 data（D1 单行上限 2MB → 图片上限 1.4MB）
+CREATE TABLE IF NOT EXISTS home_photo (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  data       TEXT NOT NULL,
+  mime       TEXT NOT NULL,
+  size       INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 -- 初始超级管理员：口令为既有默认值，标记必须首次登录后立即修改（must_change=1）
 -- 已存在则不覆盖，保证改密后重复执行不会回退
 INSERT OR IGNORE INTO users (username, name, role, status, note, salt, hash, must_change, created_at, last_login)
