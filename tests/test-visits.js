@@ -37,7 +37,18 @@ const store = () => JSON.parse(w.localStorage.getItem(dataKey('demo')));
   const qCount = () => parseInt((id('dKpiRow').children[1] || {}).textContent, 10) || 0;
   const base = qCount();
 
-  /* ---------- 2) 其他（未巡检）不计入次数 ---------- */
+  /* ---------- 2) 巡检人必填 ---------- */
+  const beforeReq = store().visits.length;
+  id('dVisitBy').value = '';
+  id('dVisitNote').value = '';
+  click(id('btnAddVisit'));
+  await tick(40);
+  check('巡检人为空时拒绝保存', store().visits.length === beforeReq,
+    'before=' + beforeReq + ' after=' + store().visits.length);
+  check('提示需填写巡检人', id('toast').textContent.indexOf('巡检人') >= 0, id('toast').textContent);
+
+  /* ---------- 3) 其他（未巡检）不计入次数 ---------- */
+  id('dVisitBy').value = '潘超';
   id('dVisitResult').value = 'other';
   id('dVisitNote').value = '客户临时要求延期，本次未开展';
   click(id('btnAddVisit'));
@@ -52,7 +63,8 @@ const store = () => JSON.parse(w.localStorage.getItem(dataKey('demo')));
     d.querySelector('#dTimeline .vtag.res-other').textContent.indexOf('其他（未巡检）') >= 0);
   check('时间线显示巡检方式标签', !!d.querySelector('#dTimeline .vtag.mode'));
 
-  /* ---------- 3) 正常 + 远程 计入次数 ---------- */
+  /* ---------- 4) 正常 + 远程 计入次数 ---------- */
+  id('dVisitBy').value = '潘超';
   id('dVisitMode').value = 'remote';
   id('dVisitResult').value = 'ok';
   id('dVisitNote').value = '远程核查备份任务与告警队列';
@@ -62,7 +74,8 @@ const store = () => JSON.parse(w.localStorage.getItem(dataKey('demo')));
   check('时间线显示「远程」', Array.from(d.querySelectorAll('#dTimeline .vtag.mode')).some(e => e.textContent === '远程'));
   check('时间线显示「正常」', Array.from(d.querySelectorAll('#dTimeline .vtag.res-ok')).some(e => e.textContent === '正常'));
 
-  /* ---------- 4) 附件：入队 → 上传 → 落库 → 预览 ---------- */
+  /* ---------- 5) 附件：入队 → 上传 → 落库 → 预览 ---------- */
+  id('dVisitBy').value = '潘超';
   const file = new w.File(['机房温湿度：22℃ / 45%\n'], '现场记录.txt', { type: 'text/plain' });
   w.__visitAtts.add([file]);
   await tick(60);
@@ -92,7 +105,7 @@ const store = () => JSON.parse(w.localStorage.getItem(dataKey('demo')));
   click(d.querySelector('#maskViewer [data-close]'));
   check('预览弹窗可关闭', !id('maskViewer').classList.contains('on'));
 
-  /* ---------- 5) 删除记录时清理附件 ---------- */
+  /* ---------- 6) 删除记录时清理附件 ---------- */
   const total = store().visits.length;
   const attVisitIdx = d.querySelectorAll('#dTimeline .tl-item').length;
   /* 找到带附件那条记录对应的删除按钮：时间线按日期倒序，最后一条是刚保存的 */
@@ -106,7 +119,7 @@ const store = () => JSON.parse(w.localStorage.getItem(dataKey('demo')));
     Object.keys(w.__SRV__.attachments).length + ' 个残留');
   check('时间线条目数减少', d.querySelectorAll('#dTimeline .tl-item').length === attVisitIdx - 1);
 
-  /* ---------- 6) 旧数据兼容 ---------- */
+  /* ---------- 7) 旧数据兼容 ---------- */
   const legacy = store().visits.filter(v => !v.mode && !v.result);
   check('历史记录缺少 mode/result 时不报错', true, legacy.length + ' 条旧记录');
   check('运行期无 JS 错误', !dom.__errors || dom.__errors.length === 0,

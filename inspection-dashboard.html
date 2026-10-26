@@ -539,9 +539,6 @@
             <button type="button" class="pwd-eye" data-eye="loginPwd" aria-pressed="false" aria-label="显示密码" title="显示密码"><svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg><svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/><path d="m4 20 16-16"/></svg></button>
           </div>
         </div>
-        <div class="auth-row">
-          <label class="auth-rem"><input type="checkbox" id="loginRemember" checked>记住登录状态</label>
-        </div>
         <button type="submit" class="auth-btn" id="btnLogin">登 录</button>
       </form>
     </div>
@@ -782,8 +779,14 @@
       <div class="field">
         <label>登记本次巡检</label>
         <div class="grid2">
-          <input type="date" id="dVisitDate">
-          <input type="text" id="dVisitBy" placeholder="巡检人（选填）">
+          <div class="field">
+            <label>巡检人 <span class="req">*</span></label>
+            <input type="text" id="dVisitBy" placeholder="巡检人（必填）">
+          </div>
+          <div class="field">
+            <label>巡检日期</label>
+            <input type="date" id="dVisitDate">
+          </div>
         </div>
         <div class="grid2" style="margin-top:8px;">
           <select id="dVisitMode" aria-label="巡检方式">
@@ -888,11 +891,12 @@
       <div class="field">
         <label>方式二：CSV 批量导入客户</label>
         <div class="hint" style="margin-bottom:6px;">
-          每行一个客户，列顺序：客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率(quarter/y4/y12),联系人,备注<br>
+          每行一个客户，列顺序：客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率(quarter/y4/y12),联系人,联系电话,备注<br>
+          也可直接粘贴带表头的内容（含本页导出的巡检报表），系统按列名自动识别，联系人与联系电话均可导入<br>
           频率取值为 quarter（每季度1次）、y4（一年4次，每季度1次）、y12（一年12次，<b>按月每月1次</b>，季度3次）
         </div>
         <textarea id="csvBox" style="min-height:100px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;"
-          placeholder="衡水银行饶阳支行,河北,河北,衡水,人民路 12 号,115.720000,38.230000,y4,张工,需提前报备"></textarea>
+          placeholder="客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率,联系人,联系电话,备注&#10;衡水银行饶阳支行,河北,河北,衡水,人民路 12 号,115.720000,38.230000,y4,张工,13800000000,需提前报备"></textarea>
       </div>
       <div style="display:flex;gap:9px;flex-wrap:wrap;">
         <button type="button" class="btn sm" id="btnExportJson">导出全部数据 (JSON)</button>
@@ -1440,7 +1444,7 @@
 
   /* ---------------- 存储 ----------------
      权威数据在服务端（Cloudflare D1），本地只保留镜像缓存：
-       inspection_board_token_v1          服务端会话令牌（会话/记住登录）
+       inspection_board_token_v1          服务端会话令牌（仅 sessionStorage，关浏览器即失效）
        inspection_board_users_v1          账号注册表镜像（version:2 表示来自服务端）
        inspection_board_v1::<用户名>       各账号台账的本地镜像
        inspection_board_pref_v1::<范围>    界面偏好（纯本地，不上传）
@@ -2939,6 +2943,8 @@
     document.getElementById('btnAddVisit').onclick = function () {
       var date = document.getElementById('dVisitDate').value;
       if (!date) { toast('请选择巡检日期'); return; }
+      var by = document.getElementById('dVisitBy').value.trim();
+      if (!by) { toast('请填写巡检人'); document.getElementById('dVisitBy').focus(); return; }
       var btn = this;
       if (btn.disabled) return;
       var commit = function (atts) {
@@ -3270,7 +3276,7 @@
   }
   function exportReportCsv() {
     var qk = state.quarter;
-    var head = ['客户名称','所属区域','所在省份','城市','详细地址','经度','纬度','频率要求','考核口径','季度目标(次)','本季度已巡检(次)','本季度达标月份','本季度状态','本年度累计(次)','最近巡检日期','最近巡检备注','客户备注'];
+    var head = ['客户名称','所属区域','所在省份','城市','详细地址','经度','纬度','频率要求','考核口径','季度目标(次)','本季度已巡检(次)','本季度达标月份','本季度状态','本年度累计(次)','最近巡检日期','最近巡检备注','联系人','联系电话','客户备注'];
     var p = quarterParts(qk);
     var rows = [head.join(',')];
     DB.customers.forEach(function (c) {
@@ -3286,7 +3292,7 @@
         s.freq.label, s.freq.perMonth ? '按月（每月1次）' : '按季度',
         s.target, s.count, lackTxt,
         s.status === 'ok' ? '已巡检' : (s.status === 'part' ? '部分完成' : '未巡检'),
-        yCount, last ? last.date : '', last ? (last.note || '') : '', c.note || ''
+        yCount, last ? last.date : '', last ? (last.note || '') : '', c.contact || '', c.phone || '', c.note || ''
       ].map(csvCell).join(','));
     });
     download('客户巡检报表_' + qk + '.csv', rows.join('\r\n'), 'text/csv');
@@ -3356,22 +3362,50 @@
       } catch (e) { toast('JSON 解析失败：' + e.message); return; }
     }
     if (csv) {
+      /* 两种格式都支持：
+         ① 模板列序（无表头）：客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率,联系人,备注
+         ② 带表头（含本页导出的巡检报表）：按列名自动识别，联系人/联系电话/备注等均可导入 */
+      var CSV_ALIAS = {
+        '客户名称': 'name', '名称': 'name',
+        '所属区域': 'region', '区域': 'region',
+        '所在省份': 'province', '省份': 'province',
+        '城市': 'city',
+        '详细地址': 'addr', '地址': 'addr',
+        '经度': 'lng', '纬度': 'lat',
+        '频率': 'freq', '频率要求': 'freq',
+        '联系人': 'contact',
+        '联系电话': 'phone', '电话': 'phone',
+        '备注': 'note', '客户备注': 'note'
+      };
+      var colMap = null;
+      function cellOf(cells, key, pos) {
+        return colMap ? (cells[colMap[key]] || '') : (cells[pos] || '');
+      }
       csv.split(/\r?\n/).forEach(function (line) {
         if (!line.trim()) return;
         var cells = parseCsvLine(line);
-        if (!cells[0] || /客户名称/.test(cells[0])) return;
-        var rName = (cells[1] || '').trim();
-        var prov = (cells[2] || '').trim();
+        if (!colMap && /客户名称/.test(cells[0] || '')) {
+          colMap = {};
+          cells.forEach(function (h, i) {
+            var k = CSV_ALIAS[String(h).trim()];
+            if (k && colMap[k] == null) colMap[k] = i;
+          });
+          if (colMap.name == null) colMap = null; /* 表头无法识别 → 按模板列序处理 */
+          return;
+        }
+        var rName = cellOf(cells, 'region', 1).trim();
+        var prov = cellOf(cells, 'province', 2).trim();
         if (!PROV_MAP[prov]) prov = rName && PROV_MAP[rName] ? rName : '河北';
-        var freq = (cells[7] || 'quarter').trim();
+        var freq = cellOf(cells, 'freq', 7).trim() || 'quarter';
         if (!FREQ[freq]) freq = 'quarter';
         DB.customers.push({
-          id: uid('c'), name: cells[0].trim(),
+          id: uid('c'), name: cellOf(cells, 'name', 0).trim(),
           regionId: findOrCreateRegion(rName || prov, prov),
           province: prov,
-          city: (cells[3] || '').trim(), addr: (cells[4] || '').trim(),
-          lng: parseFloat(cells[5]), lat: parseFloat(cells[6]),
-          freq: freq, contact: (cells[8] || '').trim(), phone: '', note: (cells[9] || '').trim(),
+          city: cellOf(cells, 'city', 3).trim(), addr: cellOf(cells, 'addr', 4).trim(),
+          lng: parseFloat(cellOf(cells, 'lng', 5)), lat: parseFloat(cellOf(cells, 'lat', 6)),
+          freq: freq, contact: cellOf(cells, 'contact', 8).trim(),
+          phone: cellOf(cells, 'phone', -1).trim(), note: cellOf(cells, 'note', 9).trim(),
           hasCoords: true
         });
         added++;
@@ -3597,8 +3631,8 @@
     document.getElementById('btnExportCsv').onclick = exportReportCsv;
     document.getElementById('btnTemplate').onclick = function () {
       download('客户导入模板.csv',
-        ['客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率(quarter/y4/y12),联系人,备注',
-         '示例银行XX支行,河北,河北,衡水,人民东路 1 号,115.670186,37.738760,y4,张工,需提前报备'].join('\r\n'),
+        ['客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率(quarter/y4/y12),联系人,联系电话,备注',
+         '示例银行XX支行,河北,河北,衡水,人民东路 1 号,115.670186,37.738760,y4,张工,13800000000,需提前报备'].join('\r\n'),
         'text/csv');
       toast('模板已下载');
     };
@@ -3797,15 +3831,14 @@
        · 本地 localStorage 降级为「镜像缓存」：用于秒开渲染与断网时的临时兜底
        · 写入策略：先写本地镜像（界面立即响应）→ 防抖推送服务端；失败保留 dirty 标记，联网后重试
      ======================================================================= */
+  /* 会话令牌只存 sessionStorage：关闭浏览器/标签页后必须重新登录，
+     不再提供「记住登录」——任何客户端打开看板都从登录界面开始（2026-10-26 需求） */
   function readToken() {
-    try { return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || ''; }
+    try { return sessionStorage.getItem(TOKEN_KEY) || ''; }
     catch (e) { return ''; }
   }
-  function writeToken(t, remember) {
-    try {
-      if (remember) { localStorage.setItem(TOKEN_KEY, t); sessionStorage.removeItem(TOKEN_KEY); }
-      else { sessionStorage.setItem(TOKEN_KEY, t); localStorage.removeItem(TOKEN_KEY); }
-    } catch (e) {}
+  function writeToken(t) {
+    try { sessionStorage.setItem(TOKEN_KEY, t); localStorage.removeItem(TOKEN_KEY); } catch (e) {}
   }
   function clearToken() {
     try { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
@@ -4163,7 +4196,6 @@
     authError('');
     var uname = document.getElementById('loginUser').value.trim();
     var pwd   = document.getElementById('loginPwd').value;
-    var remember = document.getElementById('loginRemember').checked;
     if (!uname || !pwd) { authError('请输入用户名与密码。'); return; }
     var btn = document.getElementById('btnLogin');
     if (btn) { btn.disabled = true; btn.textContent = '登录中…'; }
@@ -4175,7 +4207,7 @@
         return;
       }
       var d = r.data || {};
-      writeToken(d.token, remember);
+      writeToken(d.token);
       applyServerUsers(d.users);
       applyServerLedgers(d.ledgers);
       var mig = migrateLocalToServer(d);

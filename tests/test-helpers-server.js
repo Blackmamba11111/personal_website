@@ -59,7 +59,11 @@ function installApiStub(window, opts) {
   let me = (opts.sessionUser === null) ? null : (opts.sessionUser || 'demo');
   /* 旧的「会话」键已废弃（会话改由服务端签发的 Token 承载），清掉以免旧用例断言被残留值干扰 */
   try { ls.removeItem(H.SESSION_KEY); } catch (e) {}
-  if (me) ls.setItem(TOKEN_KEY, TOKEN);
+  /* 2026-10-26 起令牌只存 sessionStorage（不再「记住登录」） */
+  if (me) {
+    window.sessionStorage.setItem(TOKEN_KEY, TOKEN);
+    ls.removeItem(TOKEN_KEY);
+  }
 
   const findUser = (name) => {
     const n = String(name == null ? '' : name).trim().toLowerCase();
@@ -70,7 +74,9 @@ function installApiStub(window, opts) {
   };
   const currentUser = () => {
     if (!me) return null;
-    if (ls.getItem(TOKEN_KEY) !== TOKEN) return null;
+    let tk = '';
+    try { tk = ls.getItem(TOKEN_KEY) || window.sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
+    if (tk !== TOKEN) return null;
     const u = findUser(me);
     if (!u || (u.status || 'active') !== 'active') return null;
     return u;
@@ -99,7 +105,7 @@ function installApiStub(window, opts) {
       if (H.hashPwd(String(body.password || ''), u.salt) !== u.pwd) return bad('用户名或密码不正确。', 401);
       if ((u.status || 'active') !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
       me = u.username;
-      ls.setItem(TOKEN_KEY, TOKEN);
+      window.sessionStorage.setItem(TOKEN_KEY, TOKEN);
       return ok(bundle(u));
     }
 
@@ -136,7 +142,7 @@ function installApiStub(window, opts) {
     }
 
     if (p === '/auth/me' && method === 'GET') return ok(bundle(auth));
-    if (p === '/auth/logout') { ls.removeItem(TOKEN_KEY); me = null; return ok(null); }
+    if (p === '/auth/logout') { ls.removeItem(TOKEN_KEY); window.sessionStorage.removeItem(TOKEN_KEY); me = null; return ok(null); }
 
     if (p === '/auth/password' && method === 'POST') {
       if (H.hashPwd(String(body.oldPassword || ''), auth.salt) !== auth.pwd) return bad('当前密码不正确');

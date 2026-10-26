@@ -61,13 +61,14 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
 
     id('loginUser').value = 'demo';
     id('loginPwd').value = 'demo888';
-    id('loginRemember').checked = true;
+    /* 2026-10-26：登录页已移除「记住登录」，令牌固定写入 sessionStorage */
     submit(w, id('loginForm'));
     await tick(60);
     check('正确密码登录成功', !id('authView').classList.contains('on'));
     check('登录后加载到自己的台账（14 家示例客户）', id('stTotal').textContent === '14', id('stTotal').textContent);
-    check('勾选记住登录 → 持有服务端签发的会话令牌',
-      !!w.localStorage.getItem('inspection_board_token_v1'));
+    check('登录后持有服务端签发的会话令牌（仅 sessionStorage，不落 localStorage）',
+      !!w.sessionStorage.getItem('inspection_board_token_v1')
+      && !w.localStorage.getItem('inspection_board_token_v1'));
     check('普通用户账号标识正确', id('userRoleText').textContent === '普通用户', id('userRoleText').textContent);
     w.close();
   }

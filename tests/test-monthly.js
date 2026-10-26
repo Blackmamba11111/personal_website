@@ -43,8 +43,8 @@ const dom = new JSDOM(html, {
   beforeParse(window) {
     /* V2：以普通用户 demo 身份登录，台账与偏好都按账号隔离 */
     window.localStorage.setItem('inspection_board_users_v1', JSON.stringify(USERS));
-    /* 台账已迁移到服务端：用令牌替代旧会话键，并注入内存版服务端 */
-    window.localStorage.setItem('inspection_board_token_v1', 'test-token');
+    /* 台账已迁移到服务端：令牌只存 sessionStorage（2026-10-26 起不再「记住登录」），并注入内存版服务端 */
+    window.sessionStorage.setItem('inspection_board_token_v1', 'test-token');
     window.localStorage.setItem(STORE + '::demo', JSON.stringify(SEED));
     window.localStorage.setItem(PREF + '::demo', JSON.stringify({ autoRemind: false, mutedQuarters: [] }));
     require('./test-helpers-server').installApiStub(window, { sessionUser: 'demo' });
@@ -101,6 +101,7 @@ setTimeout(() => {
 
   // 通过界面登记补做：验证「补做后状态自动转 ok」
   click(card('c3'));
+  id('dVisitBy').value = '潘超';
   id('dVisitDate').value = '2026-09-03';
   click(id('btnAddVisit'));
   check('C3 补做 9 月后 → 状态 ok', card('c3').classList.contains('s-ok'), card('c3').className);

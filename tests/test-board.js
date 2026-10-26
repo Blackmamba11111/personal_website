@@ -154,6 +154,7 @@ setTimeout(() => {
   check('客户详情打开', id('maskDetail').classList.contains('on'));
   check('详情副标题含区域与省份', id('dSub').textContent.indexOf('·') > 0, id('dSub').textContent);
   const before = store().visits.length;
+  id('dVisitBy').value = '潘超';
   id('dVisitNote').value = '测试备注';
   click(id('btnAddVisit'));
   check('巡检记录写入', store().visits.length === before + 1);
@@ -188,6 +189,25 @@ setTimeout(() => {
   const imp = store().customers.filter(c => c.name === '测试支行B')[0];
   check('导入客户区域/省份正确', !!imp && imp.province === '河北' && !!imp.regionId,
     imp ? imp.province + '/' + imp.regionId : '未找到');
+
+  // CSV 导入（带表头，含联系人/联系电话 —— 2026-10-26）
+  id('csvBox').value = [
+    '客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率,联系人,联系电话,备注',
+    '测试支行C,河北,河北,衡水,人民路 8 号,115.700000,37.750000,quarter,王经理,13800000000,带表头导入'
+  ].join('\n');
+  fire(id('csvBox'), 'input');
+  click(id('btnDoImport'));
+  const impC = store().customers.filter(c => c.name === '测试支行C')[0];
+  check('带表头 CSV 导入成功', !!impC, impC ? '' : '未找到');
+  check('导入含联系人', !!impC && impC.contact === '王经理', impC ? impC.contact : '');
+  check('导入含联系电话', !!impC && impC.phone === '13800000000', impC ? impC.phone : '');
+  check('导入含备注', !!impC && impC.note === '带表头导入', impC ? impC.note : '');
+
+  // 巡检报表导出含联系人/联系电话列（可再导入）
+  const dashSrc = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'inspection-dashboard.html'), 'utf8');
+  check('巡检报表导出含联系人/联系电话列',
+    /本年度累计\(次\)','最近巡检日期','最近巡检备注','联系人','联系电话','客户备注'/.test(dashSrc));
 
   // ============ 恢复示例数据 ============
   click(id('btnImport'));
