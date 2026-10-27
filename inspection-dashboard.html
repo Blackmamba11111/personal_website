@@ -1132,7 +1132,13 @@
         <select id="uSeed">
           <option value="empty">空台账（推荐）— 不预置任何客户</option>
           <option value="demo">复制示例数据 — 预置 14 家示例客户与巡检记录</option>
+          <option value="copy">引用现有用户 — 复制其区域/客户/巡检记录</option>
         </select>
+        <div id="uSeedCopyWrap" style="display:none;margin-top:8px;">
+          <label for="uSeedUser" style="font-size:12px;">来源用户</label>
+          <select id="uSeedUser" style="width:100%;"></select>
+          <div class="hint">复制该用户当前的全部数据（不影响原用户），复制后两份数据各自独立维护。</div>
+        </div>
         <div class="hint" id="uSeedHint">仅在新建用户时生效。</div>
       </div>
     </div>
@@ -4918,9 +4924,46 @@
 
     document.getElementById('uSeed').parentNode.style.display = u ? 'none' : 'block';
     document.getElementById('uSeedHint').style.display = u ? 'none' : 'block';
+    /* 「引用现有用户」下拉：列出全部账号并标注数据量，默认选数据最多的一个 */
+    if (!u) {
+      document.getElementById('uSeed').value = 'empty';
+      document.getElementById('uSeedCopyWrap').style.display = 'none';
+      fillSeedUserOptions(true);
+      /* 镜像可能滞后（例如刚给别的用户建完数据），回源服务端刷一次数据量标注 */
+      api('/ledger').then(function (r) {
+        if (!r.ok || !r.data || !r.data.ledgers) return;
+        applyServerLedgers(r.data.ledgers);
+        if (editingUserId) return;                    /* 已切到编辑态不再刷 */
+        if (!document.getElementById('maskUser').classList.contains('on')) return; /* 弹窗已关 */
+        fillSeedUserOptions(false);
+      });
+    }
     document.getElementById('btnSaveUser').textContent = u ? '保存修改' : '创建用户';
     syncUserModalFields();
     openModal('maskUser');
+  }
+
+  /* 「引用现有用户」来源下拉填充：reset=true 时默认选数据最多的用户，否则保留当前选择 */
+  function fillSeedUserOptions(reset) {
+    var sel = document.getElementById('uSeedUser');
+    var prev = reset ? '' : sel.value;
+    var cand = userList().map(function (x) {
+      var s = userDataCount(x.username);
+      return { id: x.id, name: x.name, n: s.customers, v: s.visits };
+    });
+    sel.innerHTML = cand.length
+      ? cand.map(function (c) {
+          return '<option value="' + esc(c.id) + '">' + esc(c.name) + '（' + esc(c.id) + ' · ' +
+            c.n + ' 家客户 / ' + c.v + ' 条巡检）</option>';
+        }).join('')
+      : '<option value="">（暂无其他用户）</option>';
+    if (prev && cand.some(function (c) { return c.id === prev; })) {
+      sel.value = prev;
+      return;
+    }
+    var best = null;
+    cand.forEach(function (c) { if (!best || c.n > best.n) best = c; });
+    if (best && best.n > 0) sel.value = best.id;
   }
 
   /* 用户增删改全部以服务端为准：成功后拉取最新名单刷新镜像与界面 */
@@ -4984,19 +5027,54 @@
       if (String(pwd).length < 6) { toast('密码至少 6 位'); return; }
     }
     var mode = document.getElementById('uSeed').value;
-    var payload = {
-      username: username, name: name, role: role, note: note, perm: perm,
-      data: mode === 'demo' ? seedData() : { regions: [], customers: [], visits: [] }
-    };
-    if (remote) payload.serverId = serverId; else payload.password = pwd;
-    api('/users', { method: 'POST', body: payload }).then(function (r) {
-      if (!r.ok) { toast(r.error || '创建失败'); return; }
-      closeModal('maskUser');
-      refreshUsersThen(true).then(function () {
-        toast(remote
-          ? '远程用户「' + name + '」已创建，登录口令由所选认证服务器校验'
-          : '用户「' + name + '」已创建，首次登录后需修改初始密码');
+    var initDataP;                            /* Promise<初始数据 | null>，null 表示已提示并中止 */
+    if (mode === 'demo') {
+      initDataP = Promise.resolve(seedData());
+    } else if (mode === 'copy') {
+      var srcName = document.getElementById('uSeedUser').value;
+      if (!srcName) { toast('请选择要引用数据的来源用户'); return; }
+      initDataP = ledgerOf(srcName).then(function (srcData) {
+        if (!srcData || (!srcData.customers.length && !srcData.visits.length && !srcData.regions.length)) {
+          toast('该用户暂无数据可引用，请换一个来源或选空台账'); return null;
+        }
+        return JSON.parse(JSON.stringify(srcData));
       });
+    } else {
+      initDataP = Promise.resolve({ regions: [], customers: [], visits: [] });
+    }
+    initDataP.then(function (initData) {
+      if (!initData) return;
+      var payload = {
+        username: username, name: name, role: role, note: note, perm: perm,
+        data: initData
+      };
+      if (remote) payload.serverId = serverId; else payload.password = pwd;
+      return api('/users', { method: 'POST', body: payload }).then(function (r) {
+        if (!r.ok) { toast(r.error || '创建失败'); return; }
+        closeModal('maskUser');
+        return refreshUsersThen(true).then(function () {
+          toast(remote
+            ? '远程用户「' + name + '」已创建，登录口令由所选认证服务器校验'
+            : '用户「' + name + '」已创建，首次登录后需修改初始密码');
+        });
+      });
+    });
+  }
+
+  /* 取某用户的完整台账：优先本地镜像，缺失时回源服务端（超管 bundle 含全部用户） */
+  function ledgerOf(username) {
+    var d = readUserData(username);
+    if (d) return Promise.resolve(d);
+    return api('/ledger').then(function (r) {
+      if (r.ok && r.data && r.data.ledgers && r.data.ledgers[username]) {
+        var o = r.data.ledgers[username];
+        return {
+          regions:   Array.isArray(o.regions)   ? o.regions   : [],
+          customers: Array.isArray(o.customers) ? o.customers : [],
+          visits:    Array.isArray(o.visits)    ? o.visits    : []
+        };
+      }
+      return null;
     });
   }
 
@@ -5148,6 +5226,10 @@
     /* 用户弹窗：账号类型 / 认证服务器切换 */
     document.getElementById('uSourceType').addEventListener('change', syncUserModalFields);
     document.getElementById('uServer').addEventListener('change', syncUserModalFields);
+    document.getElementById('uSeed').addEventListener('change', function () {
+      document.getElementById('uSeedCopyWrap').style.display =
+        this.value === 'copy' ? 'block' : 'none';
+    });
 
     /* 客户管理页 */
     document.getElementById('btnCusts').addEventListener('click', openCustsPage);

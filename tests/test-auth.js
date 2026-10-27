@@ -252,6 +252,44 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     const ls = w.__SRV__.ledgers['lisi'];
     check('选择空台账时新用户数据为空', !!ls && ls.customers.length === 0 && ls.regions.length === 0);
 
+    /* 引用现有用户数据：复制 zhangsan 的 14 家客户到新用户 */
+    click(w, id('btnNewUser'));
+    await tick(60);                           /* 等来源下拉的回源刷新完成 */
+    check('初始数据含「引用现有用户」选项', id('uSeed').textContent.indexOf('引用现有用户') >= 0);
+    check('默认隐藏来源用户下拉', id('uSeedCopyWrap').style.display === 'none');
+    id('uUsername').value = 'wangwu';
+    id('uName').value = '王五';
+    id('uPwd').value = 'wangw888';
+    id('uSeed').value = 'copy';
+    id('uSeed').dispatchEvent(new w.Event('change', { bubbles: true }));
+    check('选择引用后显示来源用户下拉', id('uSeedCopyWrap').style.display === 'block');
+    check('来源下拉已列出用户并带数据量', id('uSeedUser').textContent.indexOf('zhangsan') >= 0 &&
+      id('uSeedUser').textContent.indexOf('14 家客户') >= 0, id('uSeedUser').textContent.slice(0, 120));
+    id('uSeedUser').value = 'zhangsan';
+    click(w, id('btnSaveUser'));
+    await tick(60);
+    const ww = w.__SRV__.ledgers['wangwu'];
+    check('引用创建成功（用户数 = 5）', usersOf(w).length === 5, usersOf(w).length + '');
+    check('新用户数据 = 来源用户数据（14 家客户）', !!ww && ww.customers.length === 14,
+      ww ? ww.customers.length + ' 家' : '无台账');
+    check('来源用户数据不受影响', w.__SRV__.ledgers['zhangsan'].customers.length === 14);
+    check('引用创建后弹窗已关闭', !id('maskUser').classList.contains('on'));
+
+    /* 来源用户无数据时拒绝创建 */
+    click(w, id('btnNewUser'));
+    await tick(60);
+    id('uUsername').value = 'zhaoliu';
+    id('uName').value = '赵六';
+    id('uPwd').value = 'zhaol888';
+    id('uSeed').value = 'copy';
+    id('uSeed').dispatchEvent(new w.Event('change', { bubbles: true }));
+    id('uSeedUser').value = 'lisi';
+    click(w, id('btnSaveUser'));
+    await tick(60);
+    check('来源无数据被拒绝（用户数仍 5）', usersOf(w).length === 5, usersOf(w).length + '');
+    check('给出无数据提示', id('toast').textContent.indexOf('暂无数据可引用') >= 0, id('toast').textContent);
+    click(w, id('maskUser').querySelector('[data-close="maskUser"]'));
+
     /* 自我保护：不能删除自己 */
     const rows = [...d.querySelectorAll('#usersTableWrap tbody tr')];
     const adminRow = rows.filter(r => r.textContent.indexOf('admin') >= 0)[0];
@@ -264,7 +302,7 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     check('删除用户弹出确认框', id('maskConfirm').classList.contains('on'));
     click(w, id('cfOk'));
     await tick(40);
-    check('用户已删除', usersOf(w).length === 3 && !usersOf(w).some(u => u.username === 'zhangsan'),
+    check('用户已删除', usersOf(w).length === 4 && !usersOf(w).some(u => u.username === 'zhangsan'),
       usersOf(w).map(u => u.username).join(','));
     check('被删用户的台账已清除', !w.__SRV__.ledgers['zhangsan']
       && w.localStorage.getItem(dataKey('zhangsan')) === null);
