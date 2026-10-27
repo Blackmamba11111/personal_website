@@ -13,6 +13,10 @@ wrangler.jsonc
 # 服务端 Worker 脚本（由 Workers 运行时执行，不作为静态资源下发）
 worker/
 
+# 内部部署源码（server.js / Dockerfile / deploy.sh 等）
+# 此前漏配这一项，导致 /deploy/internal/server.js 在公网可被直接下载（含初始账号哈希与地图 Key）
+deploy/
+
 # 文档（不影响站点运行，README 在 GitHub 上即可查阅）
 README.md
 HANDOVER.md

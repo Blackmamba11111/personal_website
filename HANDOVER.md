@@ -84,6 +84,9 @@
 | C7 | 服务端会话 | 登录签发 Bearer 令牌（30 天），退出即删；改密踢掉其它设备 |
 | C8 | 强制改密 | 初始/被重置口令带 `must_change`，登录后弹不可关闭的改密框 |
 | C9 | 旧数据迁移 | 超管首次登录把本地旧账号与台账一次性迁入服务端（口令哈希沿用） |
+| C10 | 本地 / 远程用户 | 账号分「本地用户」与「远程用户」；远程用户的口令交给 RADIUS / TACACS+ / LDAP 校验，本站不存密码 |
+| C11 | 认证服务器管理 | 用户管理页内「认证服务器」页：增删改查 + 启用停用 + 真实「测试连接」（未保存的配置也能测） |
+| C12 | 读写 / 只读权限 | 每个账号可设 `perm=rw/ro`；只读账号界面拦截 + 服务端 403 双重守卫（与汇总视图的只读是两套语义） |
 
 ### D. 客户主数据管理（独立的「客户管理」页）
 
@@ -197,11 +200,12 @@
 
 ## 5. 数据模型
 
-### 5.1 D1 三张表（`worker/schema.sql`）
+### 5.1 D1 四张表（`worker/schema.sql`）
 
 | 表 | 字段 | 说明 |
 | --- | --- | --- |
-| `users` | username(PK), name, role(`admin`/`user`), status(`active`/`disabled`), note, salt, hash, must_change, created_at, last_login | 账号与口令哈希 |
+| `users` | username(PK), name, role(`admin`/`user`), status(`active`/`disabled`), note, salt, hash, must_change, created_at, last_login, source(`local`/`radius`/`tacacs`/`ldap`), perm(`rw`/`ro`), server_id | 账号、口令来源与数据权限；远程账号的 salt/hash 为空串 |
+| `auth_servers` | id(PK, `srv`+10 位 hex), name, type, host, port, enabled, cfg(JSON), created_at, updated_at | 远程认证服务器；`cfg.secret` 只写不回显 |
 | `ledgers` | username(PK), data(JSON TEXT), updated_at, updated_by | 一人一份台账，`data` 为整份 JSON |
 | `sessions` | token(PK), username, created_at, expires_at | Bearer 令牌，30 天 |
 | `attachments` | id(PK, 24 位随机 hex), name, mime, size, owner, created_at, ext(内网版), data(Cloudflare 版) | 巡检附件；Cloudflare 版把文件 base64 存 `data`（D1 单行上限 2MB → 单文件 1MB）；内网版只存元数据，文件落 `DATA_DIR/uploads/<id><ext>`。**`ext` 存的是按文件头嗅探出的真实扩展名，不能用文件名后缀推断**——前端会把图片统一重编码成 JPEG（文件名仍是 `.png`），只按名字找文件会 404 |
@@ -255,22 +259,58 @@
 
 | 方法 | 路径 | 权限 | 入参 | 出参 data |
 | --- | --- | --- | --- | --- |
-| POST | `/api/auth/login` | 公开 | `{username, password}` | `{user, users[], ledgers{}, admin, token}` |
+| POST | `/api/auth/login` | 公开 | `{username, password}` | `{user, users[], ledgers{}, admin, canWrite, attachMax, authServers[]}` |
 | GET | `/api/auth/me` | 登录 | — | 同上（不含 token） |
 | POST | `/api/auth/logout` | 登录 | — | `null`（删除当前令牌） |
-| POST | `/api/auth/password` | 登录 | `{oldPassword, newPassword}` | `null`（踢掉其它会话） |
+| POST | `/api/auth/password` | 登录 | `{oldPassword, newPassword}` | `null`（踢掉其它会话；远程账号拒绝） |
 | GET | `/api/ledger` | 登录 | — | 同 `/auth/me` 的快照 |
-| PUT | `/api/ledger` | 登录 | `{scope, data:{regions,customers,visits}}` | `{scope, updatedAt}` |
-| GET | `/api/users` | 超管 | — | `{users[]}` |
-| POST | `/api/users` | 超管 | `{username, name, role, password}` 或 `{salt, hash}`（迁移） | `{user}` |
-| PATCH | `/api/users/:username` | 超管 | `{name?, role?, status?, note?, password?}` | `{user}` |
+| PUT | `/api/ledger` | 登录（读写） | `{scope, data:{regions,customers,visits}}` | `{scope, updatedAt}`；只读账号 403 |
+| GET | `/api/users` | 超管 | — | `{users[]}`（含 `source/perm/serverId/serverName`） |
+| POST | `/api/users` | 超管 | `{username, name, role, perm, serverId?, password?, data?}` 或 `{salt, hash}`（迁移） | `{user}` |
+| PATCH | `/api/users/:username` | 超管 | `{name?, role?, status?, note?, perm?, serverId?, password?}` | `{user}` |
 | DELETE | `/api/users/:username` | 超管 | — | `null`（连带删台账与会话） |
+| GET | `/api/auth-servers` | 超管 | — | `{servers[]}`（`cfg.secret` 不回传，只给 `hasSecret`） |
+| POST | `/api/auth-servers` | 超管 | `{name, type, host, port, enabled, cfg}` | `{server}` |
+| PATCH | `/api/auth-servers/:id` | 超管 | 同上（`cfg.secret` 留空=不修改） | `{server}` |
+| DELETE | `/api/auth-servers/:id` | 超管 | — | `null`（仍有账号绑定时 400） |
+| POST | `/api/auth-servers/test` | 超管 | `{id?, type, host, port, cfg, username, password}` | `{ok, code, message}` |
 | GET/HEAD | `/api/photo/current` | 公开 | — | 二进制图片（`no-cache` + ETag；无图 404） |
 | POST | `/api/photo` | 公开（同源） | `{data:"data:image/(jpeg\|png\|webp);base64,…"}` | `{url, size, ext, at}` |
 | DELETE | `/api/photo` | 公开（同源） | — | `{removed:true\|false}` |
-| POST | `/api/attach` | 登录 | `{name, mime, data:base64}` | `{id, name, mime, size, url}` |
+| POST | `/api/attach` | 登录（读写） | `{name, mime, data:base64}` | `{id, name, mime, size, url}` |
 | GET/HEAD | `/api/attach/:id` | 公开（id 不可猜） | — | 二进制附件；图片/PDF/文本 `inline`，其余 `attachment` |
-| DELETE | `/api/attach/:id` | 登录（本人或超管） | — | `{removed:true\|false}` |
+| DELETE | `/api/attach/:id` | 登录（本人或超管，且读写） | — | `{removed:true\|false}` |
+
+### 6.1 本地用户 / 远程用户（2026-10-27 新增）
+
+`users.source` 决定口令在哪校验：
+
+- `local`：本站 `salt + 400 轮 SHA-256`；`POST /api/users` 必须带 `password`。
+- `radius` / `tacacs` / `ldap`：口令转发给 `auth_servers` 表里 `server_id` 指向的服务器，本站**不保存密码**（`salt`/`hash` 为空串），也不允许在本地重置密码（接口直接 400）。
+  `source` 由所选服务器的 `type` 决定，前端传的 `source` 不被信任。
+
+`users.perm` 决定数据权限：`rw` 读写 / `ro` 只读。只读账号可以登录、查看、导出，
+但 `PUT /api/ledger`、`POST /api/attach`、`DELETE /api/attach` 一律 403；超管恒为 `rw`。
+
+认证服务器配置（`auth_servers.cfg`，JSON）：
+
+| 字段 | 适用 | 说明 |
+| --- | --- | --- |
+| `secret` | RADIUS / TACACS+ | 共享密钥，只写不回显 |
+| `timeout` | 全部 | 秒，1–30，默认 5 |
+| `nasId` | RADIUS | 可选，写进 NAS-Identifier 属性 |
+| `plain` | TACACS+ | 1 = 发送未加密报文（少数老设备不收加密包） |
+| `bindPattern` | LDAP | 绑定 DN 模板，`{user}` 替换为登录名；留空则登录名直接当 DN |
+| `baseDn` / `userAttr` | LDAP | 没有模板时拼 `userAttr=用户,baseDn` |
+| `tls` / `verifyTls` | LDAP | LDAPS（默认端口 636）；`verifyTls=1` 才校验证书 |
+
+协议实现集中在 **`worker/auth-protocols.mjs`**（纯编解码，传输层由宿主注入）：
+RADIUS = UDP Access-Request/PAP（RFC 2865），TACACS+ = TCP AUTHEN/PAP + MD5 混淆（RFC 8907），
+LDAP = TCP simple bind（BER，RFC 4511）。**Cloudflare Workers 没有 UDP 出网能力，
+公网站点的 RADIUS 会返回 `unsupported`**；TACACS+ / LDAP 走 `cloudflare:sockets`，两端都可用。
+内部部署版把该文件放在 `server.js` 同级（`deploy.sh` 自动上传），仓库内则从 `worker/` 动态加载。
+
+
 
 照片三接口两套实现都有：首页无账号体系，故不要求登录，但校验同源 `Origin` 与文件头（jpg/png/webp）。
 存储介质不同——内部版落 `DATA_DIR/photo/hero.<ext>`（挂载卷，重建镜像不丢，上限 8MB）；
@@ -336,14 +376,24 @@ npm run test:board       # 单跑某一套
 
 | 套件 | 断言数 | 覆盖 |
 | --- | --- | --- |
-| `test-board.js` | 52 | 季度切换、达标判定、客户/巡检增删改、导出、城市候选 |
+| `test-board.js` | 57 | 季度切换、达标判定、客户/巡检增删改、导出、城市候选 |
 | `test-board-edge.js` | 9 | 空数据、极端频率、无坐标客户 |
 | `test-monthly.js` | 41 | 逐月覆盖、当月未到、同月多次只算一次 |
-| `test-auth.js` | 72 | 登录门禁、停用账号、角色边界、汇总只读、数据隔离 |
-| `test-map.js` | 23 | 带洞结构、标记数量、切换与登出时图层重建 |
+| `test-auth.js` | 81 | 登录门禁、停用账号、角色边界、汇总只读、数据隔离 |
+| `test-map.js` | 27 | 带洞结构、标记数量、切换与登出时图层重建 |
 | `test-custs.js` | 75 | 客户管理页字段（含「不含巡检数据」反证）、搜索、CRUD、层叠守卫 |
-| `test-home.js` | 81 | 首页结构/动效/降级、部署产物、省界拆分与版本号一致性 |
-| **合计** | **353** | 约 15 秒跑完 |
+| `test-home.js` | 95 | 首页结构/动效/降级、部署产物、省界拆分与版本号一致性 |
+| `test-photo-api.js` | 13 | 照片接口（两版等价） |
+| `test-visits.js` | 39 | 巡检方式/结果/附件/巡检人必填 |
+| `test-attach.js` | 30 | 附件上传下载、扩展名持久化 |
+| `test-remote-auth.js` | 53 | 本地/远程用户界面、只读拦截、认证服务器增删改测 |
+| `test-protocols.mjs` | 22 | RADIUS/TACACS+/LDAP 真实报文（本地起假服务器，Node 直跑） |
+| `test-worker-api.mjs` | 29 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支 |
+| **合计** | **571** | 约 20 秒跑完 |
+
+> `test-protocols.mjs` / `test-worker-api.mjs` 是 `.mjs`（ESM），因为它们直接 import
+> `worker/auth-protocols.mjs` 与 `worker/index.js`。`test-worker-api.mjs` 用 Node 内置
+> `node:sqlite` 模拟 D1，能抓到「Worker 版 SQL 写错、上线才炸」这类问题。
 
 测试实现要点：
 - JSDOM `runScripts: 'dangerously'` 直接执行页面内联脚本，**不联网**；`tests/test-helpers-server.js` 注入内存版 `/api/*`（与 Worker 同算法、同权限判定）。

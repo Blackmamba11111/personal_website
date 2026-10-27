@@ -9,7 +9,27 @@ CREATE TABLE IF NOT EXISTS users (
   hash        TEXT NOT NULL,
   must_change INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL,
-  last_login  TEXT NOT NULL DEFAULT ''
+  last_login  TEXT NOT NULL DEFAULT '',
+  -- 账号来源：local = 本地口令；radius/tacacs/ldap = 由对应认证服务器校验
+  source      TEXT NOT NULL DEFAULT 'local',
+  -- 数据权限：rw = 读写；ro = 只读
+  perm        TEXT NOT NULL DEFAULT 'rw',
+  -- 远程账号绑定的认证服务器 id（auth_servers.id），本地账号为空
+  server_id   TEXT NOT NULL DEFAULT ''
+);
+
+-- 远程认证服务器（RADIUS / TACACS+ / LDAP）
+-- cfg 为 JSON：secret / timeout / nasId / plain / bindPattern / baseDn / userAttr / tls / verifyTls
+CREATE TABLE IF NOT EXISTS auth_servers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  type       TEXT NOT NULL,
+  host       TEXT NOT NULL,
+  port       INTEGER NOT NULL DEFAULT 0,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  cfg        TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS ledgers (
   username   TEXT PRIMARY KEY,

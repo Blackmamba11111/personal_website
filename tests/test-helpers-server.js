@@ -31,7 +31,12 @@ function userView(u) {
     note: u.note || '',
     mustChange: !!u.mustChange,
     createdAt: u.createdAt || '',
-    lastLogin: u.lastLogin || ''
+    lastLogin: u.lastLogin || '',
+    source: u.source || 'local',
+    perm: u.perm === 'ro' ? 'ro' : 'rw',
+    serverId: u.serverId || '',
+    serverName: u.serverName || '',
+    serverType: u.serverType || ''
   };
 }
 
@@ -44,7 +49,8 @@ function installApiStub(window, opts) {
   const srv = {
     users: (reg && reg.users) ? reg.users.slice() : [],
     ledgers: {},
-    attachments: {}          /* id -> {id,name,mime,size,data(base64),owner} */
+    attachments: {},         /* id -> {id,name,mime,size,data(base64),owner} */
+    servers: (opts.servers || []).slice()   /* 认证服务器（远程用户用） */
   };
   for (let i = 0; i < ls.length; i++) {
     const k = ls.key(i);
@@ -81,6 +87,12 @@ function installApiStub(window, opts) {
     if (!u || (u.status || 'active') !== 'active') return null;
     return u;
   };
+  const viewOf = (u) => {
+    const v = userView(u);
+    const s = srv.servers.filter(x => x.id === (u.serverId || ''))[0];
+    if (s) { v.serverName = s.name; v.serverType = s.type; }
+    return v;
+  };
   const bundle = (u) => {
     const isAdmin = u.role === 'admin';
     const ledgers = {};
@@ -89,20 +101,50 @@ function installApiStub(window, opts) {
     } else if (srv.ledgers[u.username]) {
       ledgers[u.username] = srv.ledgers[u.username];
     }
+    const view = viewOf(u);
     return {
-      user: userView(u),
-      users: isAdmin ? srv.users.map(userView) : [userView(u)],
+      user: view,
+      users: isAdmin ? srv.users.map(viewOf) : [view],
       ledgers: ledgers,
       admin: isAdmin,
+      canWrite: isAdmin || (u.perm !== 'ro'),
       token: TOKEN,
-      attachMax: 20 * 1024 * 1024
+      attachMax: 20 * 1024 * 1024,
+      authServers: isAdmin ? srv.servers.map(serverView) : []
     };
   };
+
+  /* 认证服务器脱敏视图：密钥只给 hasSecret 标记 */
+  function serverView(s) {
+    const cfg = s.cfg || {};
+    return {
+      id: s.id, name: s.name, type: s.type, host: s.host, port: s.port,
+      enabled: s.enabled !== false,
+      createdAt: '2026-01-01', updatedAt: '',
+      userCount: srv.users.filter(u => u.serverId === s.id).length,
+      hasSecret: !!cfg.secret,
+      cfg: {
+        timeout: cfg.timeout || 5, nasId: cfg.nasId || '', plain: cfg.plain || 0,
+        bindPattern: cfg.bindPattern || '', baseDn: cfg.baseDn || '', userAttr: cfg.userAttr || '',
+        tls: cfg.tls || 0, verifyTls: cfg.verifyTls || 0
+      }
+    };
+  }
+  /* 桩里的「远程认证」：只要口令等于 remote-ok 就算通过，否则拒绝。
+     桩不跑真实网络协议（那部分见 tests/test-protocols.mjs 与 test-worker-api.mjs）。 */
+  const REMOTE_PASSWORD = opts.remotePassword || 'remote-ok';
 
   function route(p, method, body) {
     if (p === '/auth/login' && method === 'POST') {      const u = findUser(body.username);
       if (!u) return bad('用户名或密码不正确。', 401);
-      if (H.hashPwd(String(body.password || ''), u.salt) !== u.pwd) return bad('用户名或密码不正确。', 401);
+      const src = u.source || 'local';
+      if (src === 'local') {
+        if (H.hashPwd(String(body.password || ''), u.salt) !== u.pwd) return bad('用户名或密码不正确。', 401);
+      } else {
+        const s = srv.servers.filter(x => x.id === (u.serverId || ''))[0];
+        if (!s || s.enabled === false) return bad('认证服务暂时不可用，请联系超级管理员。', 503);
+        if (String(body.password || '') !== REMOTE_PASSWORD) return bad('用户名或密码不正确。', 401);
+      }
       if ((u.status || 'active') !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
       me = u.username;
       window.sessionStorage.setItem(TOKEN_KEY, TOKEN);
@@ -124,6 +166,7 @@ function installApiStub(window, opts) {
     if (!auth) return bad('登录已失效，请重新登录。', 401);
 
     if (p === '/attach' && method === 'POST') {
+      if (auth.role !== 'admin' && auth.perm === 'ro') return bad('当前账号为只读权限，不能上传附件。', 403);
       const data = String(body.data || '');
       if (!data) return bad('附件内容为空');
       const size = Buffer.from(data, 'base64').length;
@@ -145,6 +188,7 @@ function installApiStub(window, opts) {
     if (p === '/auth/logout') { ls.removeItem(TOKEN_KEY); window.sessionStorage.removeItem(TOKEN_KEY); me = null; return ok(null); }
 
     if (p === '/auth/password' && method === 'POST') {
+      if ((auth.source || 'local') !== 'local') return bad('该账号使用远程认证，密码请到对应的认证系统修改。', 400);
       if (H.hashPwd(String(body.oldPassword || ''), auth.salt) !== auth.pwd) return bad('当前密码不正确');
       auth.salt = 'salt-' + auth.username + '-new';
       auth.pwd = H.hashPwd(String(body.newPassword || ''), auth.salt);
@@ -155,6 +199,7 @@ function installApiStub(window, opts) {
 
     if (p === '/ledger' && method === 'GET') return ok(bundle(auth));
     if (p === '/ledger' && method === 'PUT') {
+      if (auth.role !== 'admin' && auth.perm === 'ro') return bad('当前账号为只读权限，不能修改台账。', 403);
       const scope = String(body.scope || '').toLowerCase();
       if (auth.role !== 'admin' && scope !== auth.username) return bad('无权写入该账号的台账', 403);
       srv.ledgers[scope] = body.data || { regions: [], customers: [], visits: [] };
@@ -162,26 +207,82 @@ function installApiStub(window, opts) {
       return ok({ scope: scope });
     }
 
+    /* --- 认证服务器（远程用户） --- */
+    if (p === '/auth-servers' && method === 'GET') {
+      if (auth.role !== 'admin') return bad('仅超级管理员可查看认证服务器', 403);
+      return ok({ servers: srv.servers.map(serverView) });
+    }
+    if (p === '/auth-servers' && method === 'POST') {
+      if (auth.role !== 'admin') return bad('仅超级管理员可新增认证服务器', 403);
+      if (!body.name) return bad('请填写认证服务器名称');
+      if (!body.host) return bad('请填写服务器地址');
+      const type = ['radius', 'tacacs', 'ldap'].indexOf(body.type) >= 0 ? body.type : '';
+      if (!type) return bad('认证类型需为 RADIUS / TACACS+ / LDAP 之一');
+      const cfg = body.cfg || {};
+      if (type !== 'ldap' && !cfg.secret) return bad('RADIUS / TACACS+ 需要填写共享密钥（secret）');
+      const id = 'srv' + (srv.servers.length + 1);
+      srv.servers.push({
+        id: id, name: body.name, type: type, host: body.host,
+        port: body.port || (type === 'radius' ? 1812 : (type === 'tacacs' ? 49 : 389)),
+        enabled: body.enabled === 0 ? false : true, cfg: cfg
+      });
+      return ok({ server: serverView(srv.servers[srv.servers.length - 1]) });
+    }
+    if (p === '/auth-servers/test' && method === 'POST') {
+      if (auth.role !== 'admin') return bad('仅超级管理员可测试认证服务器', 403);
+      if (!body.username || !body.password) return bad('请填写用于测试的账号与密码');
+      const okAuth = String(body.password) === REMOTE_PASSWORD;
+      return ok({ ok: okAuth, code: okAuth ? 'accept' : 'reject', message: okAuth ? '认证通过' : '认证被拒绝（用户名或密码不正确）' });
+    }
+    const msv = /^\/auth-servers\/([A-Za-z0-9_-]{4,40})$/.exec(p);
+    if (msv) {
+      if (auth.role !== 'admin') return bad('仅超级管理员可修改认证服务器', 403);
+      const s = srv.servers.filter(x => x.id === msv[1])[0];
+      if (!s) return bad('认证服务器不存在', 404);
+      if (method === 'PATCH') {
+        ['name', 'type', 'host', 'port', 'enabled'].forEach(k => { if (body[k] != null) s[k] = body[k]; });
+        if (body.cfg) {
+          const cfg = Object.assign({}, s.cfg);
+          Object.keys(body.cfg).forEach(k => { cfg[k] = body.cfg[k]; });
+          s.cfg = cfg;
+        }
+        return ok({ server: serverView(s) });
+      }
+      if (method === 'DELETE') {
+        const n = srv.users.filter(u => u.serverId === s.id).length;
+        if (n > 0) return bad('仍有 ' + n + ' 个账号使用该认证服务器，请先改绑或删除这些账号');
+        srv.servers = srv.servers.filter(x => x.id !== s.id);
+        return ok(null);
+      }
+    }
+
     if (p === '/users' && method === 'GET') {
       if (auth.role !== 'admin') return bad('仅超级管理员可查看用户列表', 403);
-      return ok({ users: srv.users.map(userView) });
+      return ok({ users: srv.users.map(viewOf) });
     }
     if (p === '/users' && method === 'POST') {
       if (auth.role !== 'admin') return bad('仅超级管理员可创建用户', 403);
       const un = String(body.username || '').toLowerCase();
       if (findUser(un)) return bad('用户名「' + un + '」已存在');
+      const serverId = String(body.serverId || '');
+      const s = serverId ? srv.servers.filter(x => x.id === serverId)[0] : null;
+      if (serverId && !s) return bad('所选认证服务器不存在');
       const salt = 'salt-' + un;
       const nu = {
         id: un, username: un, name: body.name,
         role: body.role === 'admin' ? 'admin' : 'user',
         status: 'active', note: body.note || '',
-        salt: salt, pwd: H.hashPwd(String(body.password || ''), salt),
-        mustChange: true, createdAt: '2026-01-01', lastLogin: ''
+        source: s ? s.type : 'local',
+        perm: body.role === 'admin' ? 'rw' : (body.perm === 'ro' ? 'ro' : 'rw'),
+        serverId: serverId,
+        salt: salt,
+        pwd: s ? '' : H.hashPwd(String(body.password || ''), salt),
+        mustChange: !s, createdAt: '2026-01-01', lastLogin: ''
       };
       srv.users.push(nu);
       if (body.data) srv.ledgers[un] = body.data;
       writeMirror();
-      return ok({ user: userView(nu) });
+      return ok({ user: viewOf(nu) });
     }
 
     const m = /^\/users\/([^/]+)$/.exec(p);
@@ -194,13 +295,23 @@ function installApiStub(window, opts) {
         if (body.role != null) t.role = body.role === 'admin' ? 'admin' : 'user';
         if (body.status != null) t.status = body.status === 'disabled' ? 'disabled' : 'active';
         if (body.note != null) t.note = body.note;
+        if (body.perm != null) t.perm = body.perm === 'ro' ? 'ro' : 'rw';
+        if (body.serverId !== undefined) {
+          const sid = String(body.serverId || '');
+          const s = sid ? srv.servers.filter(x => x.id === sid)[0] : null;
+          if (sid && !s) return bad('所选认证服务器不存在');
+          t.serverId = sid;
+          t.source = s ? s.type : 'local';
+          if (!s) t.pwd = '';
+        }
         if (body.password) {
+          if ((t.source || 'local') !== 'local') return bad('远程账号不能在本地重置密码');
           t.salt = 'salt-' + t.username + '-r';
           t.pwd = H.hashPwd(String(body.password), t.salt);
           t.mustChange = true;
         }
         writeMirror();
-        return ok({ user: userView(t) });
+        return ok({ user: viewOf(t) });
       }
       if (method === 'DELETE') {
         if (t.username === auth.username) return bad('不能删除当前登录账号');

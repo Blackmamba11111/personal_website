@@ -15,7 +15,10 @@ const SUITES = [
   ['首页 · 结构与部署产物', 'test-home.js'],
   ['首页 · 照片服务端接口', 'test-photo-api.js'],
   ['看板 · 巡检登记增强', 'test-visits.js'],
-  ['看板 · 附件服务端接口', 'test-attach.js']
+  ['看板 · 附件服务端接口', 'test-attach.js'],
+  ['看板 · 本地/远程用户与只读权限', 'test-remote-auth.js'],
+  ['认证 · RADIUS/TACACS+/LDAP 协议', 'test-protocols.mjs'],
+  ['服务端 · Worker 接口（D1 兼容层）', 'test-worker-api.mjs']
 ];
 
 let failed = 0;

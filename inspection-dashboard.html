@@ -459,6 +459,12 @@
   .tag.user{background:var(--primary-soft);color:#1D4ED8;}
   .tag.active{background:var(--ok-soft);color:#0B7B55;}
   .tag.disabled{background:#EEF1F6;color:var(--text-3);}
+  .tag.local{background:#EEF1F6;color:#4A5568;}
+  .tag.remote{background:#EAF2FF;color:#1B4BA8;}
+  .tag.rw{background:var(--ok-soft);color:#0B7B55;}
+  .tag.ro{background:#FDF3E3;color:#9A5B06;}
+  .srv-type{display:inline-block;min-width:66px;text-align:center;font-size:11px;font-weight:700;
+    padding:2px 8px;border-radius:6px;background:var(--panel-2);border:1px solid var(--border);}
   .uact{display:flex;gap:6px;flex-wrap:wrap;}
   .stat-mini{display:flex;gap:26px;flex-wrap:wrap;padding:14px 16px;border-bottom:1px solid var(--border-2);}
   .stat-mini div b{font-size:17px;font-weight:650;display:block;}
@@ -474,6 +480,8 @@
   .map-fail.on{display:grid;}
   .map-fail .box{background:#fff;border:1px solid var(--border);border-radius:12px;padding:20px 24px;max-width:420px;box-shadow:var(--shadow);}
   .switch{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);cursor:pointer;}
+  /* .field label 是 display:block 且优先级更高，会把弹窗内开关压成块级、轨道叠在文字上 */
+  .field label.switch{display:inline-flex;margin-bottom:0;font-weight:400;}
   .switch input{display:none;}
   .switch .track{width:34px;height:19px;border-radius:99px;background:#D5DCE8;position:relative;transition:.18s;}
   .switch .track::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:.18s;box-shadow:0 1px 3px rgba(0,0,0,.2);}
@@ -997,6 +1005,7 @@
     <h2>用户管理</h2>
     <span class="sub" id="usersSub">—</span>
     <div class="spacer"></div>
+    <button type="button" class="btn" id="btnAuthServers">认证服务器</button>
     <button type="button" class="btn primary" id="btnNewUser">+ 新建用户</button>
   </div>
   <div class="page-body">
@@ -1004,6 +1013,31 @@
       <div class="stat-mini" id="usersStats"></div>
       <div id="usersTableWrap"></div>
     </div>
+    <p class="hint" style="margin:12px 2px 0;">
+      <b>本地用户</b>的口令存在本站（加盐哈希）；<b>远程用户</b>的口令由 RADIUS / TACACS+ / LDAP 服务器校验，本站不保存其密码。
+      「只读」账号可以查看与导出数据，但不能新增、修改、删除台账内容。
+    </p>
+  </div>
+</div>
+
+<!-- ==================== V3：认证服务器管理页（超级管理员） ==================== -->
+<div class="page" id="serversView">
+  <div class="page-head">
+    <button type="button" class="btn" id="btnServersBack">← 返回用户管理</button>
+    <h2>认证服务器</h2>
+    <span class="sub" id="serversSub">—</span>
+    <div class="spacer"></div>
+    <button type="button" class="btn primary" id="btnNewServer">+ 新增服务器</button>
+  </div>
+  <div class="page-body">
+    <div class="ucard">
+      <div id="serversTableWrap"></div>
+    </div>
+    <p class="hint" style="margin:12px 2px 0;">
+      远程用户登录时，本站把用户名与密码转发给这里配置的服务器校验，校验通过后在本站签发会话。
+      共享密钥只保存在服务端，列表里不会回显；编辑时留空表示「不修改」。
+      <b>公网站点（Cloudflare Workers）没有 UDP 出网能力，RADIUS 仅在内网部署实例可用</b>，TACACS+ 与 LDAP 走 TCP 两端都支持。
+    </p>
   </div>
 </div>
 
@@ -1057,10 +1091,29 @@
         <input type="text" id="uName" autocomplete="off" placeholder="如：张三（河北片区）">
       </div>
       <div class="field">
+        <label for="uSourceType">账号类型</label>
+        <select id="uSourceType">
+          <option value="local">本地用户 — 口令保存在本站</option>
+          <option value="remote">远程用户 — 口令由认证服务器校验</option>
+        </select>
+      </div>
+      <div class="field" id="uServerField" style="display:none;">
+        <label for="uServer">认证服务器 <span class="req">*</span></label>
+        <select id="uServer"></select>
+        <div class="hint" id="uServerHint">登录时把用户名与密码转发给该服务器校验，本站不保存密码。</div>
+      </div>
+      <div class="field">
         <label for="uRole">角色</label>
         <select id="uRole">
           <option value="user">普通用户 — 仅能查看与维护自己的台账</option>
           <option value="admin">超级管理员 — 可查看全部用户数据并管理账号</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="uPerm">数据权限</label>
+        <select id="uPerm">
+          <option value="rw">读写 — 可新增 / 修改 / 删除台账内容</option>
+          <option value="ro">只读 — 只能查看与导出，不能修改</option>
         </select>
       </div>
       <div class="field" id="uPwdField">
@@ -1087,6 +1140,89 @@
     <div class="modal-foot">
       <button type="button" class="btn" data-close="maskUser">取消</button>
       <button type="button" class="btn primary" id="btnSaveUser">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== V3：认证服务器 新建 / 编辑 ==================== -->
+<div class="mask high" id="maskServer">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-head">
+      <h3 id="serverModalTitle">新增认证服务器</h3>
+      <button type="button" class="icon-btn" data-close="maskServer">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="sName">名称 <span class="req">*</span></label>
+        <input type="text" id="sName" autocomplete="off" placeholder="如：总部 LDAP / 核心区 TACACS">
+      </div>
+      <div class="field">
+        <label for="sType">协议类型</label>
+        <select id="sType">
+          <option value="radius">RADIUS — UDP 1812（仅内网实例可用）</option>
+          <option value="tacacs">TACACS+ — TCP 49</option>
+          <option value="ldap">LDAP — TCP 389 / 636</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:10px;">
+        <div class="field" style="flex:1 1 auto;">
+          <label for="sHost">服务器地址 <span class="req">*</span></label>
+          <input type="text" id="sHost" autocomplete="off" placeholder="IP 或主机名，如 10.1.1.20">
+        </div>
+        <div class="field" style="flex:0 0 110px;">
+          <label for="sPort">端口</label>
+          <input type="number" id="sPort" min="1" max="65535" placeholder="默认端口">
+        </div>
+        <div class="field" style="flex:0 0 110px;">
+          <label for="sTimeout">超时(秒)</label>
+          <input type="number" id="sTimeout" min="1" max="30" value="5">
+        </div>
+      </div>
+
+      <div class="field" id="sSecretWrap">
+        <label for="sSecret">共享密钥（secret） <span class="req">*</span></label>
+        <div class="pwd-wrap">
+          <input type="password" id="sSecret" autocomplete="new-password" placeholder="RADIUS / TACACS+ 的共享密钥">
+          <button type="button" class="pwd-eye" data-eye="sSecret" aria-pressed="false" aria-label="显示密码" title="显示密钥"><svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg><svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/><path d="m4 20 16-16"/></svg></button>
+        </div>
+        <div class="hint" id="sSecretHint">与服务端设备上配置的一致；编辑时留空表示不修改。</div>
+      </div>
+
+      <div class="field" id="sLdapWrap">
+        <label for="sBind">绑定模板</label>
+        <input type="text" id="sBind" autocomplete="off" placeholder="uid={user},ou=people,dc=corp,dc=local">
+        <div class="hint">
+          用 {user} 代表登录名。AD 可直接填 <code>{user}@corp.local</code> 或 <code>DOMAIN\{user}</code>；
+          留空则把登录名本身当作绑定 DN。
+        </div>
+        <label class="switch" style="margin-top:8px;">
+          <input type="checkbox" id="sTls"><span class="track"></span><span>使用 TLS（LDAPS，默认端口 636）</span>
+        </label>
+      </div>
+
+      <div class="field" id="sPlainWrap" style="display:none;">
+        <label class="switch">
+          <input type="checkbox" id="sPlain"><span class="track"></span><span>发送未加密报文（少数老设备不收加密包时才勾选）</span>
+        </label>
+      </div>
+
+      <div class="field" style="margin:4px 0 18px;">
+        <label class="switch" style="line-height:19px;"><input type="checkbox" id="sEnabled" checked><span class="track"></span><span>启用该服务器</span></label>
+      </div>
+
+      <div class="field" style="border-top:1px dashed var(--border);padding-top:14px;">
+        <label>测试连接</label>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="sTestUser" autocomplete="off" placeholder="测试账号" style="flex:1 1 50%;">
+          <input type="password" id="sTestPwd" autocomplete="new-password" placeholder="测试密码" style="flex:1 1 50%;">
+          <button type="button" class="btn" id="btnTestServer" style="flex:0 0 auto;">测试</button>
+        </div>
+        <div class="hint" id="sTestResult">会真实发起一次认证请求，用于验证地址、端口与密钥是否正确。</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" data-close="maskServer">取消</button>
+      <button type="button" class="btn primary" id="btnSaveServer">保存</button>
     </div>
   </div>
 </div>
@@ -3746,13 +3882,17 @@
   /* 服务端签发的会话令牌；取代了旧版用于本地会话的 inspection_board_session_v1 */
   var TOKEN_KEY   = 'inspection_board_token_v1';
 
-  var AUTH = { user: null, scope: '', attachMax: 0 };
+  var AUTH = { user: null, scope: '', attachMax: 0, servers: [] };
   var appBooted = false;
   /* 与服务端的同步状态：dirty 表示本地有尚未推送成功的改动 */
   var SYNC = { dirty: false, timer: null, warnShown: false, lastAt: '' };
 
   function isAdmin()    { return !!(AUTH.user && AUTH.user.role === 'admin'); }
   function isReadonly() { return AUTH.scope === SCOPE_ALL; }
+  /* 写入权限由服务端按账号判定（perm=ro 只读），前端同步一份用于「提前拦截 + 提示」；
+     真正的边界在服务端：/api/ledger、/api/attach 都会拒绝只读账号的写请求。 */
+  function canWrite()   { return !!(AUTH.user && (AUTH.user.role === 'admin' || AUTH.user.perm !== 'ro')); }
+  function isRoUser()   { return !!AUTH.user && AUTH.user.role !== 'admin' && AUTH.user.perm === 'ro'; }
   function dataKeyOf(u) { return DATA_PREFIX + u; }
   function prefKeyOf()  { return PREF_KEY + '::' + (AUTH.scope || 'default'); }
   function seedData()   { return JSON.parse(JSON.stringify(SEED)); }
@@ -3996,6 +4136,7 @@
   }
   function queuePush(username) {
     if (!readToken()) return;                 /* 未登录（或降级模式）不推送 */
+    if (!canWrite()) return;                  /* 只读账号：服务端也会拒绝，不必白发一次请求 */
     SYNC.dirty = true;
     if (SYNC.timer) clearTimeout(SYNC.timer);
     SYNC.timer = setTimeout(function () { pushLedger(username); }, 800);
@@ -4032,6 +4173,7 @@
       var d = r.data || {};
       applyServerUsers(d.users);
       applyServerLedgers(d.ledgers);
+      if (Array.isArray(d.authServers)) AUTH.servers = d.authServers;
       var scope = isAdmin() ? AUTH.scope : AUTH.user.username;
       if (scope !== SCOPE_ALL && d.ledgers && d.ledgers[scope]) {
         DB = d.ledgers[scope];
@@ -4041,6 +4183,12 @@
       }
       var fresh = (d.users || []).filter(function (x) { return x.username === AUTH.user.username; })[0];
       if (fresh && fresh.mustChange !== AUTH.user.mustChange) AUTH.user.mustChange = fresh.mustChange;
+      /* 权限被超管调整后无需重新登录也能立刻生效（服务端本就是每次请求判定） */
+      if (fresh && (fresh.perm !== AUTH.user.perm || fresh.source !== AUTH.user.source)) {
+        AUTH.user.perm = fresh.perm;
+        AUTH.user.source = fresh.source;
+        renderUserChip();
+      }
       return true;
     }, function () { return false; });
   }
@@ -4128,6 +4276,10 @@
     renderScopeSelect();
   }
   function guardEdit() {
+    if (!canWrite()) {
+      toast('当前账号为只读权限，不能修改台账；如需写入请联系超级管理员调整权限');
+      return false;
+    }
     if (!isReadonly()) return true;
     toast('汇总视图为只读，请先在右上角账号菜单切换到具体用户');
     return false;
@@ -4143,11 +4295,14 @@
     av.textContent = initialOf(u.name);
     av.className = 'uavatar' + (u.role === 'admin' ? ' admin' : '');
     document.getElementById('userNameText').textContent = u.name;
-    document.getElementById('userRoleText').textContent = isReadonly() ? '汇总' : roleText(u);
+    document.getElementById('userRoleText').textContent = isReadonly() ? '汇总' : (isRoUser() ? '只读' : roleText(u));
     document.getElementById('umName').textContent = u.name + '（' + u.username + '）';
     var cnt = userDataCount(u.username);
+    var srcTxt = (u.source && u.source !== 'local')
+      ? (AUTH_LABELS[u.source] || u.source) + ' 认证' + (u.serverName ? '（' + u.serverName + '）' : '')
+      : '本地账号';
     document.getElementById('umMeta').innerHTML =
-      roleText(u) + ' · 我的台账 ' + cnt.customers + ' 家客户' +
+      roleText(u) + ' · ' + permText(u) + ' · ' + esc(srcTxt) + ' · 我的台账 ' + cnt.customers + ' 家客户' +
       (u.lastLogin ? '<br>上次登录 ' + esc(u.lastLogin) : '');
     document.getElementById('umUsers').style.display = isAdmin() ? 'block' : 'none';
   }
@@ -4218,7 +4373,7 @@
         }, 700);
       }
       document.getElementById('loginPwd').value = '';
-      signIn(d.user, { welcome: true, attachMax: d.attachMax });
+      signIn(d.user, { welcome: true, attachMax: d.attachMax, servers: d.authServers || [] });
     });
   }
 
@@ -4244,9 +4399,10 @@
     AUTH.scope = '';
     document.getElementById('userMenu').classList.remove('on');
     document.getElementById('usersView').classList.remove('on');
+    document.getElementById('serversView').classList.remove('on');
     CUSTS_OPEN = false;
     document.getElementById('custsView').classList.remove('on');
-    ['maskCust', 'maskDetail', 'maskRegion', 'maskImport', 'maskConfirm', 'maskRemind', 'maskUser', 'maskPwd'].forEach(function (id) {
+    ['maskCust', 'maskDetail', 'maskRegion', 'maskImport', 'maskConfirm', 'maskRemind', 'maskUser', 'maskPwd', 'maskServer'].forEach(function (id) {
       var el = document.getElementById(id); if (el) el.classList.remove('on');
     });
     clearMapLayers();
@@ -4273,7 +4429,188 @@
     renderUsersPage();
     document.getElementById('usersView').classList.add('on');
   }
-  function closeUsersPage() { document.getElementById('usersView').classList.remove('on'); }
+  function closeUsersPage() {
+    document.getElementById('usersView').classList.remove('on');
+    document.getElementById('serversView').classList.remove('on');
+  }
+
+  /* ---------- 认证服务器管理（RADIUS / TACACS+ / LDAP） ---------- */
+  function openServersPage() {
+    if (!isAdmin()) { toast('仅超级管理员可访问认证服务器'); return; }
+    document.getElementById('usersView').classList.remove('on');
+    renderServersPage();               /* 先用缓存快出一屏，随后拉最新（绑定账号数会变） */
+    document.getElementById('serversView').classList.add('on');
+    refreshServersThen(true);
+  }
+  function closeServersPage() {
+    document.getElementById('serversView').classList.remove('on');
+    document.getElementById('usersView').classList.add('on');
+    renderUsersPage();
+  }
+  function refreshServersThen(render) {
+    return api('/auth-servers').then(function (r) {
+      if (r.ok && r.data) AUTH.servers = r.data.servers || [];
+      if (render) renderServersPage();
+      return r;
+    });
+  }
+  function renderServersPage() {
+    var list = serversList();
+    var used = list.filter(function (s) { return s.userCount > 0; }).length;
+    document.getElementById('serversSub').textContent =
+      '共 ' + list.length + ' 台 · 已启用 ' + list.filter(function (s) { return s.enabled; }).length +
+      ' 台 · 已绑定账号 ' + used + ' 台';
+
+    if (!list.length) {
+      document.getElementById('serversTableWrap').innerHTML =
+        '<div class="empty" style="padding:34px 18px;text-align:center;">' +
+        '<div style="font-weight:600;margin-bottom:6px;">还没有配置认证服务器</div>' +
+        '<div class="hint" style="margin-bottom:14px;">配置之后即可创建「远程用户」，其登录口令由该服务器校验。</div>' +
+        '<button type="button" class="btn primary" id="btnNewServerEmpty">+ 新增认证服务器</button></div>';
+      var eb = document.getElementById('btnNewServerEmpty');
+      if (eb) eb.addEventListener('click', function () { openServerModal(null); });
+      return;
+    }
+
+    var rows = list.map(function (s) {
+      var t = AUTH_LABELS[s.type] || s.type;
+      return '<tr data-sid="' + esc(s.id) + '">' +
+        '<td><div style="font-weight:600;">' + esc(s.name) + '</div>' +
+          '<div class="sub2" style="font-size:11px;color:var(--text-3);">' +
+          (s.type === 'ldap'
+            ? esc(s.cfg.bindPattern ? ('绑定模板 ' + s.cfg.bindPattern) : '绑定模板：登录名直连' + (s.cfg.tls ? ' · TLS' : ''))
+            : ('共享密钥 ' + (s.hasSecret ? '已设置' : '未设置'))) +
+          '</div></td>' +
+        '<td><span class="srv-type">' + esc(t) + '</span></td>' +
+        '<td class="sub2" style="font-size:12px;">' + esc(s.host) + ':' + s.port + '</td>' +
+        '<td>' + (s.userCount ? s.userCount + ' 个账号' : '<span class="sub2">未绑定</span>') + '</td>' +
+        '<td><span class="tag ' + (s.enabled ? 'active' : 'disabled') + '">' + (s.enabled ? '已启用' : '已停用') + '</span></td>' +
+        '<td class="sub2" style="font-size:11.5px;">' + esc((s.updatedAt || s.createdAt || '').slice(0, 16).replace('T', ' ')) + '</td>' +
+        '<td><div class="uact">' +
+          '<button type="button" class="btn sm" data-sact="edit">编辑</button>' +
+          '<button type="button" class="btn sm" data-sact="test">测试</button>' +
+          '<button type="button" class="btn sm" data-sact="del"' +
+            (s.userCount ? ' disabled title="仍有账号绑定，需先改绑"' : '') + '>删除</button>' +
+        '</div></td></tr>';
+    }).join('');
+
+    document.getElementById('serversTableWrap').innerHTML =
+      '<table class="utable"><thead><tr>' +
+      '<th>服务器</th><th>协议</th><th>地址</th><th>绑定账号</th><th>状态</th><th>更新时间</th><th>操作</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  var editingServerId = null;
+  function syncServerModalFields() {
+    var t = document.getElementById('sType').value;
+    document.getElementById('sSecretWrap').style.display = (t === 'ldap') ? 'none' : 'block';
+    document.getElementById('sLdapWrap').style.display = (t === 'ldap') ? 'block' : 'none';
+    document.getElementById('sPlainWrap').style.display = (t === 'tacacs') ? 'block' : 'none';
+    var portEl = document.getElementById('sPort');
+    if (!portEl.value) {
+      portEl.placeholder = t === 'radius' ? '1812' : (t === 'tacacs' ? '49' : (document.getElementById('sTls').checked ? '636' : '389'));
+    }
+  }
+  function openServerModal(s) {
+    editingServerId = s ? s.id : null;
+    document.getElementById('serverModalTitle').textContent = s ? ('编辑认证服务器 · ' + s.name) : '新增认证服务器';
+    document.getElementById('sName').value = s ? s.name : '';
+    document.getElementById('sType').value = s ? s.type : 'ldap';
+    document.getElementById('sHost').value = s ? s.host : '';
+    document.getElementById('sPort').value = s ? s.port : '';
+    document.getElementById('sTimeout').value = s ? (s.cfg.timeout || 5) : 5;
+    document.getElementById('sSecret').value = '';
+    document.getElementById('sSecret').placeholder = (s && s.hasSecret) ? '已设置，留空表示不修改' : 'RADIUS / TACACS+ 的共享密钥';
+    document.getElementById('sSecretHint').textContent = (s && s.hasSecret)
+      ? '该服务器已保存共享密钥；留空即保持原值，填写则覆盖。'
+      : '与服务端设备上配置的一致。';
+    document.getElementById('sBind').value = s ? (s.cfg.bindPattern || '') : '';
+    document.getElementById('sTls').checked = !!(s && s.cfg.tls);
+    document.getElementById('sPlain').checked = !!(s && s.cfg.plain);
+    document.getElementById('sEnabled').checked = s ? !!s.enabled : true;
+    document.getElementById('sTestUser').value = '';
+    document.getElementById('sTestPwd').value = '';
+    document.getElementById('sTestResult').textContent = '会真实发起一次认证请求，用于验证地址、端口与密钥是否正确。';
+    document.getElementById('sTestResult').style.color = '';
+    syncServerModalFields();
+    openModal('maskServer');
+  }
+
+  function serverPayload() {
+    var type = document.getElementById('sType').value;
+    var cfg = {
+      timeout: parseInt(document.getElementById('sTimeout').value, 10) || 5,
+      bindPattern: document.getElementById('sBind').value.trim(),
+      tls: document.getElementById('sTls').checked ? 1 : 0,
+      plain: document.getElementById('sPlain').checked ? 1 : 0
+    };
+    /* 密钥留空 = 不修改（新建时由服务端报「必须填写」） */
+    var sec = document.getElementById('sSecret').value;
+    if (sec) cfg.secret = sec;
+    return {
+      name: document.getElementById('sName').value.trim(),
+      type: type,
+      host: document.getElementById('sHost').value.trim(),
+      port: parseInt(document.getElementById('sPort').value, 10) || 0,
+      enabled: document.getElementById('sEnabled').checked ? 1 : 0,
+      cfg: cfg
+    };
+  }
+
+  function saveServer() {
+    var p = serverPayload();
+    if (!p.name) { toast('请填写认证服务器名称'); return; }
+    if (!p.host) { toast('请填写服务器地址'); return; }
+    if (p.type !== 'ldap' && !p.cfg.secret && !editingServerId) { toast('请填写共享密钥'); return; }
+    var req = editingServerId
+      ? api('/auth-servers/' + encodeURIComponent(editingServerId), { method: 'PATCH', body: p })
+      : api('/auth-servers', { method: 'POST', body: p });
+    req.then(function (r) {
+      if (!r.ok) { toast(r.error || '保存失败'); return; }
+      closeModal('maskServer');
+      refreshServersThen(true).then(function () {
+        toast(editingServerId ? '认证服务器已更新' : '认证服务器已创建');
+        if (document.getElementById('usersView').classList.contains('on')) renderUsersPage();
+      });
+    });
+  }
+
+  function deleteServer(s) {
+    askConfirm('删除认证服务器',
+      '确认删除 <b>' + esc(s.name) + '</b>（' + esc(AUTH_LABELS[s.type] || s.type) + ' ' + esc(s.host) + ':' + s.port + '）？<br>' +
+      (s.userCount ? '仍有 <b>' + s.userCount + ' 个账号</b>绑定，需先改绑。' : '该服务器尚未绑定任何账号。'),
+      function () {
+        api('/auth-servers/' + encodeURIComponent(s.id), { method: 'DELETE' }).then(function (r) {
+          if (!r.ok) { toast(r.error || '删除失败'); return; }
+          refreshServersThen(true).then(function () { toast('已删除「' + s.name + '」'); });
+        });
+      }, '确认删除');
+  }
+
+  function testServer() {
+    var p = serverPayload();
+    var u = document.getElementById('sTestUser').value.trim();
+    var pwd = document.getElementById('sTestPwd').value;
+    var out = document.getElementById('sTestResult');
+    if (!p.host) { toast('请先填写服务器地址'); return; }
+    if (!u || !pwd) { toast('请填写用于测试的账号与密码'); return; }
+    var btn = document.getElementById('btnTestServer');
+    btn.disabled = true; btn.textContent = '测试中…';
+    out.style.color = 'var(--text-3)'; out.textContent = '正在连接 ' + p.host + ':' + (p.port || '默认端口') + ' …';
+    if (editingServerId) p.id = editingServerId;
+    p.username = u; p.password = pwd;
+    api('/auth-servers/test', { method: 'POST', body: p }).then(function (r) {
+      btn.disabled = false; btn.textContent = '测试';
+      if (!r.ok) { out.style.color = 'var(--miss)'; out.textContent = '测试失败：' + (r.error || '请求无效'); return; }
+      var d = r.data || {};
+      out.style.color = d.ok ? 'var(--ok, #0B7B55)' : 'var(--miss)';
+      out.textContent = (d.ok ? '✓ 认证通过：' : '✗ 认证未通过：') + (d.message || '') + (d.code ? '（' + d.code + '）' : '');
+      if (d.ok) refreshUsersThen(false);
+    }, function () {
+      btn.disabled = false; btn.textContent = '测试';
+      out.style.color = 'var(--miss)'; out.textContent = '测试请求未能送达服务端';
+    });
+  }
 
   /* ---------- 客户管理：客户主数据（不含巡检记录） ----------
      普通用户只能看到自己台账里的客户；超管可通过「数据范围」切换：
@@ -4405,15 +4742,38 @@
       }, '确认删除');
   }
 
+  /* ---------- 账号来源 / 权限的展示文案 ---------- */
+  function sourceText(u) {
+    if (!u || (u.source || 'local') === 'local') return '本地';
+    var label = AUTH_LABELS[u.source] || String(u.source).toUpperCase();
+    return label;
+  }
+  var AUTH_LABELS = { local: '本地', radius: 'RADIUS', tacacs: 'TACACS+', ldap: 'LDAP' };
+  function permText(u) { return u.perm === 'ro' ? '只读' : '读写'; }
+  function seqTag(u) {
+    var remote = (u.source || 'local') !== 'local';
+    return '<span class="tag ' + (remote ? 'remote' : 'local') + '" title="' +
+      esc(remote ? ('认证来源：' + sourceText(u) + (u.serverName ? '（' + u.serverName + '）' : '')) : '口令保存在本站') + '">' +
+      esc(sourceText(u)) + '</span>';
+  }
+  function permTag(u) {
+    return '<span class="tag ' + (u.perm === 'ro' ? 'ro' : 'rw') + '">' + permText(u) + '</span>';
+  }
+
   function renderUsersPage() {
     var users = userList();
     var totalCust = 0, totalVisit = 0;
     users.forEach(function (u) { var s = userDataCount(u.username); totalCust += s.customers; totalVisit += s.visits; });
+    var remoteCount = users.filter(function (u) { return (u.source || 'local') !== 'local'; }).length;
+    var roCount = users.filter(function (u) { return u.perm === 'ro'; }).length;
     document.getElementById('usersSub').textContent =
-      '共 ' + users.length + ' 个账号 · 超级管理员 ' + users.filter(function (u) { return u.role === 'admin'; }).length + ' 个';
+      '共 ' + users.length + ' 个账号 · 超级管理员 ' + users.filter(function (u) { return u.role === 'admin'; }).length +
+      ' 个 · 远程 ' + remoteCount + ' 个';
     document.getElementById('usersStats').innerHTML =
       '<div><b>' + users.length + '</b><span>账号总数</span></div>' +
       '<div><b>' + users.filter(function (u) { return u.status === 'active'; }).length + '</b><span>启用中</span></div>' +
+      '<div><b>' + remoteCount + '</b><span>远程用户</span></div>' +
+      '<div><b>' + roCount + '</b><span>只读权限</span></div>' +
       '<div><b>' + totalCust + '</b><span>客户总数</span></div>' +
       '<div><b>' + totalVisit + '</b><span>巡检记录总数</span></div>';
 
@@ -4426,6 +4786,7 @@
       var isSelf = u.id === AUTH.user.id;
       var lastAdmin = u.role === 'admin' && countAdmins(u.id) === 0;
       var delDisabled = isSelf || lastAdmin;
+      var remote = (u.source || 'local') !== 'local';
       return '<tr data-uid="' + esc(u.id) + '">' +
         '<td><div class="uname-cell">' +
           '<span class="uavatar' + (u.role === 'admin' ? ' admin' : '') + '">' + esc(initialOf(u.name)) + '</span>' +
@@ -4433,6 +4794,8 @@
             (isSelf ? ' <span class="tag user">当前登录</span>' : '') + '</div>' +
             '<div class="sub2">' + esc(u.username) + (u.note ? ' · ' + esc(u.note) : '') + '</div></div>' +
         '</div></td>' +
+        '<td>' + seqTag(u) + '</td>' +
+        '<td>' + permTag(u) + '</td>' +
         '<td><span class="tag ' + (u.role === 'admin' ? 'admin' : 'user') + '">' + roleText(u) + '</span></td>' +
         '<td><span class="tag ' + (u.status === 'active' ? 'active' : 'disabled') + '">' +
           (u.status === 'active' ? '启用中' : '已停用') + '</span></td>' +
@@ -4443,7 +4806,9 @@
         '<td><div class="uact">' +
           '<button type="button" class="btn sm" data-ua="view">查看数据</button>' +
           '<button type="button" class="btn sm" data-ua="edit">编辑</button>' +
-          '<button type="button" class="btn sm" data-ua="pwd">重置密码</button>' +
+          '<button type="button" class="btn sm" data-ua="pwd"' +
+            (remote ? ' disabled title="该账号由 ' + esc(sourceText(u)) + ' 校验密码，请到对应系统重置"' : '') +
+            '>重置密码</button>' +
           '<button type="button" class="btn sm" data-ua="toggle"' +
             (lastAdmin ? ' disabled title="至少保留一个启用的超级管理员"' : '') + '>' +
             (u.status === 'active' ? '停用' : '启用') + '</button>' +
@@ -4454,11 +4819,39 @@
     }).join('');
     document.getElementById('usersTableWrap').innerHTML =
       '<table class="utable"><thead><tr>' +
-      '<th>用户</th><th>角色</th><th>状态</th><th>客户</th><th>巡检记录</th><th>创建时间</th><th>最后登录</th><th>操作</th>' +
+      '<th>用户</th><th>来源</th><th>权限</th><th>角色</th><th>状态</th><th>客户</th><th>巡检记录</th><th>创建时间</th><th>最后登录</th><th>操作</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
   var editingUserId = null;
+
+  function serversList() { return (AUTH.servers || []).slice(); }
+  function serverById(id) {
+    return serversList().filter(function (s) { return s.id === id; })[0] || null;
+  }
+  /* 账号类型切换：本地 → 显示初始密码；远程 → 显示认证服务器下拉 */
+  var editingWasRemote = false;
+  function syncUserModalFields() {
+    var remote = document.getElementById('uSourceType').value === 'remote';
+    var editing = !!editingUserId;
+    document.getElementById('uServerField').style.display = remote ? 'block' : 'none';
+    /* 编辑已有本地账号不给改密码的口子（走「重置密码」）；但从远程改回本地时必须补初始密码 */
+    document.getElementById('uPwdField').style.display =
+      (!remote && (!editing || editingWasRemote)) ? 'block' : 'none';
+    document.getElementById('uPwdHint').textContent = (editing && editingWasRemote)
+      ? '该账号原为远程认证，改回本地需要设置一个本地初始密码。'
+      : '该用户首次登录后建议自行修改密码。';
+    /* 远程账号的口令在认证服务器上，这里只需要说明由谁校验 */
+    var hint = document.getElementById('uServerHint');
+    if (remote) {
+      var sid = document.getElementById('uServer').value;
+      var s = serverById(sid);
+      hint.textContent = s
+        ? ('登录时把用户名与密码转发给「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + ' ' + s.host + ':' + s.port + '）校验，本站不保存密码。')
+        : '还没有可用的认证服务器，请先到「认证服务器」页新增。';
+    }
+  }
+
   function openUserModal(u) {
     editingUserId = u ? u.id : null;
     document.getElementById('userModalTitle').textContent = u ? '编辑用户' : '新建用户';
@@ -4466,12 +4859,28 @@
     document.getElementById('uUsername').disabled = !!u;
     document.getElementById('uName').value = u ? u.name : '';
     document.getElementById('uRole').value = u ? u.role : 'user';
+    document.getElementById('uPerm').value = u ? (u.perm === 'ro' ? 'ro' : 'rw') : 'rw';
     document.getElementById('uNote').value = u ? (u.note || '') : '';
     document.getElementById('uPwd').value = '';
-    document.getElementById('uPwdField').style.display = u ? 'none' : 'block';
+
+    /* 认证服务器下拉（远程账号必选一个） */
+    var sel = document.getElementById('uServer');
+    var list = serversList();
+    sel.innerHTML = list.length
+      ? list.map(function (s) {
+          return '<option value="' + esc(s.id) + '">' + esc(s.name) + ' · ' + esc(AUTH_LABELS[s.type] || s.type) +
+            ' · ' + esc(s.host + ':' + s.port) + (s.enabled ? '' : '（已停用）') + '</option>';
+        }).join('')
+      : '<option value="">（暂无认证服务器）</option>';
+    var remote = !!u && (u.source || 'local') !== 'local';
+    editingWasRemote = remote;
+    document.getElementById('uSourceType').value = remote ? 'remote' : 'local';
+    if (remote && u.serverId) sel.value = u.serverId;
+
     document.getElementById('uSeed').parentNode.style.display = u ? 'none' : 'block';
     document.getElementById('uSeedHint').style.display = u ? 'none' : 'block';
     document.getElementById('btnSaveUser').textContent = u ? '保存修改' : '创建用户';
+    syncUserModalFields();
     openModal('maskUser');
   }
 
@@ -4487,8 +4896,12 @@
   function saveUser() {
     var name = document.getElementById('uName').value.trim();
     var role = document.getElementById('uRole').value === 'admin' ? 'admin' : 'user';
+    var perm = document.getElementById('uPerm').value === 'ro' ? 'ro' : 'rw';
     var note = document.getElementById('uNote').value.trim();
+    var remote = document.getElementById('uSourceType').value === 'remote';
+    var serverId = remote ? document.getElementById('uServer').value : '';
     if (!name) { toast('请填写显示名称'); return; }
+    if (remote && !serverId) { toast('请选择认证服务器（没有的话先去「认证服务器」页新增）'); return; }
 
     if (editingUserId) {
       var target = userList().filter(function (x) { return x.id === editingUserId; })[0];
@@ -4496,21 +4909,28 @@
       if (target.role === 'admin' && role !== 'admin' && countAdmins(target.id) === 0) {
         toast('至少需要保留一个超级管理员，无法降级'); return;
       }
-      api('/users/' + encodeURIComponent(target.username), {
-        method: 'PATCH', body: { name: name, role: role, note: note }
-      }).then(function (r) {
-        if (!r.ok) { toast(r.error || '保存失败'); return; }
-        closeModal('maskUser');
-        refreshUsersThen(true).then(function () {
-          if (target.username === AUTH.user.username) {
-            var me = findUser(AUTH.user.username);
-            if (me) { AUTH.user = me; renderUserChip(); }
-            if (!isAdmin()) applyScope(AUTH.user.username);
-            renderScopeSelect();
-          }
-          toast('用户「' + name + '」已更新');
+      var wasRemote = (target.source || 'local') !== 'local';
+      var patch = { name: name, role: role, note: note, perm: perm, serverId: serverId };
+      /* 远程 → 本地：必须补一个本地初始密码，否则该账号无法再登录 */
+      if (wasRemote && !remote) {
+        var np = String(document.getElementById('uPwd').value || '');
+        if (np.length < 6) { toast('改为本地账号需要设置初始密码（至少 6 位）'); return; }
+        patch.password = np;
+      }
+      api('/users/' + encodeURIComponent(target.username), { method: 'PATCH', body: patch })
+        .then(function (r) {
+          if (!r.ok) { toast(r.error || '保存失败'); return; }
+          closeModal('maskUser');
+          refreshUsersThen(true).then(function () {
+            if (target.username === AUTH.user.username) {
+              var me = findUser(AUTH.user.username);
+              if (me) { AUTH.user = me; renderUserChip(); }
+              if (!isAdmin()) applyScope(AUTH.user.username);
+              renderScopeSelect();
+            }
+            toast('用户「' + name + '」已更新');
+          });
         });
-      });
       return;
     }
 
@@ -4519,21 +4939,24 @@
       toast('用户名需为 3–32 位字母、数字、下划线、点或连字符'); return;
     }
     if (findUser(username)) { toast('用户名「' + username + '」已存在'); return; }
-    var pwd = document.getElementById('uPwd').value;
-    if (String(pwd).length < 6) { toast('密码至少 6 位'); return; }
-
+    var pwd = '';
+    if (!remote) {
+      pwd = document.getElementById('uPwd').value;
+      if (String(pwd).length < 6) { toast('密码至少 6 位'); return; }
+    }
     var mode = document.getElementById('uSeed').value;
-    api('/users', {
-      method: 'POST',
-      body: {
-        username: username, name: name, role: role, note: note, password: pwd,
-        data: mode === 'demo' ? seedData() : { regions: [], customers: [], visits: [] }
-      }
-    }).then(function (r) {
+    var payload = {
+      username: username, name: name, role: role, note: note, perm: perm,
+      data: mode === 'demo' ? seedData() : { regions: [], customers: [], visits: [] }
+    };
+    if (remote) payload.serverId = serverId; else payload.password = pwd;
+    api('/users', { method: 'POST', body: payload }).then(function (r) {
       if (!r.ok) { toast(r.error || '创建失败'); return; }
       closeModal('maskUser');
       refreshUsersThen(true).then(function () {
-        toast('用户「' + name + '」已创建，首次登录后需修改初始密码');
+        toast(remote
+          ? '远程用户「' + name + '」已创建，登录口令由所选认证服务器校验'
+          : '用户「' + name + '」已创建，首次登录后需修改初始密码');
       });
     });
   }
@@ -4642,12 +5065,50 @@
     });
     document.getElementById('umUsers').addEventListener('click', openUsersPage);
     document.getElementById('umPwd').addEventListener('click', function () {
-      document.getElementById('userMenu').classList.remove('on'); openPwdModal(null);
+      document.getElementById('userMenu').classList.remove('on');
+      /* 远程账号的口令在认证服务器上，本页改不了 */
+      if (AUTH.user && AUTH.user.source && AUTH.user.source !== 'local') {
+        toast('该账号使用「' + (AUTH_LABELS[AUTH.user.source] || AUTH.user.source) + '」认证，密码请到对应认证系统修改');
+        return;
+      }
+      openPwdModal(null);
     });
     document.getElementById('umLogout').addEventListener('click', doLogout);
 
     document.getElementById('btnUsersBack').addEventListener('click', closeUsersPage);
     document.getElementById('btnNewUser').addEventListener('click', function () { openUserModal(null); });
+
+    /* 认证服务器页 */
+    document.getElementById('btnAuthServers').addEventListener('click', openServersPage);
+    document.getElementById('btnServersBack').addEventListener('click', closeServersPage);
+    document.getElementById('btnNewServer').addEventListener('click', function () { openServerModal(null); });
+    document.getElementById('btnSaveServer').addEventListener('click', saveServer);
+    document.getElementById('btnTestServer').addEventListener('click', testServer);
+    document.getElementById('sType').addEventListener('change', function () {
+      document.getElementById('sPort').value = '';
+      syncServerModalFields();
+    });
+    document.getElementById('sTls').addEventListener('change', function () {
+      document.getElementById('sPort').value = '';
+      syncServerModalFields();
+    });
+    document.getElementById('serversTableWrap').addEventListener('click', function (e) {
+      var el = e.target;
+      while (el && el !== this && !(el.getAttribute && el.getAttribute('data-sact'))) el = el.parentNode;
+      if (!el || el === this || el.disabled) return;
+      var row = el.closest ? el.closest('tr') : null;
+      if (!row) return;
+      var s = serverById(row.getAttribute('data-sid'));
+      if (!s) return;
+      var act = el.getAttribute('data-sact');
+      if (act === 'edit') openServerModal(s);
+      else if (act === 'del') deleteServer(s);
+      else if (act === 'test') { openServerModal(s); setTimeout(function () { document.getElementById('sTestUser').focus(); }, 120); }
+    });
+
+    /* 用户弹窗：账号类型 / 认证服务器切换 */
+    document.getElementById('uSourceType').addEventListener('change', syncUserModalFields);
+    document.getElementById('uServer').addEventListener('change', syncUserModalFields);
 
     /* 客户管理页 */
     document.getElementById('btnCusts').addEventListener('click', openCustsPage);
@@ -4686,12 +5147,12 @@
       else if (act === 'del') deleteUser(u);
     });
 
-    /* 汇总（只读）视图的写入拦截：捕获阶段先于业务处理器生效 */
+    /* 只读拦截（汇总视图 + 只读账号共用）：捕获阶段先于业务处理器生效 */
     var WRITE_SEL = '#btnAdd,#btnRegions,#btnImport,#btnAddRegion,#btnSaveCust,#btnDoImport,' +
       '#btnResetDemo,#btnPick,#btnAddVisit,#btnEditCust,#btnDelCust,#dTimeline .tl-del,' +
       '#btnPickAttach,#regionList [data-act],#regionList input';
     document.addEventListener('click', function (e) {
-      if (!isReadonly()) return;
+      if (canWrite() && !isReadonly()) return;
       var el = e.target;
       while (el && el.nodeType === 1) {
         if (el.matches && el.matches(WRITE_SEL)) { e.preventDefault(); e.stopPropagation(); guardEdit(); return; }
@@ -4699,7 +5160,7 @@
       }
     }, true);
     document.addEventListener('input', function (e) {
-      if (!isReadonly()) return;
+      if (canWrite() && !isReadonly()) return;
       var el = e.target;
       if (el && el.matches && el.matches('#regionList input')) e.stopPropagation();
     }, true);
@@ -4710,6 +5171,7 @@
     AUTH.user = user;
     AUTH.scope = (user.role === 'admin') ? SCOPE_ALL : user.username;
     AUTH.attachMax = (opts && opts.attachMax) || 0;
+    AUTH.servers = (opts && opts.servers) || AUTH.servers || [];
     hideAuth();
     if (!appBooted) {
       appBooted = true;
@@ -4773,7 +5235,7 @@
         if (r.ok && r.data) {
           applyServerUsers(r.data.users);
           applyServerLedgers(r.data.ledgers);
-          signIn(r.data.user, { attachMax: r.data.attachMax });
+          signIn(r.data.user, { attachMax: r.data.attachMax, servers: r.data.authServers || [] });
         } else {
           clearToken();
           AUTH.user = null;

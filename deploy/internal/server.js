@@ -72,7 +72,21 @@ CREATE TABLE IF NOT EXISTS users (
   hash        TEXT NOT NULL,
   must_change INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL,
-  last_login  TEXT NOT NULL DEFAULT ''
+  last_login  TEXT NOT NULL DEFAULT '',
+  source      TEXT NOT NULL DEFAULT 'local',
+  perm        TEXT NOT NULL DEFAULT 'rw',
+  server_id   TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS auth_servers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  type       TEXT NOT NULL,
+  host       TEXT NOT NULL,
+  port       INTEGER NOT NULL DEFAULT 0,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  cfg        TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS ledgers (
   username   TEXT PRIMARY KEY,
@@ -111,6 +125,24 @@ try {
   console.error('[migrate] attachments.ext 处理失败：' + (e && e.message));
 }
 
+/* 老库补列：users.source / perm / server_id（本地用户 → 本地/远程用户、读写/只读权限） */
+try {
+  const ucols = db.prepare('PRAGMA table_info(users)').all().map(function (c) { return c.name; });
+  const add = [
+    ['source', "ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT 'local'"],
+    ['perm', "ALTER TABLE users ADD COLUMN perm TEXT NOT NULL DEFAULT 'rw'"],
+    ['server_id', "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''"]
+  ];
+  add.forEach(function (pair) {
+    if (ucols.indexOf(pair[0]) < 0) {
+      db.exec(pair[1]);
+      console.log('[migrate] users 增加 ' + pair[0] + ' 列');
+    }
+  });
+} catch (e) {
+  console.error('[migrate] users 账号来源列处理失败：' + (e && e.message));
+}
+
 /* ---------------- 基础工具 ---------------- */
 function sha256Hex(s) {
   return crypto.createHash('sha256').update(s, 'utf8').digest('hex');
@@ -127,7 +159,13 @@ function nowIso() { return new Date().toISOString(); }
 function normName(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
 function validUsername(u) { return /^[A-Za-z0-9_.-]{3,32}$/.test(u); }
 
-function mapUser(row) {
+/* 认证来源：local = 本地口令；radius / tacacs / ldap = 由对应认证服务器校验
+   perm：rw = 读写；ro = 只读（可看可导出，不能改台账）
+   mapUser 的第二个参数是「认证服务器 id → 记录」的映射，用于带出名称，避免前端二次查询 */
+function mapUser(row, srvMap) {
+  const source = row.source || 'local';
+  const sid = row.server_id || '';
+  const srv = (sid && srvMap) ? srvMap[sid] : null;
   return {
     id: row.username,
     username: row.username,
@@ -137,8 +175,200 @@ function mapUser(row) {
     note: row.note || '',
     mustChange: !!row.must_change,
     createdAt: (row.created_at || '').slice(0, 10),
-    lastLogin: row.last_login || ''
+    lastLogin: row.last_login || '',
+    source: source,
+    perm: row.perm === 'ro' ? 'ro' : 'rw',
+    serverId: sid,
+    serverName: srv ? srv.name : (sid ? '（认证服务器已删除）' : ''),
+    serverType: srv ? srv.type : (sid ? '' : source)
   };
+}
+
+/* ---------------- 认证服务器（远程用户） ---------------- */
+/* cfg 里可能含共享密钥，绝不能原样回传前端：列表接口只给 hasSecret 标记 */
+const AUTH_TYPES = ['radius', 'tacacs', 'ldap'];
+const AUTH_DEFAULT_PORT = { radius: 1812, tacacs: 49, ldap: 389 };
+const AUTH_LABEL = { local: '本地', radius: 'RADIUS', tacacs: 'TACACS+', ldap: 'LDAP' };
+
+function parseCfg(v) {
+  if (v && typeof v === 'object') return v;
+  try { return JSON.parse(String(v || '{}')) || {}; } catch (e) { return {}; }
+}
+function serversMap() {
+  const out = {};
+  db.prepare('SELECT * FROM auth_servers').all().forEach(function (r) { out[r.id] = r; });
+  return out;
+}
+function serverView(row, userCount) {
+  const cfg = parseCfg(row.cfg);
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    host: row.host,
+    port: row.port || AUTH_DEFAULT_PORT[row.type] || 0,
+    enabled: !!row.enabled,
+    createdAt: (row.created_at || '').slice(0, 10),
+    updatedAt: row.updated_at || '',
+    userCount: userCount || 0,
+    hasSecret: !!String(cfg.secret || ''),
+    /* 只回传非敏感配置；密钥只给「是否已设置」 */
+    cfg: {
+      timeout: cfg.timeout || 5,
+      nasId: cfg.nasId || '',
+      plain: cfg.plain ? 1 : 0,
+      bindPattern: cfg.bindPattern || '',
+      baseDn: cfg.baseDn || '',
+      userAttr: cfg.userAttr || '',
+      tls: cfg.tls ? 1 : 0,
+      verifyTls: cfg.verifyTls ? 1 : 0
+    }
+  };
+}
+function listServers() {
+  const counts = {};
+  db.prepare("SELECT server_id, COUNT(*) AS n FROM users WHERE server_id <> '' GROUP BY server_id")
+    .all().forEach(function (r) { counts[r.server_id] = r.n; });
+  return db.prepare('SELECT * FROM auth_servers ORDER BY created_at').all()
+    .map(function (r) { return serverView(r, counts[r.id] || 0); });
+}
+function canWriteUser(u) { return u.role === 'admin' || (u.perm !== 'ro'); }
+
+/* ---------------- 远程认证：网络传输 + 协议模块 ---------------- */
+/* 协议编解码在 worker/auth-protocols.mjs（与 Cloudflare Workers 版共用同一份），
+   这里只负责提供 Node 侧的 UDP / TCP 传输实现。 */
+let protocolsMod = null;
+function loadProtocols() {
+  if (!protocolsMod) {
+    /* 部署后与本文件同级；从仓库直接跑时在 ../worker/ 下（deploy.sh 会把这份拷到同级） */
+    protocolsMod = import('./auth-protocols.mjs').catch(function () {
+      return import('../../worker/auth-protocols.mjs');
+    });
+    /* 加载失败不缓存，便于放好文件后免重启重试 */
+    protocolsMod.catch(function () { protocolsMod = null; });
+  }
+  return protocolsMod;
+}
+
+/* 一次 UDP 交互（RADIUS）：发一包、等一包、超时即报错 */
+function sendUdp(host, port, bytes, timeoutMs) {
+  const dgram = require('node:dgram');
+  return new Promise(function (resolve, reject) {
+    const sock = dgram.createSocket('udp4');
+    let done = false;
+    const finish = function (fn, arg) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { sock.close(); } catch (e) {}
+      fn(arg);
+    };
+    const timer = setTimeout(function () { finish(reject, new Error('timeout')); }, timeoutMs);
+    sock.on('message', function (msg) { finish(resolve, new Uint8Array(msg)); });
+    sock.on('error', function (e) { finish(reject, e); });
+    sock.send(Buffer.from(bytes), port, host, function (e) { if (e) finish(reject, e); });
+  });
+}
+
+function openTcp(host, port, opts) {
+  const net = require('node:net');
+  let tls = require('node:tls');
+  opts = opts || {};
+  return new Promise(function (resolve, reject) {
+    const useTls = !!opts.tls;
+    const connectOpts = { host: host, port: port };
+    if (useTls) connectOpts.rejectUnauthorized = !opts.insecure;
+    const sock = useTls ? tls.connect(connectOpts) : net.connect(connectOpts);
+    let buf = Buffer.alloc(0);
+    let waiter = null;
+
+    const pump = function () {
+      if (!waiter || buf.length < waiter.n) return;
+      const w = waiter; waiter = null;
+      const out = buf.subarray(0, w.n);
+      buf = buf.subarray(w.n);
+      w.resolve(new Uint8Array(out));
+    };
+    sock.on('data', function (c) { buf = Buffer.concat([buf, c]); pump(); });
+    sock.on('error', function (e) { reject(e); });
+    sock.setTimeout(opts.timeoutMs || 5000, function () { sock.destroy(); reject(new Error('timeout')); });
+    sock.once(useTls ? 'secureConnect' : 'connect', function () {
+      resolve({
+        write: function (b) {
+          return new Promise(function (res) { sock.write(Buffer.from(b), function () { res(); }); });
+        },
+        read: function (n) {
+          if (buf.length >= n) {
+            const out = buf.subarray(0, n); buf = buf.subarray(n);
+            return Promise.resolve(new Uint8Array(out));
+          }
+          return new Promise(function (res, rej) { waiter = { n: n, resolve: res, reject: rej }; });
+        },
+        close: function () { try { sock.destroy(); } catch (e) {} }
+      });
+    });
+  });
+}
+
+const AUTH_TRANSPORT = {
+  udp: function (host, port, bytes, timeoutMs) { return sendUdp(host, port, bytes, timeoutMs); },
+  tcp: function (host, port, opts) { return openTcp(host, port, opts); }
+};
+
+/* 用指定认证服务器校验一次口令；返回 { ok, code, message } */
+async function remoteAuth(srv, username, password) {
+  let P;
+  try {
+    P = await loadProtocols();
+  } catch (e) {
+    return { ok: false, code: 'nolib', message: '认证模块 auth-protocols.mjs 未加载：' + (e && e.message) };
+  }
+  return P.authenticate(AUTH_TRANSPORT, {
+    type: srv.type, host: srv.host, port: srv.port || AUTH_DEFAULT_PORT[srv.type] || 0,
+    cfg: parseCfg(srv.cfg)
+  }, username, password);
+}
+
+
+/* ---------------- 认证服务器：入参校验 ---------------- */
+/* 返回 { err } 或 { row }；row 只含待落库字段，secret 未传时沿用库里的旧值
+   （前端列表接口拿不到密钥，编辑时留空即表示「不修改」） */
+function ensureServerInput(body, base) {
+  body = body || {};
+  const type = String(body.type || (base && base.type) || '').toLowerCase();
+  if (AUTH_TYPES.indexOf(type) < 0) return { err: '认证类型需为 RADIUS / TACACS+ / LDAP 之一' };
+
+  const name = body.name == null ? (base ? base.name : '') : String(body.name).trim();
+  if (!name) return { err: '请填写认证服务器名称' };
+  if (name.length > 40) return { err: '名称请控制在 40 个字符以内' };
+
+  const host = body.host == null ? (base ? base.host : '') : String(body.host).trim();
+  if (!host) return { err: '请填写服务器地址（IP 或主机名）' };
+  if (!/^[A-Za-z0-9_.:\-\[\]]{1,120}$/.test(host)) return { err: '服务器地址格式不正确，只填 IP 或主机名（不要带协议和斜杠）' };
+
+  let port = body.port == null ? (base ? base.port : 0) : parseInt(body.port, 10);
+  if (!isFinite(port) || port <= 0 || port > 65535) port = AUTH_DEFAULT_PORT[type] || 0;
+
+  const enabled = body.enabled == null ? (base ? (base.enabled ? 1 : 0) : 1) : (body.enabled ? 1 : 0);
+  const oldCfg = base ? parseCfg(base.cfg) : {};
+  const inCfg = parseCfg(body.cfg);
+  const pick = function (k, dft) { return inCfg[k] == null ? (oldCfg[k] == null ? dft : oldCfg[k]) : inCfg[k]; };
+
+  const cfg = {
+    timeout: Math.min(30, Math.max(1, parseInt(pick('timeout', 5), 10) || 5)),
+    nasId: String(pick('nasId', '') || '').slice(0, 60),
+    plain: pick('plain', 0) ? 1 : 0,
+    bindPattern: String(pick('bindPattern', '') || '').slice(0, 300),
+    baseDn: String(pick('baseDn', '') || '').slice(0, 300),
+    userAttr: String(pick('userAttr', '') || '').slice(0, 40),
+    tls: pick('tls', 0) ? 1 : 0,
+    verifyTls: pick('verifyTls', 0) ? 1 : 0,
+    secret: String(inCfg.secret === undefined ? (oldCfg.secret || '') : inCfg.secret).slice(0, 200)
+  };
+  if (type !== 'ldap' && !cfg.secret) return { err: 'RADIUS / TACACS+ 需要填写共享密钥（secret）' };
+  if (type === 'ldap' && cfg.tls && port === AUTH_DEFAULT_PORT.ldap) port = 636;
+
+  return { row: { name: name, type: type, host: host, port: port, enabled: enabled, cfg: JSON.stringify(cfg) } };
 }
 
 /* ---------------- 初始超管 ---------------- */
@@ -158,9 +388,10 @@ function mapUser(row) {
 
 /* ---------------- 数据访问 ---------------- */
 const stmtSessionJoin =
-  'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login ' +
+  'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login, ' +
+  'u.source, u.perm, u.server_id ' +
   'FROM sessions s JOIN users u ON u.username = s.username WHERE s.token = ?';
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id';
 
 function currentUser(req) {
   const raw = req.headers['authorization'] || '';
@@ -174,7 +405,7 @@ function currentUser(req) {
     return null;
   }
   if (row.status !== 'active') return null;
-  const u = mapUser(row);
+  const u = mapUser(row, serversMap());
   u.token = token;
   return u;
 }
@@ -200,11 +431,13 @@ function sanitizeLedger(d) {
 }
 function bundleFor(u) {
   const isAdmin = u.role === 'admin';
+  const srvMap = serversMap();
   let users;
   if (isAdmin) {
-    users = db.prepare('SELECT ' + USER_COLS + ' FROM users ORDER BY created_at').all().map(mapUser);
+    users = db.prepare('SELECT ' + USER_COLS + ' FROM users ORDER BY created_at').all()
+      .map(function (r) { return mapUser(r, srvMap); });
   } else {
-    users = [mapUser(u)];
+    users = [mapUser(u, srvMap)];
   }
   const ledgers = {};
   if (isAdmin) {
@@ -215,7 +448,12 @@ function bundleFor(u) {
     const d = readLedger(u.username);
     if (d) ledgers[u.username] = d;
   }
-  return { user: mapUser(u), users: users, ledgers: ledgers, admin: isAdmin, attachMax: ATTACH_MAX };
+  return {
+    user: mapUser(u, srvMap), users: users, ledgers: ledgers, admin: isAdmin,
+    canWrite: canWriteUser(u), attachMax: ATTACH_MAX,
+    /* 认证服务器清单只给超管（含配置，密钥仅标记是否已设置） */
+    authServers: isAdmin ? listServers() : []
+  };
 }
 function activeAdminCount(exclude) {
   const row = exclude
@@ -417,7 +655,23 @@ async function handleApi(req, res, url) {
     const u = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
     /* 账号不存在与密码错误统一提示，避免账号枚举 */
     if (!u) return bad(res, '用户名或密码不正确。', 401);
-    if (hashPwd(password, u.salt) !== u.hash) return bad(res, '用户名或密码不正确。', 401);
+    /* 口令来源：本地哈希，或转发给 RADIUS / TACACS+ / LDAP 服务器校验 */
+    const source = u.source || 'local';
+    if (source === 'local') {
+      if (hashPwd(password, u.salt) !== u.hash) return bad(res, '用户名或密码不正确。', 401);
+    } else {
+      /* 远程账号先判停用，避免拿已停用账号去撞认证服务器（可能触发锁定计数） */
+      if (u.status !== 'active') return bad(res, '该账号已停用，请联系超级管理员。', 403);
+      const srv = db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(u.server_id || '');
+      if (!srv || !srv.enabled) return bad(res, '认证服务暂时不可用，请联系超级管理员。', 503);
+      const r = await remoteAuth(srv, u.username, password);
+      if (!r.ok) {
+        /* 只有明确的「口令不对」才回统一话术；连不上/密钥不匹配属于配置问题，给管理员可读的提示 */
+        if (r.code === 'reject' || r.code === 'nouser') return bad(res, '用户名或密码不正确。', 401);
+        console.warn('[auth] 远程认证失败 ' + username + ' @' + srv.type + ':' + srv.host + ' → ' + r.code + ' ' + r.message);
+        return bad(res, '认证服务暂时不可用（' + r.message + '），请联系超级管理员。', 502);
+      }
+    }
     if (u.status !== 'active') return bad(res, '该账号已停用，请联系超级管理员。', 403);
 
     const token = newToken();
@@ -504,6 +758,10 @@ async function handleApi(req, res, url) {
     const oldPwd = String(body.oldPassword || '');
     const newPwd = String(body.newPassword || '');
     if (newPwd.length < 6) return bad(res, '新密码至少 6 位');
+    /* 远程账号的口令由 RADIUS / TACACS+ / LDAP 掌管，本系统改不了 */
+    if ((me.source || 'local') !== 'local') {
+      return bad(res, '该账号使用「' + (AUTH_LABEL[me.source] || me.source) + '」认证，密码请到对应的认证系统修改。', 400);
+    }
     const row = db.prepare('SELECT salt, hash FROM users WHERE username = ?').get(me.username);
     if (!row) return bad(res, '账号不存在', 404);
     if (hashPwd(oldPwd, row.salt) !== row.hash) return bad(res, '当前密码不正确');
@@ -517,6 +775,7 @@ async function handleApi(req, res, url) {
 
   /* --- 巡检附件：上传 / 删除（需登录；读取见上方公开路由） --- */
   if (p === '/api/attach' && method === 'POST') {
+    if (!canWriteUser(me)) return bad(res, '当前账号为只读权限，不能上传附件。', 403);
     const name = safeFileName(body.name);
     const mime = String(body.mime || '').toLowerCase().split(';')[0].trim();
     const raw = String(body.data || '');
@@ -554,6 +813,7 @@ async function handleApi(req, res, url) {
 
   const mAt = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
   if (mAt && method === 'DELETE') {
+    if (!canWriteUser(me)) return bad(res, '当前账号为只读权限，不能删除附件。', 403);
     const row = db.prepare('SELECT id, name, mime, owner, ext FROM attachments WHERE id = ?').get(mAt[1]);
     if (!row) return ok(res, { removed: false });
     if (!isAdmin && row.owner !== me.username) return bad(res, '无权删除该附件', 403);
@@ -567,6 +827,7 @@ async function handleApi(req, res, url) {
   if (p === '/api/ledger' && method === 'GET') return ok(res, bundleFor(me));
 
   if (p === '/api/ledger' && method === 'PUT') {
+    if (!canWriteUser(me)) return bad(res, '当前账号为只读权限，不能修改台账。', 403);
     const scope = normName(body.scope);
     if (!scope) return bad(res, '缺少数据范围');
     if (!isAdmin && scope !== me.username) return bad(res, '无权写入该账号的台账', 403);
@@ -578,10 +839,75 @@ async function handleApi(req, res, url) {
     return ok(res, { scope: scope, updatedAt: nowIso() });
   }
 
+  /* --- 认证服务器管理（仅超管）：远程用户的账号校验由此类服务器完成 --- */
+  if (p === '/api/auth-servers' && method === 'GET') {
+    if (!isAdmin) return bad(res, '仅超级管理员可查看认证服务器', 403);
+    return ok(res, { servers: listServers() });
+  }
+
+  if (p === '/api/auth-servers' && method === 'POST') {
+    if (!isAdmin) return bad(res, '仅超级管理员可新增认证服务器', 403);
+    const v = ensureServerInput(body, null);
+    if (v.err) return bad(res, v.err);
+    const id = 'srv' + randHex(5);
+    db.prepare(
+      'INSERT INTO auth_servers (id, name, type, host, port, enabled, cfg, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(id, v.row.name, v.row.type, v.row.host, v.row.port, v.row.enabled, v.row.cfg, nowIso(), nowIso());
+    return ok(res, { server: serverView(db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(id), 0) });
+  }
+
+  /* 测试连接：既支持「已保存的服务器 id」，也支持用弹窗里尚未保存的配置直接试 */
+  if (p === '/api/auth-servers/test' && method === 'POST') {
+    if (!isAdmin) return bad(res, '仅超级管理员可测试认证服务器', 403);
+    const sid = String(body.id || '').trim();
+    const base = sid ? db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(sid) : null;
+    if (sid && !base) return bad(res, '认证服务器不存在', 404);
+    const v = ensureServerInput(body, base);
+    if (v.err) return bad(res, v.err);
+    const username = String(body.username || '').trim();
+    const password = String(body.password || '');
+    if (!username || !password) return bad(res, '请填写用于测试的账号与密码');
+    const r = await remoteAuth({
+      type: v.row.type, host: v.row.host, port: v.row.port, cfg: v.row.cfg
+    }, username, password);
+    console.log('[auth-test] ' + v.row.type + '://' + v.row.host + ':' + v.row.port +
+      ' user=' + username + ' → ' + (r.ok ? 'OK' : 'FAIL ' + r.code));
+    return ok(res, { ok: !!r.ok, code: r.code, message: r.message });
+  }
+
+  const msv = /^\/api\/auth-servers\/([A-Za-z0-9_-]{4,40})$/.exec(p);
+  if (msv) {
+    if (!isAdmin) return bad(res, '仅超级管理员可修改认证服务器', 403);
+    const srow = db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(msv[1]);
+    if (!srow) return bad(res, '认证服务器不存在', 404);
+
+    if (method === 'PATCH') {
+      const v = ensureServerInput(body, srow);
+      if (v.err) return bad(res, v.err);
+      db.prepare('UPDATE auth_servers SET name = ?, type = ?, host = ?, port = ?, enabled = ?, cfg = ?, updated_at = ? WHERE id = ?')
+        .run(v.row.name, v.row.type, v.row.host, v.row.port, v.row.enabled, v.row.cfg, nowIso(), srow.id);
+      /* 类型变了要同步改绑该服务器的账号来源标记，否则登录会走错分支 */
+      if (v.row.type !== srow.type) {
+        db.prepare('UPDATE users SET source = ? WHERE server_id = ?').run(v.row.type, srow.id);
+      }
+      return ok(res, { server: serverView(db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(srow.id), 0) });
+    }
+
+    if (method === 'DELETE') {
+      const n = db.prepare('SELECT COUNT(*) AS n FROM users WHERE server_id = ?').get(srow.id).n;
+      if (n > 0) return bad(res, '仍有 ' + n + ' 个账号使用该认证服务器，请先改绑或删除这些账号');
+      db.prepare('DELETE FROM auth_servers WHERE id = ?').run(srow.id);
+      return ok(res, null);
+    }
+    return bad(res, '不支持的请求方法', 405);
+  }
+
   /* --- 用户管理（仅超管） --- */
   if (p === '/api/users' && method === 'GET') {
     if (!isAdmin) return bad(res, '仅超级管理员可查看用户列表', 403);
-    const users = db.prepare('SELECT ' + USER_COLS + ' FROM users ORDER BY created_at').all().map(mapUser);
+    const smap = serversMap();
+    const users = db.prepare('SELECT ' + USER_COLS + ' FROM users ORDER BY created_at').all()
+      .map(function (r) { return mapUser(r, smap); });
     return ok(res, { users: users });
   }
 
@@ -595,28 +921,45 @@ async function handleApi(req, res, url) {
     if (db.prepare('SELECT 1 AS x FROM users WHERE username = ?').get(username)) {
       return bad(res, '用户名「' + username + '」已存在');
     }
+    /* 权限：只读 ro 不能改台账；超管恒为读写 */
+    const perm = role === 'admin' ? 'rw' : (body.perm === 'ro' ? 'ro' : 'rw');
+    /* 账号来源：指定认证服务器即为远程账号，类型取服务器自身的 type（不信任前端传值） */
+    const serverId = String(body.serverId || '').trim();
+    let source = 'local';
+    if (serverId) {
+      const srv = db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(serverId);
+      if (!srv) return bad(res, '所选认证服务器不存在');
+      if (!srv.enabled) return bad(res, '所选认证服务器已停用');
+      source = srv.type;
+    }
 
-    /* 迁移路径：带 salt+hash 表示沿用原口令，不需要重新设密码 */
+    /* 迁移路径：带 salt+hash 表示沿用原口令（本地旧版迁入），不需要重新设密码 */
     const legacySalt = String(body.salt || '');
     const legacyHash = String(body.hash || '');
     const isLegacy = /^[A-Za-z0-9]{4,64}$/.test(legacySalt) && /^[0-9a-f]{64}$/.test(legacyHash);
 
-    let salt, hash, mustChange;
-    if (isLegacy) {
-      salt = legacySalt; hash = legacyHash; mustChange = 0;
-    } else {
-      const pwd = String(body.password || '');
-      if (pwd.length < 6) return bad(res, '密码至少 6 位');
-      salt = newSalt();
-      hash = hashPwd(pwd, salt);
-      mustChange = 1;
+    let salt = '', hash = '', mustChange = 0;
+    if (source === 'local') {
+      if (isLegacy) {
+        salt = legacySalt; hash = legacyHash; mustChange = 0;
+      } else {
+        const pwd = String(body.password || '');
+        if (pwd.length < 6) return bad(res, '密码至少 6 位');
+        salt = newSalt();
+        hash = hashPwd(pwd, salt);
+        mustChange = 1;
+      }
+    } else if (body.password) {
+      return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，请不要在本地设置密码');
     }
+
     db.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso());
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId);
     if (body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
     return ok(res, {
-      user: mapUser(db.prepare('SELECT ' + USER_COLS + ' FROM users WHERE username = ?').get(username))
+      user: mapUser(db.prepare('SELECT ' + USER_COLS + ' FROM users WHERE username = ?').get(username), serversMap())
     });
   }
 
@@ -632,12 +975,38 @@ async function handleApi(req, res, url) {
       const role = body.role == null ? row.role : (body.role === 'admin' ? 'admin' : 'user');
       const status = body.status == null ? row.status : (body.status === 'disabled' ? 'disabled' : 'active');
       const note = body.note == null ? (row.note || '') : String(body.note);
+      const perm = role === 'admin' ? 'rw' : (body.perm == null ? (row.perm || 'rw') : (body.perm === 'ro' ? 'ro' : 'rw'));
       const losingAdmin = row.role === 'admin' && row.status === 'active' && (role !== 'admin' || status !== 'active');
       if (losingAdmin && activeAdminCount(target) === 0) {
         return bad(res, '至少需要保留一个启用的超级管理员');
       }
-      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ? WHERE username = ?')
-        .run(name, role, status, note, target);
+
+      /* 来源变更：body.serverId 传空串表示改回本地账号 */
+      let source = row.source || 'local';
+      let serverId = row.server_id || '';
+      let sourceChanged = false;
+      if (body.serverId !== undefined) {
+        const sid = String(body.serverId || '').trim();
+        if (sid) {
+          const srv = db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(sid);
+          if (!srv) return bad(res, '所选认证服务器不存在');
+          if (!srv.enabled) return bad(res, '所选认证服务器已停用');
+          source = srv.type;
+        } else {
+          source = 'local';
+        }
+        serverId = sid;
+        sourceChanged = (source !== (row.source || 'local')) || (serverId !== (row.server_id || ''));
+      }
+      /* 从远程改回本地时必须给一个本地口令，否则这个账号将无法登录 */
+      const wantsLocalWithoutPwd = source === 'local' && !row.hash && !(body.password && String(body.password).length);
+      if (wantsLocalWithoutPwd) return bad(res, '改为本地账号时需要设置初始密码（至少 6 位）');
+      if (source !== 'local' && body.password) {
+        return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
+      }
+
+      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ? WHERE username = ?')
+        .run(name, role, status, note, perm, source, serverId, target);
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad(res, '密码至少 6 位');
@@ -645,9 +1014,15 @@ async function handleApi(req, res, url) {
         db.prepare('UPDATE users SET salt = ?, hash = ?, must_change = 1 WHERE username = ?')
           .run(salt, hashPwd(np, salt), target);
         db.prepare('DELETE FROM sessions WHERE username = ?').run(target);
+      } else if (sourceChanged) {
+        /* 换了认证来源后旧会话的权限语义已变，强制重新登录 */
+        db.prepare('DELETE FROM sessions WHERE username = ? AND username <> ?').run(target, me.username);
+        if (source !== 'local') {
+          db.prepare('UPDATE users SET salt = ?, hash = ? WHERE username = ?').run('', '', target);
+        }
       }
       return ok(res, {
-        user: mapUser(db.prepare('SELECT ' + USER_COLS + ' FROM users WHERE username = ?').get(target))
+        user: mapUser(db.prepare('SELECT ' + USER_COLS + ' FROM users WHERE username = ?').get(target), serversMap())
       });
     }
 
@@ -731,7 +1106,7 @@ const MIME = {
   '.map': 'application/json; charset=utf-8'
 };
 const COMPRESSIBLE = /^(text\/|application\/(javascript|json)|image\/svg)/;
-const BLOCKED = /^\/(server\.js|package(-lock)?\.json|Dockerfile|docker-compose\.yml|\.dockerignore|data\/|node_modules\/|\.git\/|tests\/|worker\/)/;
+const BLOCKED = /^\/(server\.js|auth-protocols\.mjs|package(-lock)?\.json|Dockerfile|docker-compose\.yml|\.dockerignore|data\/|node_modules\/|\.git\/|tests\/|worker\/)/;
 
 const cache = new Map(); // key: file:mtime:size -> { buf, gz, br }
 const CACHE_MAX = 40;
