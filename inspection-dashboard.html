@@ -1036,7 +1036,6 @@
     <p class="hint" style="margin:12px 2px 0;">
       远程用户登录时，本站把用户名与密码转发给这里配置的服务器校验，校验通过后在本站签发会话。
       共享密钥只保存在服务端，列表里不会回显；编辑时留空表示「不修改」。
-      <b>公网站点（Cloudflare Workers）没有 UDP 出网能力，RADIUS 仅在内网部署实例可用</b>，TACACS+ 与 LDAP 走 TCP 两端都支持。
     </p>
   </div>
 </div>
@@ -1159,7 +1158,7 @@
       <div class="field">
         <label for="sType">协议类型</label>
         <select id="sType">
-          <option value="radius">RADIUS — UDP 1812（仅内网实例可用）</option>
+          <option value="radius">RADIUS — UDP 1812</option>
           <option value="tacacs">TACACS+ — TCP 49</option>
           <option value="ldap">LDAP — TCP 389 / 636</option>
         </select>
