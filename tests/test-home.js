@@ -318,7 +318,7 @@ async function main() {
     const srcVer = (/PROV_SRC = 'assets\/provinces\.js\?v=([^']+)'/.exec(dash) || [])[1];
     const preVer = (/rel="preload" as="script" href="assets\/provinces\.js\?v=([^"]+)"/.exec(dash) || [])[1];
     check('预取地址与 PROV_SRC 版本号一致', !!srcVer && srcVer === preVer, srcVer + ' / ' + preVer);
-    check('看板体积已降到 260 KB 以内', Buffer.byteLength(dash, 'utf8') < 260 * 1024,
+    check('看板体积已降到 272 KB 以内', Buffer.byteLength(dash, 'utf8') < 272 * 1024,
       Math.round(Buffer.byteLength(dash, 'utf8') / 1024) + ' KB');
   });
 

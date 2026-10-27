@@ -1204,9 +1204,19 @@
             <input type="password" id="sBindPwd" autocomplete="new-password" style="width:100%;" placeholder="服务账号密码">
           </div>
         </div>
+        <div style="display:flex;gap:10px;margin-top:10px;">
+          <div style="flex:1 1 auto;">
+            <label for="sBaseDn" style="font-size:12px;">Base DN（搜索起点）</label>
+            <input type="text" id="sBaseDn" autocomplete="off" style="width:100%;" placeholder="ou=external,dc=zdns,dc=com">
+          </div>
+          <div style="flex:0 0 130px;">
+            <label for="sUserAttr" style="font-size:12px;">用户属性</label>
+            <input type="text" id="sUserAttr" autocomplete="off" style="width:100%;" placeholder="默认 cn">
+          </div>
+        </div>
         <div class="hint" id="sBindPwdHint">
-          目录不允许直接绑定用户 DN 时填写：先用服务账号搜索用户，再用用户口令绑定。
-          需同时填写 Base DN；Bind 密码只存服务端、不回显，编辑时留空表示不修改。
+          目录不允许直接绑定用户 DN 时填写服务账号：先用服务账号在 Base DN 下按「用户属性=登录名」搜索用户，
+          再用用户口令绑定。Bind 密码只存服务端、不回显，编辑时留空表示不修改。
         </div>
         <label class="switch" style="margin-top:8px;">
           <input type="checkbox" id="sTls"><span class="track"></span><span>使用 TLS（LDAPS，默认端口 636）</span>
@@ -4543,6 +4553,8 @@
     document.getElementById('sBindDn').value = s ? (s.cfg.bindDn || '') : '';
     document.getElementById('sBindPwd').value = '';
     document.getElementById('sBindPwd').placeholder = (s && s.hasBindPwd) ? '已设置，留空表示不修改' : '服务账号密码';
+    document.getElementById('sBaseDn').value = s ? (s.cfg.baseDn || '') : '';
+    document.getElementById('sUserAttr').value = s ? (s.cfg.userAttr || '') : '';
     document.getElementById('sTls').checked = !!(s && s.cfg.tls);
     document.getElementById('sPlain').checked = !!(s && s.cfg.plain);
     document.getElementById('sEnabled').checked = s ? !!s.enabled : true;
@@ -4560,6 +4572,8 @@
       timeout: parseInt(document.getElementById('sTimeout').value, 10) || 5,
       bindPattern: document.getElementById('sBind').value.trim(),
       bindDn: document.getElementById('sBindDn').value.trim(),
+      baseDn: document.getElementById('sBaseDn').value.trim(),
+      userAttr: document.getElementById('sUserAttr').value.trim(),
       tls: document.getElementById('sTls').checked ? 1 : 0,
       plain: document.getElementById('sPlain').checked ? 1 : 0
     };
