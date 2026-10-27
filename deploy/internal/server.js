@@ -218,11 +218,13 @@ function serverView(row, userCount) {
       nasId: cfg.nasId || '',
       plain: cfg.plain ? 1 : 0,
       bindPattern: cfg.bindPattern || '',
+      bindDn: cfg.bindDn || '',
       baseDn: cfg.baseDn || '',
       userAttr: cfg.userAttr || '',
       tls: cfg.tls ? 1 : 0,
       verifyTls: cfg.verifyTls ? 1 : 0
-    }
+    },
+    hasBindPwd: !!String(cfg.bindPassword || '')
   };
 }
 function listServers() {
@@ -359,6 +361,8 @@ function ensureServerInput(body, base) {
     nasId: String(pick('nasId', '') || '').slice(0, 60),
     plain: pick('plain', 0) ? 1 : 0,
     bindPattern: String(pick('bindPattern', '') || '').slice(0, 300),
+    bindDn: String(pick('bindDn', '') || '').slice(0, 300),
+    bindPassword: String(inCfg.bindPassword === undefined ? (oldCfg.bindPassword || '') : inCfg.bindPassword).slice(0, 200),
     baseDn: String(pick('baseDn', '') || '').slice(0, 300),
     userAttr: String(pick('userAttr', '') || '').slice(0, 40),
     tls: pick('tls', 0) ? 1 : 0,
@@ -366,6 +370,9 @@ function ensureServerInput(body, base) {
     secret: String(inCfg.secret === undefined ? (oldCfg.secret || '') : inCfg.secret).slice(0, 200)
   };
   if (type !== 'ldap' && !cfg.secret) return { err: 'RADIUS / TACACS+ 需要填写共享密钥（secret）' };
+  if (type === 'ldap' && cfg.bindDn && cfg.bindPassword && !cfg.baseDn) {
+    return { err: 'LDAP 服务账号模式需要同时填写 Base DN（作为搜索起点）' };
+  }
   if (type === 'ldap' && cfg.tls && port === AUTH_DEFAULT_PORT.ldap) port = 636;
 
   return { row: { name: name, type: type, host: host, port: port, enabled: enabled, cfg: JSON.stringify(cfg) } };

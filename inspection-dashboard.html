@@ -1194,6 +1194,20 @@
           用 {user} 代表登录名。AD 可直接填 <code>{user}@corp.local</code> 或 <code>DOMAIN\{user}</code>；
           留空则把登录名本身当作绑定 DN。
         </div>
+        <div style="display:flex;gap:10px;margin-top:10px;">
+          <div style="flex:1 1 auto;">
+            <label for="sBindDn" style="font-size:12px;">服务账号 Bind DN（可选）</label>
+            <input type="text" id="sBindDn" autocomplete="off" style="width:100%;" placeholder="cn=readonly,dc=zdns,dc=com">
+          </div>
+          <div style="flex:0 0 160px;">
+            <label for="sBindPwd" style="font-size:12px;">Bind 密码</label>
+            <input type="password" id="sBindPwd" autocomplete="new-password" style="width:100%;" placeholder="服务账号密码">
+          </div>
+        </div>
+        <div class="hint" id="sBindPwdHint">
+          目录不允许直接绑定用户 DN 时填写：先用服务账号搜索用户，再用用户口令绑定。
+          需同时填写 Base DN；Bind 密码只存服务端、不回显，编辑时留空表示不修改。
+        </div>
         <label class="switch" style="margin-top:8px;">
           <input type="checkbox" id="sTls"><span class="track"></span><span>使用 TLS（LDAPS，默认端口 636）</span>
         </label>
@@ -4500,6 +4514,7 @@
   }
 
   var editingServerId = null;
+  var editingHasBindPwd = false;
   function syncServerModalFields() {
     var t = document.getElementById('sType').value;
     document.getElementById('sSecretWrap').style.display = (t === 'ldap') ? 'none' : 'block';
@@ -4512,6 +4527,7 @@
   }
   function openServerModal(s) {
     editingServerId = s ? s.id : null;
+    editingHasBindPwd = !!(s && s.hasBindPwd);
     document.getElementById('serverModalTitle').textContent = s ? ('编辑认证服务器 · ' + s.name) : '新增认证服务器';
     document.getElementById('sName').value = s ? s.name : '';
     document.getElementById('sType').value = s ? s.type : 'ldap';
@@ -4524,6 +4540,9 @@
       ? '该服务器已保存共享密钥；留空即保持原值，填写则覆盖。'
       : '与服务端设备上配置的一致。';
     document.getElementById('sBind').value = s ? (s.cfg.bindPattern || '') : '';
+    document.getElementById('sBindDn').value = s ? (s.cfg.bindDn || '') : '';
+    document.getElementById('sBindPwd').value = '';
+    document.getElementById('sBindPwd').placeholder = (s && s.hasBindPwd) ? '已设置，留空表示不修改' : '服务账号密码';
     document.getElementById('sTls').checked = !!(s && s.cfg.tls);
     document.getElementById('sPlain').checked = !!(s && s.cfg.plain);
     document.getElementById('sEnabled').checked = s ? !!s.enabled : true;
@@ -4540,12 +4559,16 @@
     var cfg = {
       timeout: parseInt(document.getElementById('sTimeout').value, 10) || 5,
       bindPattern: document.getElementById('sBind').value.trim(),
+      bindDn: document.getElementById('sBindDn').value.trim(),
       tls: document.getElementById('sTls').checked ? 1 : 0,
       plain: document.getElementById('sPlain').checked ? 1 : 0
     };
     /* 密钥留空 = 不修改（新建时由服务端报「必须填写」） */
     var sec = document.getElementById('sSecret').value;
     if (sec) cfg.secret = sec;
+    /* Bind 密码留空 = 不修改；两者都填才启用服务账号搜索模式 */
+    var bp = document.getElementById('sBindPwd').value;
+    if (bp) cfg.bindPassword = bp;
     return {
       name: document.getElementById('sName').value.trim(),
       type: type,
@@ -4561,6 +4584,9 @@
     if (!p.name) { toast('请填写认证服务器名称'); return; }
     if (!p.host) { toast('请填写服务器地址'); return; }
     if (p.type !== 'ldap' && !p.cfg.secret && !editingServerId) { toast('请填写共享密钥'); return; }
+    if (p.type === 'ldap' && p.cfg.bindDn && !p.cfg.bindPassword && !editingHasBindPwd) {
+      toast('填写了 Bind DN 还需填写 Bind 密码（两者都填才启用服务账号搜索）'); return;
+    }
     var req = editingServerId
       ? api('/auth-servers/' + encodeURIComponent(editingServerId), { method: 'PATCH', body: p })
       : api('/auth-servers', { method: 'POST', body: p });

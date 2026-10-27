@@ -323,6 +323,97 @@ export function ldapBindDn(cfg, username) {
   return username;                    /* 缺省：登录名直接当 DN（AD 的 UPN / DOMAIN\\user 场景） */
 }
 
+/* ---------------- 报文构造与解析（messageID 递增，支持绑定+搜索两次交互） ---------------- */
+function intBytes(n) {
+  return n < 128 ? new Uint8Array([n]) : new Uint8Array([(n >> 8) & 0xff, n & 0xff]);
+}
+
+/* 读取一条完整 LDAPMessage，返回 { tag, content }（content 为 protocolOp 的内容区） */
+async function readLdapMsg(sock) {
+  const head = await sock.read(2);
+  if (head[0] !== 0x30) throw new Error('LDAP 响应不是 SEQUENCE（可能不是 LDAP 服务）');
+  let len = head[1];
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    if (n < 1 || n > 4) throw new Error('LDAP 响应长度字段异常');
+    const lb = await sock.read(n);
+    len = 0;
+    for (let i = 0; i < n; i++) len = (len << 8) | lb[i];
+  }
+  const payload = len ? await sock.read(len) : new Uint8Array(0);
+  if (!payload.length || payload[0] !== 0x02) throw new Error('LDAP 响应结构异常（缺少 messageID）');
+  let i = 2 + payload[1];
+  if (i >= payload.length) throw new Error('LDAP 响应缺少 protocolOp');
+  const tag = payload[i];
+  let opLen = payload[i + 1], j = i + 2;
+  if (opLen & 0x80) {
+    const n = opLen & 0x7f;
+    opLen = 0;
+    for (let k = 0; k < n; k++) opLen = (opLen << 8) | payload[j++];
+  }
+  return { tag: tag, content: payload.subarray(j, j + opLen) };
+}
+
+function bindMsg(id, dn, pwd) {
+  return tlv(0x30, concat([
+    tlv(0x02, intBytes(id)),
+    tlv(0x60, concat([
+      tlv(0x02, new Uint8Array([0x03])),   /* version 3 */
+      ldapStr(0x04, dn),
+      tlv(0x80, cstr(pwd))                 /* authentication: simple */
+    ]))
+  ]));
+}
+
+/* SearchRequest：全子树、只要命中一条、不返回属性（只需要 DN） */
+function searchMsg(id, base, attr, value, timeLimit) {
+  const filter = tlv(0xa3, concat([ldapStr(0x04, attr), ldapStr(0x04, value)]));
+  return tlv(0x30, concat([
+    tlv(0x02, intBytes(id)),
+    tlv(0x63, concat([
+      ldapStr(0x04, base),
+      tlv(0x0a, new Uint8Array([0x02])),        /* scope: wholeSubtree */
+      tlv(0x0a, new Uint8Array([0x00])),        /* derefAliases: never */
+      tlv(0x02, new Uint8Array([0x01])),        /* sizeLimit: 1 */
+      tlv(0x02, intBytes(timeLimit || 5)),      /* timeLimit(秒) */
+      tlv(0x01, new Uint8Array([0x00])),        /* typesOnly: false */
+      filter,
+      tlv(0x30, new Uint8Array(0))              /* attributes: 空 */
+    ]))
+  ]));
+}
+
+/* BindResponse / SearchResultDone 的内容区第一个 TLV 就是 ENUMERATED 结果码 */
+function resultCodeOf(msg) {
+  if (msg.content[0] !== 0x0a) return null;
+  return msg.content[2];
+}
+
+/* SearchResEntry 内容区第一个 TLV 是 objectName（LDAPDN） */
+function entryDnOf(msg) {
+  if (msg.content[0] !== 0x04) return '';
+  let len = msg.content[1], j = 2;
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    len = 0;
+    for (let k = 0; k < n; k++) len = (len << 8) | msg.content[j++];
+  }
+  return new TextDecoder().decode(msg.content.subarray(j, j + len));
+}
+
+async function bindOnce(sock, id, dn, pwd) {
+  await sock.write(bindMsg(id, dn, pwd));
+  return resultCodeOf(await readLdapMsg(sock));
+}
+
+function bindResult(rc) {
+  if (rc === 0) return { ok: true, code: 'accept', message: '认证通过' };
+  if (rc === 49) return { ok: false, code: 'reject', message: '认证被拒绝（用户名或密码不正确）' };
+  if (rc === 32) return { ok: false, code: 'nouser', message: '绑定 DN 不存在（结果码 32）：请检查绑定模板' };
+  if (rc === 53) return { ok: false, code: 'unwilling', message: '服务器拒绝绑定（结果码 53），可能账号被锁或不允许该方式登录' };
+  return { ok: false, code: 'rc' + rc, message: 'LDAP 返回结果码 ' + rc };
+}
+
 export async function ldapAuth(transport, cfg, username, password) {
   cfg = cfg || {};
   if (!transport || !transport.tcp) {
@@ -333,53 +424,64 @@ export async function ldapAuth(transport, cfg, username, password) {
        必须本地拦掉，否则任何空密码都能登录。 */
     return { ok: false, code: 'reject', message: 'LDAP 认证不接受空口令' };
   }
-  const dn = ldapBindDn(cfg, username);
-  const bindReq = tlv(0x60, concat([
-    tlv(0x02, new Uint8Array([0x03])),   /* version 3 */
-    ldapStr(0x04, dn),
-    tlv(0x80, cstr(password))            /* authentication: simple */
-  ]));
-  const msgId = tlv(0x02, new Uint8Array([0x01]));  /* 单次请求，messageID 固定 1 */
-  const wire = concat([tlv(0x30, concat([msgId, bindReq]))]);
-
-  let sock = null;
-  try {
-    sock = await transport.tcp(cfg.host, Number(cfg.port) || (cfg.tls ? 636 : 389), {
+  const port = Number(cfg.port) || (cfg.tls ? 636 : 389);
+  const connect = function () {
+    return transport.tcp(cfg.host, port, {
       timeoutMs: timeoutOf(cfg, 5), tls: !!cfg.tls, insecure: cfg.verifyTls !== true
     });
-    await sock.write(wire);
-    const head = await sock.read(2);
-    if (head[0] !== 0x30) return { ok: false, code: 'badreply', message: 'LDAP 响应不是 SEQUENCE（可能不是 LDAP 服务）' };
-    let len = head[1], readMore = 0;
-    if (len & 0x80) {
-      const bytes = len & 0x7f;
-      if (bytes < 1 || bytes > 4) return { ok: false, code: 'badreply', message: 'LDAP 响应长度字段异常' };
-      const lb = await sock.read(bytes);
-      len = 0;
-      for (let i = 0; i < bytes; i++) len = (len << 8) | lb[i];
-      readMore = 0;
+  };
+  const svcDn = String(cfg.bindDn || '').trim();
+  const svcPwd = String(cfg.bindPassword || '');
+
+  try {
+    if (svcDn && svcPwd) {
+      /* 服务账号模式（OpenLDAP 常见）：先绑服务账号 → 搜出用户 DN → 换连接用用户口令绑定。
+         两个 bind 用不同连接，避免共享同一会话时的状态残留。 */
+      let sock = await connect();
+      let userDn = '';
+      try {
+        const rc = await bindOnce(sock, 1, svcDn, svcPwd);
+        if (rc === 49) return { ok: false, code: 'bindfail', message: '服务账号绑定被拒绝：请检查 Bind DN 与 Bind 密码' };
+        if (rc === 53) return { ok: false, code: 'bindfail', message: '服务账号被服务器拒绝（结果码 53），可能该账号不允许此方式登录' };
+        if (rc !== 0) return { ok: false, code: 'bindfail', message: '服务账号绑定失败（结果码 ' + rc + '）' };
+        const base = String(cfg.baseDn || '').trim();
+        if (!base) return { ok: false, code: 'cfg', message: '使用服务账号模式需要同时填写 Base DN' };
+        const attr = String(cfg.userAttr || 'uid');
+        await sock.write(searchMsg(2, base, attr, username, timeoutOf(cfg, 5)));
+        for (;;) {
+          const m = await readLdapMsg(sock);
+          if (m.tag === 0x64 && !userDn) userDn = entryDnOf(m);   /* SearchResEntry */
+          else if (m.tag === 0x65) {                              /* SearchResultDone */
+            const rc2 = resultCodeOf(m);
+            if (rc2 === 32) return { ok: false, code: 'nouser', message: '目录中未找到该用户：请检查 Base DN 与用户属性（' + attr + '）' };
+            if (rc2 !== 0) return { ok: false, code: 'rc' + rc2, message: 'LDAP 搜索失败（结果码 ' + rc2 + '）' };
+            break;
+          }
+          /* 其它 tag（延续引用等）忽略，继续读 */
+        }
+      } finally {
+        try { await sock.close(); } catch (e) {}
+      }
+      if (!userDn) return { ok: false, code: 'nouser', message: '目录中未找到该用户：请检查 Base DN 与用户属性' };
+
+      sock = await connect();
+      try {
+        return bindResult(await bindOnce(sock, 1, userDn, password));
+      } finally {
+        try { await sock.close(); } catch (e) {}
+      }
     }
-    const payload = len ? await sock.read(len) : new Uint8Array(0);
-    /* 跳过 messageID，取 BindResponse 的第一个 ENUMERATED 作为 resultCode */
-    let i = 0;
-    if (payload[i] !== 0x02) return { ok: false, code: 'badreply', message: 'LDAP 响应结构异常（缺少 messageID）' };
-    i += 2 + payload[i + 1];
-    if (payload[i] !== 0x61) return { ok: false, code: 'badreply', message: 'LDAP 响应不是 BindResponse' };
-    i += 2;
-    if (payload[i] === 0x0a) {
-      const rc = payload[i + 2];
-      if (rc === 0) return { ok: true, code: 'accept', message: '认证通过' };
-      if (rc === 49) return { ok: false, code: 'reject', message: '认证被拒绝（用户名或密码不正确）' };
-      if (rc === 32) return { ok: false, code: 'nouser', message: '绑定 DN 不存在（结果码 32）：请检查绑定模板' };
-      if (rc === 53) return { ok: false, code: 'unwilling', message: '服务器拒绝绑定（结果码 53），可能账号被锁或不允许该方式登录' };
-      return { ok: false, code: 'rc' + rc, message: 'LDAP 返回结果码 ' + rc };
+
+    /* 直接绑定模式：登录名按模板拼成 DN，一次绑定完成认证 */
+    let sock = await connect();
+    try {
+      return bindResult(await bindOnce(sock, 1, ldapBindDn(cfg, username), password));
+    } finally {
+      try { await sock.close(); } catch (e) {}
     }
-    return { ok: false, code: 'badreply', message: 'LDAP 响应缺少结果码' };
   } catch (e) {
     const msg = errText(e);
     return { ok: false, code: /timeout|timed out/i.test(msg) ? 'timeout' : 'neterr', message: '认证服务器无响应：' + msg };
-  } finally {
-    if (sock) { try { await sock.close(); } catch (e) {} }
   }
 }
 

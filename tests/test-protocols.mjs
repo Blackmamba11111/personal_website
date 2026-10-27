@@ -198,30 +198,83 @@ function berRead(buf, i) {
   }
   return { tag, len, start: i, end: i + len };
 }
+/* 假 LDAP 服务器：支持两种模式
+   - 直接绑定：一次 bind（dn/密码须匹配 expectDn/password）
+   - 服务账号模式：bind(svcDn/svcPassword) → search → 返回 entry+done；随后新连接 bind(expectDn) */
 function ldapServer(opts) {
   const srv = net.createServer((sock) => {
     let buf = Buffer.alloc(0);
+    const pending = [];                       /* 每条连接收到的完整报文 */
     sock.on('data', (c) => {
       buf = Buffer.concat([buf, c]);
-      const outer = berRead(buf, 0);
-      if (buf.length < outer.end) return;
-      const inner = buf.subarray(outer.start, outer.end);
-      const bind = berRead(inner, 3);        /* 跳过 30 len 02 01 <msgid> */
-      const body = inner.subarray(bind.start, bind.end);
-      const ver = berRead(body, 0);
-      const dn = berRead(body, ver.end);
-      const pw = berRead(body, dn.end);
-      const dnStr = body.subarray(dn.start, dn.end).toString('utf8');
-      const pwStr = body.subarray(pw.start, pw.end).toString('utf8');
-      const ok = dnStr === opts.expectDn && pwStr === opts.password && pw.tag === 0x80;
-      const rc = ok ? 0 : (dnStr.indexOf('uid=') === 0 ? 49 : 32);
-      const msg = Buffer.from(ok ? '' : 'invalid credentials', 'utf8');
-      const bindResp = Buffer.concat([
-        Buffer.from([0x61, 0x07 + msg.length, 0x0a, 0x01, rc, 0x04, 0x00, 0x04, msg.length]), msg
-      ]);
-      const pkt = Buffer.concat([Buffer.from([0x30, 3 + bindResp.length, 0x02, 0x01, 0x01]), bindResp]);
-      sock.write(pkt);
+      for (;;) {
+        if (buf.length < 2) return;
+        let len = buf[1], hdr = 2;
+        if (len & 0x80) {
+          const n = len & 0x7f; len = 0; hdr = 2 + n;
+          for (let k = 0; k < n; k++) len = (len << 8) | buf[2 + k];
+        }
+        if (buf.length < hdr + len) return;
+        pending.push(buf.subarray(0, hdr + len));
+        buf = buf.subarray(hdr + len);
+        handle(pending[pending.length - 1]);
+      }
     });
+    function reply(msgId, opBuf) {
+      /* 外层 SEQUENCE 长度 = messageID TLV(3 字节，id<128) + protocolOp 长度 */
+      sock.write(Buffer.concat([Buffer.from([0x30, 3 + opBuf.length, 0x02, 0x01, msgId]), opBuf]));
+    }
+    function bindResp(rc) {
+      return Buffer.from([0x61, 0x07, 0x0a, 0x01, rc, 0x04, 0x00, 0x04, 0x00]);
+    }
+    function opOf(msg) {
+      const inner = msg.subarray(2);          /* 跳过 30 len */
+      const msgId = inner[2];
+      const op = berRead(inner, 2 + inner[1]);
+      return { msgId, tag: op.tag, body: inner.subarray(op.start, op.end) };
+    }
+    function handle(msg) {
+      const { msgId, tag, body } = opOf(msg);
+      if (tag === 0x60) {                     /* BindRequest */
+        const ver = berRead(body, 0);
+        const dn = berRead(body, ver.end);
+        const pw = berRead(body, dn.end);
+        const dnStr = body.subarray(dn.start, dn.end).toString('utf8');
+        const pwStr = body.subarray(pw.start, pw.end).toString('utf8');
+        if (opts.svcDn && dnStr === opts.svcDn) {
+          reply(msgId, bindResp(pwStr === opts.svcPassword ? 0 : 49));
+          return;
+        }
+        const ok = dnStr === opts.expectDn && pwStr === opts.password && pw.tag === 0x80;
+        reply(msgId, bindResp(ok ? 0 : (dnStr === opts.expectDn ? 49 : 32)));
+        return;
+      }
+      if (tag === 0x63) {                     /* SearchRequest */
+        let i = 0;
+        const base = berRead(body, i); i = base.end;
+        i += 2 + body[i + 1];                 /* scope */
+        i += 2 + body[i + 1];                 /* derefAliases */
+        i += 2 + body[i + 1];                 /* sizeLimit */
+        i += 2 + body[i + 1];                 /* timeLimit */
+        i += 2 + body[i + 1];                 /* typesOnly */
+        const f = berRead(body, i);           /* 0xa3 equalityMatch */
+        const fBody = body.subarray(f.start, f.end);
+        const a = berRead(fBody, 0);
+        const v = berRead(fBody, a.end);
+        const attr = fBody.subarray(a.start, a.end).toString('utf8');
+        const val = fBody.subarray(v.start, v.end).toString('utf8');
+        if (attr !== opts.filterAttr || val !== opts.filterValue) {
+          reply(msgId, Buffer.from([0x65, 0x07, 0x0a, 0x01, 32, 0x04, 0x00, 0x04, 0x00]));
+          return;
+        }
+        const dnB = Buffer.from(opts.expectDn, 'utf8');
+        reply(msgId, Buffer.concat([
+          Buffer.from([0x64, 2 + dnB.length + 2, 0x04, dnB.length]), dnB, Buffer.from([0x30, 0x00])
+        ]));
+        reply(msgId, Buffer.from([0x65, 0x07, 0x0a, 0x01, 0, 0x04, 0x00, 0x04, 0x00]));
+        return;
+      }
+    }
   });
   return new Promise((res) => srv.listen(0, '127.0.0.1', () => res({
     port: srv.address().port, close: () => srv.close()
@@ -247,6 +300,34 @@ check('LDAP 绑定模板替换 {username}', P.ldapBindDn({ bindPattern: '{userna
 check('LDAP 无模板时按 userAttr+baseDn 拼接',
   P.ldapBindDn({ userAttr: 'cn', baseDn: 'ou=staff,dc=x' }, 'amy') === 'cn=amy,ou=staff,dc=x');
 check('LDAP 缺省模板即直接用登录名', P.ldapBindDn({}, 'amy') === 'amy');
+
+/* ---- LDAP 服务账号模式：bind(服务账号) → search → bind(用户 DN) ---- */
+{
+  const s = await ldapServer({
+    expectDn: 'cn= exterior,ou=external,dc=zdns,dc=com',
+    password: 'User@123',
+    svcDn: 'cn=admin,dc=zdns,dc=com',
+    svcPassword: 'Svc@456',
+    filterAttr: 'cn',
+    filterValue: 'ext01'
+  });
+  const cfg = {
+    host: '127.0.0.1', port: s.port,
+    bindDn: 'cn=admin,dc=zdns,dc=com', bindPassword: 'Svc@456',
+    baseDn: 'ou=external,dc=zdns,dc=com', userAttr: 'cn'
+  };
+  const r1 = await P.ldapAuth(T, cfg, 'ext01', 'User@123');
+  check('LDAP 服务账号模式：搜索命中且口令正确 → 通过', r1.ok === true, JSON.stringify(r1));
+  const r2 = await P.ldapAuth(T, cfg, 'ext01', 'wrong');
+  check('LDAP 服务账号模式：用户口令错误 → 拒绝', r2.ok === false && r2.code === 'reject', JSON.stringify(r2));
+  const r3 = await P.ldapAuth(T, cfg, 'nobody', 'User@123');
+  check('LDAP 服务账号模式：目录无此用户 → nouser', r3.ok === false && r3.code === 'nouser', JSON.stringify(r3));
+  const r4 = await P.ldapAuth(T, Object.assign({}, cfg, { bindPassword: 'bad' }), 'ext01', 'User@123');
+  check('LDAP 服务账号模式：服务账号密码错误 → bindfail', r4.ok === false && r4.code === 'bindfail', JSON.stringify(r4));
+  const r5 = await P.ldapAuth(T, Object.assign({}, cfg, { baseDn: '' }), 'ext01', 'User@123');
+  check('LDAP 服务账号模式：缺 Base DN → cfg 提示', r5.ok === false && r5.code === 'cfg', JSON.stringify(r5));
+  s.close();
+}
 
 /* ---------------- 5. 分派与错误处理 ---------------- */
 {
