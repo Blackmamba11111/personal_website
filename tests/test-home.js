@@ -77,10 +77,11 @@ async function main() {
       !!d.querySelector('link[rel="icon"]') &&
       /assets\/favicon\.(png|svg)\?v=\d+/.test(d.querySelector('link[rel="icon"]').getAttribute('href')));
 
-    /* 首页不体现巡检功能：正文（除指向看板的链接与资源名外）不得出现「巡检」 */
+    /* 巡检仅允许出现在看板卡片标题，其余可见文案不得出现 */
     const bodyText = d.body.textContent || '';
-    check('首页可见文案不含「巡检」', bodyText.indexOf('巡检') < 0,
-      (bodyText.match(/.{0,14}巡检.{0,14}/) || [''])[0]);
+    const withoutCardTitle = bodyText.replace(/巡检看板/g, '');
+    check('「巡检」仅出现在看板卡片标题', withoutCardTitle.indexOf('巡检') < 0,
+      (withoutCardTitle.match(/.{0,14}巡检.{0,14}/) || [''])[0]);
     check('标题为个人主页定位', /ZDNS/.test(d.title) && !/巡检/.test(d.title), d.title);
     check('品牌区为「ZDNS」', /ZDNS/.test((d.querySelector('.brand') || {}).textContent || ''));
     /* 全站不出现真实姓名与托管信息 */
@@ -92,8 +93,15 @@ async function main() {
       ((d.querySelector('footer') || {}).textContent || '').trim());
     check('右列标题为「作品与工具」而非「功能模块」',
       /作品与工具/.test((d.getElementById('modules') || {}).textContent || ''));
-    check('第一张卡片文案不含巡检字样',
-      (d.getElementById('modMap').textContent || '').indexOf('巡检') < 0);
+    check('看板卡片标题为「巡检看板」',
+      ((d.getElementById('modMap') || {}).textContent || '').indexOf('巡检看板') >= 0);
+    const sched = d.getElementById('modSched');
+    check('「同频」作品卡片存在且指向内网日程应用',
+      !!sched && sched.tagName === 'A' && sched.getAttribute('href') === 'https://10.1.112.20' &&
+      /同频/.test(sched.textContent) && /让每一份安排/.test(sched.textContent));
+    const mods = Array.from(d.querySelectorAll('.modules > .mod'));
+    check('「更多作品」占位框保留在后置（最后一位）',
+      mods.length >= 3 && mods[mods.length - 1].id === 'modSoon');
     check('导航含实时时钟', !!d.getElementById('navClock'));
     check('无运行时 JS 错误', dom.__errors.length === 0, dom.__errors.join(' | ').slice(0, 200));
     dom.window.close();
