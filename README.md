@@ -21,7 +21,7 @@
 ├── inspection-dashboard.html   # 数据看板（单文件，含登录与用户管理）
 ├── 404.html                    # 自定义 404
 ├── assets/
-│   ├── favicon.svg             # 站点图标
+│   ├── favicon.png             # 站点图标（ZDNS logo，128×128 透明底）
 │   ├── hero-photo.jpg          # 首页照片（可直接替换同名文件）
 │   ├── rose-a.webp             # 玫瑰素材
 │   ├── rose-b.webp

@@ -73,9 +73,9 @@ async function main() {
     const d = dom.window.document;
     check('粒子画布存在', !!d.getElementById('fx'));
     check('背景三层存在', ['bgBase', 'bgGrid', 'bgVignette'].every(id => d.getElementById(id)));
-    check('站点图标指向 assets/favicon.svg',
+    check('站点图标指向 assets/favicon.png',
       (d.querySelector('link[rel="icon"]') || {}).getAttribute
-        ? d.querySelector('link[rel="icon"]').getAttribute('href') === 'assets/favicon.svg' : false);
+        ? d.querySelector('link[rel="icon"]').getAttribute('href') === 'assets/favicon.png' : false);
 
     /* 首页不体现巡检功能：正文（除指向看板的链接与资源名外）不得出现「巡检」 */
     const bodyText = d.body.textContent || '';
@@ -262,7 +262,7 @@ async function main() {
      安全头与静态缓存改由 worker/index.js 在响应阶段注入，CSP 由页面 meta 声明。
      这里改为校验新的载体，避免继续守住一份已经不存在的配置文件。 */
   await block('部署产物', async () => {
-    const need = ['assets/hero-photo.jpg', 'assets/favicon.svg', 'assets/provinces.js',
+    const need = ['assets/hero-photo.jpg', 'assets/favicon.png', 'assets/provinces.js',
       '404.html', 'README.md', 'robots.txt', '.gitignore', 'worker/index.js', 'wrangler.jsonc'];
     need.forEach(f => check('存在 ' + f, fs.existsSync(path.join(DIR, f))));
     check('_headers 不再存在（策略已改由 Worker 注入）', !fs.existsSync(path.join(DIR, '_headers')));
