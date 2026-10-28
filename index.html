@@ -222,6 +222,14 @@ h1 em{
   mask-image:radial-gradient(ellipse 76% 78% at 50% 41%, #000 44%, rgba(0,0,0,.88) 62%, rgba(0,0,0,.34) 82%, transparent 100%);
 }
 .photo-card img.show{opacity:1;transform:none;}
+/* 已上传照片：按原图比例完整展示（不裁切），仅限制最大高度避免超出视口；
+   空态仍保持 3:4 占位比例 */
+.photo-card.has-photo{aspect-ratio:auto;}
+.photo-card.has-photo img{
+  position:static;width:100%;height:auto;
+  max-height:min(72vh,780px);
+  object-fit:contain;
+}
 .photo-card:hover img.show{transform:scale(1.028);filter:saturate(1.03) contrast(1.05) brightness(1.06);}
 /* 底部渐隐：把裁切边完全融进背景 */
 .photo-fade{
