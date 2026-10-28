@@ -147,5 +147,48 @@ check('普通用户看不到认证服务器', r.status === 403);
 r = await api('/users', { method: 'GET' }, vk);
 check('普通用户看不到用户列表', r.status === 403);
 
+/* 8. 共享数据集 + 变更日志 */
+r = await api('/users', { method: 'POST', body: { username: 'sharer', name: '数据源用户', password: 'Share@123' } }, tk);
+check('创建数据源用户', r.ok === true, JSON.stringify(r));
+r = await api('/users', { method: 'POST', body: { username: 'member1', name: '共享成员', password: 'Member@123', shareFrom: 'sharer' } }, tk);
+check('创建共享成员（shareFrom 记录归属）', r.ok === true && r.data.user.shareFrom === 'sharer', JSON.stringify(r));
+r = await api('/users', { method: 'POST', body: { username: 'member2', name: '共享成员2', password: 'Member@456', shareFrom: 'member1' } }, tk);
+check('成员再被共享时解析到归属者（一层）', r.ok === true && r.data.user.shareFrom === 'sharer', JSON.stringify(r));
+
+const ownerData = { regions: [{ id: 'r1', name: '河北' }], customers: [{ id: 'c1', name: '客户甲', phone: '', contact: '' }], visits: [] };
+r = await api('/ledger', { method: 'PUT', body: { scope: 'member1', data: ownerData } }, tk);
+check('共享成员写台账落在归属者名下', r.ok === true, JSON.stringify(r));
+
+r = await api('/auth/login', { method: 'POST', body: { username: 'member2', password: 'Member@456' } });
+const mk = r.data.token;
+r = await api('/ledger', { method: 'GET' }, mk);
+check('成员登录即见共享数据', r.ok && r.data.ledgers.member2 &&
+  r.data.ledgers.member2.customers.length === 1 && r.data.ledgers.member2.customers[0].name === '客户甲',
+  JSON.stringify(r.data && r.data.ledgers && Object.keys(r.data.ledgers)));
+
+ownerData.customers[0].phone = '13800000000';
+r = await api('/ledger', { method: 'PUT', body: { scope: 'member2', data: ownerData } }, mk);
+check('成员2（登录态）写共享数据成功', r.ok === true, JSON.stringify(r));
+
+r = await api('/logs?username=member2', {}, tk);
+check('日志按归属查询（owner=sharer）', r.ok && r.data.owner === 'sharer', JSON.stringify(r.data && r.data.owner));
+const lg = r.data.logs || [];
+check('日志含成员写失败的来源（只记成功写）与两次写入', lg.length === 2, JSON.stringify(lg));
+check('日志记录 actor 与字段级明细', lg.some(l => l.actor === 'member2' && l.detail.indexOf('联系电话') >= 0),
+  JSON.stringify(lg));
+r = await api('/logs?username=viewer', {}, mk);
+check('成员不能看他人日志', r.status === 403, JSON.stringify(r));
+
+/* 删除归属者 → 数据/日志/成员转移给最早成员 */
+r = await api('/users/sharer', { method: 'DELETE' }, tk);
+check('删除归属者成功', r.ok === true, JSON.stringify(r));
+r = await api('/users', { method: 'GET' }, tk);
+const m1 = (r.data.users || []).filter(u => u.username === 'member1')[0];
+const m2 = (r.data.users || []).filter(u => u.username === 'member2')[0];
+check('最早成员转正为归属者', m1.shareFrom === '' && m2.shareFrom === 'member1', JSON.stringify([m1.shareFrom, m2.shareFrom]));
+r = await api('/ledger', { method: 'GET' }, mk);
+check('转移后成员数据仍在（归 member1）', r.ok && r.data.ledgers.member2 && r.data.ledgers.member2.customers[0].phone === '13800000000',
+  JSON.stringify(r.data && r.data.ledgers && Object.keys(r.data.ledgers)));
+
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);

@@ -1006,6 +1006,7 @@
     <span class="sub" id="usersSub">—</span>
     <div class="spacer"></div>
     <button type="button" class="btn" id="btnAuthServers">认证服务器</button>
+    <button type="button" class="btn" id="btnDataLogs">数据日志</button>
     <button type="button" class="btn primary" id="btnNewUser">+ 新建用户</button>
   </div>
   <div class="page-body">
@@ -1036,6 +1037,27 @@
     <p class="hint" style="margin:12px 2px 0;">
       远程用户登录时，本站把用户名与密码转发给这里配置的服务器校验，校验通过后在本站签发会话。
       共享密钥只保存在服务端，列表里不会回显；编辑时留空表示「不修改」。
+    </p>
+  </div>
+</div>
+
+<!-- ==================== V4：数据变更日志页（超级管理员） ==================== -->
+<div class="page" id="logsView">
+  <div class="page-head">
+    <button type="button" class="btn" id="btnLogsBack">← 返回用户管理</button>
+    <h2>数据日志</h2>
+    <span class="sub" id="logsSub">—</span>
+    <div class="spacer"></div>
+    <label style="font-size:12px;color:var(--text-2);">数据范围</label>
+    <select id="logsScope" style="width:auto;"></select>
+  </div>
+  <div class="page-body">
+    <div class="ucard">
+      <div id="logsTableWrap"></div>
+    </div>
+    <p class="hint" style="margin:12px 2px 0;">
+      记录台账内容的变化（客户 / 巡检 / 区域的增删改，含字段级明细）；共享数据集的成员共用同一份历史。
+      操作人一列显示实际修改的账号；每次保存合并为一条记录。
     </p>
   </div>
 </div>
@@ -1132,12 +1154,12 @@
         <select id="uSeed">
           <option value="empty">空台账（推荐）— 不预置任何客户</option>
           <option value="demo">复制示例数据 — 预置 14 家示例客户与巡检记录</option>
-          <option value="copy">引用现有用户 — 复制其区域/客户/巡检记录</option>
+          <option value="copy">共享现有用户 — 与其共用同一份台账，双向同步</option>
         </select>
         <div id="uSeedCopyWrap" style="display:none;margin-top:8px;">
           <label for="uSeedUser" style="font-size:12px;">来源用户</label>
           <select id="uSeedUser" style="width:100%;"></select>
-          <div class="hint">复制该用户当前的全部数据（不影响原用户），复制后两份数据各自独立维护。</div>
+          <div class="hint">不复制数据：新用户与该用户共用同一份台账，任何一方的新增/修改/删除双方即时同步（刷新或切回页面后可见）。</div>
         </div>
         <div class="hint" id="uSeedHint">仅在新建用户时生效。</div>
       </div>
@@ -4461,6 +4483,67 @@
   function closeUsersPage() {
     document.getElementById('usersView').classList.remove('on');
     document.getElementById('serversView').classList.remove('on');
+    document.getElementById('logsView').classList.remove('on');
+  }
+
+  /* ---------- 数据变更日志（共享数据集共用一份历史） ---------- */
+  var logsScopeOwner = '';
+  var LOG_KIND_LABEL = { customer: '客户', visit: '巡检', region: '区域', init: '台账' };
+  var LOG_ACTION_LABEL = { add: '新增', update: '修改', delete: '删除' };
+  function openLogsPage(preScope) {
+    if (!isAdmin()) { toast('仅超级管理员可访问数据日志'); return; }
+    document.getElementById('usersView').classList.remove('on');
+    document.getElementById('serversView').classList.remove('on');
+    logsScopeOwner = preScope || logsScopeOwner || (AUTH.user ? AUTH.user.username : '');
+    renderLogsScopeSelect();
+    document.getElementById('logsView').classList.add('on');
+    renderLogsPage();
+  }
+  function renderLogsScopeSelect() {
+    var sel = document.getElementById('logsScope');
+    var users = userList();
+    sel.innerHTML = users.map(function (u) {
+      return '<option value="' + esc(u.username) + '">' + esc(u.name) + '（' + esc(u.username) + '）</option>';
+    }).join('');
+    /* 共享成员解析到数据归属者 */
+    var owner = logsScopeOwner;
+    var src = findUser(owner);
+    if (src && src.shareFrom) owner = src.shareFrom;
+    if (!users.some(function (u) { return u.username === owner; }) && users.length) owner = users[0].username;
+    logsScopeOwner = owner;
+    sel.value = owner;
+  }
+  function renderLogsPage() {
+    var owner = logsScopeOwner;
+    var u = findUser(owner);
+    var members = (u && u.sharedWith) || [];
+    document.getElementById('logsSub').textContent = u
+      ? '数据归属：' + u.name + '（' + owner + '）' + (members.length ? ' · 共享成员 ' + members.length + ' 人' : '')
+      : '—';
+    var wrap = document.getElementById('logsTableWrap');
+    wrap.innerHTML = '<div class="empty">加载中…</div>';
+    api('/logs?username=' + encodeURIComponent(owner) + '&limit=300').then(function (r) {
+      if (!r.ok) { wrap.innerHTML = '<div class="empty">' + esc(r.error || '加载失败') + '</div>'; return; }
+      var logs = (r.data && r.data.logs) || [];
+      if (!logs.length) { wrap.innerHTML = '<div class="empty">该数据集暂无变更记录</div>'; return; }
+      var rows = logs.map(function (l) {
+        var actor = findUser(l.actor);
+        var kindCls = l.kind === 'visit' ? 'user' : (l.kind === 'region' ? 'admin' : 'active');
+        return '<tr>' +
+          '<td class="sub2" style="white-space:nowrap;">' + esc((l.at || '').replace('T', ' ').slice(0, 19)) + '</td>' +
+          '<td style="white-space:nowrap;">' + esc(actor ? actor.name : l.actor) + '<div class="sub2">' + esc(l.actor) + '</div></td>' +
+          '<td><span class="tag ' + kindCls + '">' + esc(LOG_KIND_LABEL[l.kind] || l.kind) + '</span></td>' +
+          '<td><span class="tag ' + (l.action === 'delete' ? 'disabled' : (l.action === 'add' ? 'active' : 'user')) + '">' +
+            esc(LOG_ACTION_LABEL[l.action] || l.action) + '</span></td>' +
+          '<td style="font-weight:600;">' + esc(l.target || '—') + '</td>' +
+          '<td class="sub2">' + esc(l.detail || '—') + '</td>' +
+        '</tr>';
+      }).join('');
+      wrap.innerHTML =
+        '<table class="utable"><thead><tr>' +
+        '<th>时间</th><th>操作人</th><th>对象</th><th>动作</th><th>目标</th><th>变更明细</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table>';
+    });
   }
 
   /* ---------- 认证服务器管理（RADIUS / TACACS+ / LDAP） ---------- */
@@ -4832,12 +4915,15 @@
       var lastAdmin = u.role === 'admin' && countAdmins(u.id) === 0;
       var delDisabled = isSelf || lastAdmin;
       var remote = (u.source || 'local') !== 'local';
+      var shareNote = u.shareFrom
+        ? ' · 共享自 ' + esc(u.shareFrom)
+        : ((u.sharedWith && u.sharedWith.length) ? ' · 已共享给 ' + esc(u.sharedWith.join('、')) : '');
       return '<tr data-uid="' + esc(u.id) + '">' +
         '<td><div class="uname-cell">' +
           '<span class="uavatar' + (u.role === 'admin' ? ' admin' : '') + '">' + esc(initialOf(u.name)) + '</span>' +
           '<div><div style="font-weight:600;">' + esc(u.name) +
             (isSelf ? ' <span class="tag user">当前登录</span>' : '') + '</div>' +
-            '<div class="sub2">' + esc(u.username) + (u.note ? ' · ' + esc(u.note) : '') + '</div></div>' +
+            '<div class="sub2">' + esc(u.username) + (u.note ? ' · ' + esc(u.note) : '') + shareNote + '</div></div>' +
         '</div></td>' +
         '<td>' + seqTag(u) + '</td>' +
         '<td>' + permTag(u) + '</td>' +
@@ -4850,6 +4936,7 @@
         '<td class="sub2">' + esc(u.lastLogin || '从未登录') + '</td>' +
         '<td><div class="uact">' +
           '<button type="button" class="btn sm" data-ua="view">查看数据</button>' +
+          '<button type="button" class="btn sm" data-ua="logs">日志</button>' +
           '<button type="button" class="btn sm" data-ua="edit">编辑</button>' +
           '<button type="button" class="btn sm" data-ua="pwd"' +
             (remote ? ' disabled title="该账号由 ' + esc(sourceText(u)) + ' 校验密码，请到对应系统重置"' : '') +
@@ -5027,54 +5114,36 @@
       if (String(pwd).length < 6) { toast('密码至少 6 位'); return; }
     }
     var mode = document.getElementById('uSeed').value;
-    var initDataP;                            /* Promise<初始数据 | null>，null 表示已提示并中止 */
+    var initDataP;                            /* Promise<初始数据或共享标记 | null>，null 表示已提示并中止 */
     if (mode === 'demo') {
       initDataP = Promise.resolve(seedData());
     } else if (mode === 'copy') {
+      /* 共享数据集：与来源用户共用同一份台账，双向同步（服务端记 share_from，不复制） */
       var srcName = document.getElementById('uSeedUser').value;
-      if (!srcName) { toast('请选择要引用数据的来源用户'); return; }
-      initDataP = ledgerOf(srcName).then(function (srcData) {
-        if (!srcData || (!srcData.customers.length && !srcData.visits.length && !srcData.regions.length)) {
-          toast('该用户暂无数据可引用，请换一个来源或选空台账'); return null;
-        }
-        return JSON.parse(JSON.stringify(srcData));
-      });
+      if (!srcName) { toast('请选择要共享数据的来源用户'); return; }
+      initDataP = Promise.resolve({ shareFrom: srcName });
     } else {
       initDataP = Promise.resolve({ regions: [], customers: [], visits: [] });
     }
     initDataP.then(function (initData) {
       if (!initData) return;
       var payload = {
-        username: username, name: name, role: role, note: note, perm: perm,
-        data: initData
+        username: username, name: name, role: role, note: note, perm: perm
       };
+      if (initData.shareFrom) payload.shareFrom = initData.shareFrom;
+      else payload.data = initData;
       if (remote) payload.serverId = serverId; else payload.password = pwd;
       return api('/users', { method: 'POST', body: payload }).then(function (r) {
         if (!r.ok) { toast(r.error || '创建失败'); return; }
         closeModal('maskUser');
         return refreshUsersThen(true).then(function () {
-          toast(remote
-            ? '远程用户「' + name + '」已创建，登录口令由所选认证服务器校验'
-            : '用户「' + name + '」已创建，首次登录后需修改初始密码');
+          toast(initData.shareFrom
+            ? '用户「' + name + '」已创建，与来源用户共用同一份台账数据（双向同步）'
+            : (remote
+              ? '远程用户「' + name + '」已创建，登录口令由所选认证服务器校验'
+              : '用户「' + name + '」已创建，首次登录后需修改初始密码'));
         });
       });
-    });
-  }
-
-  /* 取某用户的完整台账：优先本地镜像，缺失时回源服务端（超管 bundle 含全部用户） */
-  function ledgerOf(username) {
-    var d = readUserData(username);
-    if (d) return Promise.resolve(d);
-    return api('/ledger').then(function (r) {
-      if (r.ok && r.data && r.data.ledgers && r.data.ledgers[username]) {
-        var o = r.data.ledgers[username];
-        return {
-          regions:   Array.isArray(o.regions)   ? o.regions   : [],
-          customers: Array.isArray(o.customers) ? o.customers : [],
-          visits:    Array.isArray(o.visits)    ? o.visits    : []
-        };
-      }
-      return null;
     });
   }
 
@@ -5197,6 +5266,18 @@
 
     /* 认证服务器页 */
     document.getElementById('btnAuthServers').addEventListener('click', openServersPage);
+    document.getElementById('btnDataLogs').addEventListener('click', function () { openLogsPage(''); });
+    document.getElementById('btnLogsBack').addEventListener('click', function () {
+      document.getElementById('logsView').classList.remove('on');
+      document.getElementById('usersView').classList.add('on');
+    });
+    document.getElementById('logsScope').addEventListener('change', function () {
+      var v = this.value;
+      var src = findUser(v);
+      logsScopeOwner = (src && src.shareFrom) ? src.shareFrom : v;
+      renderLogsScopeSelect();                /* 回写为数据归属者 */
+      renderLogsPage();
+    });
     document.getElementById('btnServersBack').addEventListener('click', closeServersPage);
     document.getElementById('btnNewServer').addEventListener('click', function () { openServerModal(null); });
     document.getElementById('btnSaveServer').addEventListener('click', saveServer);
@@ -5265,6 +5346,7 @@
       else if (act === 'edit') openUserModal(u);
       else if (act === 'pwd') openPwdModal(u);
       else if (act === 'toggle') toggleUser(u);
+      else if (act === 'logs') openLogsPage(u.username);
       else if (act === 'del') deleteUser(u);
     });
 
@@ -5334,11 +5416,22 @@
 
   /* ---------- 自动同步：多人同时使用时能看到彼此的改动 ---------- */
   function startAutoSync() {
-    setInterval(function () {
-      if (!AUTH.user) return;
-      if (SYNC.dirty) { pushLedger(AUTH.user.username); return; }   /* 先补推未成功的改动 */
-      refreshFromServer(true);
-    }, 90000);
+    /* 共享数据集（shareFrom 非空）成员的改动需要互见，轮询加密到 20s；普通账号 90s 足够 */
+    function pollInterval() {
+      return (AUTH.user && AUTH.user.shareFrom) ? 20000 : 90000;
+    }
+    var pollTimer = null;
+    function schedulePoll() {
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = setTimeout(function tick() {
+        if (AUTH.user) {
+          if (SYNC.dirty) pushLedger(AUTH.user.username);   /* 先补推未成功的改动 */
+          else refreshFromServer(true);
+        }
+        schedulePoll();
+      }, pollInterval());
+    }
+    schedulePoll();
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState !== 'visible') return;
       if (!AUTH.user) return;

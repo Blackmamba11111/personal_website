@@ -36,7 +36,8 @@ function userView(u) {
     perm: u.perm === 'ro' ? 'ro' : 'rw',
     serverId: u.serverId || '',
     serverName: u.serverName || '',
-    serverType: u.serverType || ''
+    serverType: u.serverType || '',
+    shareFrom: u.shareFrom || ''
   };
 }
 
@@ -49,7 +50,8 @@ function installApiStub(window, opts) {
   const srv = {
     users: (reg && reg.users) ? reg.users.slice() : [],
     ledgers: {},
-    attachments: {},         /* id -> {id,name,mime,size,data(base64),owner} */
+    logs: [],                 /* 台账变更日志：{username(owner), actor, kind, action, target, detail, at} */
+    attachments: {},          /* id -> {id,name,mime,size,data(base64),owner} */
     servers: (opts.servers || []).slice()   /* 认证服务器（远程用户用） */
   };
   for (let i = 0; i < ls.length; i++) {
@@ -91,15 +93,24 @@ function installApiStub(window, opts) {
     const v = userView(u);
     const s = srv.servers.filter(x => x.id === (u.serverId || ''))[0];
     if (s) { v.serverName = s.name; v.serverType = s.type; }
+    v.sharedWith = srv.users.filter(x => (x.shareFrom || '') === u.username).map(x => x.username);
     return v;
+  };
+  /* 共享数据集：成员的读写都落在数据归属者名下 */
+  const dataOwner = (username) => {
+    const u = findUser(username);
+    return (u && u.shareFrom) ? u.shareFrom : username;
   };
   const bundle = (u) => {
     const isAdmin = u.role === 'admin';
     const ledgers = {};
     if (isAdmin) {
-      Object.keys(srv.ledgers).forEach(k => { ledgers[k] = srv.ledgers[k]; });
-    } else if (srv.ledgers[u.username]) {
-      ledgers[u.username] = srv.ledgers[u.username];
+      srv.users.forEach(x => {
+        const owner = dataOwner(x.username);
+        if (srv.ledgers[owner]) ledgers[x.username] = srv.ledgers[owner];
+      });
+    } else if (srv.ledgers[dataOwner(u.username)]) {
+      ledgers[u.username] = srv.ledgers[dataOwner(u.username)];
     }
     const view = viewOf(u);
     return {
@@ -133,6 +144,55 @@ function installApiStub(window, opts) {
   /* 桩里的「远程认证」：只要口令等于 remote-ok 就算通过，否则拒绝。
      桩不跑真实网络协议（那部分见 tests/test-protocols.mjs 与 test-worker-api.mjs）。 */
   const REMOTE_PASSWORD = opts.remotePassword || 'remote-ok';
+
+  /* 台账 diff 日志（与两版真实服务端同口径，供用例断言 actor / 明细） */
+  const FL = { name: '客户名称', regionId: '所属区域', province: '省份', city: '城市', addr: '地址',
+    lng: '经度', lat: '纬度', freq: '巡检频率', contact: '联系人', phone: '联系电话', note: '备注',
+    by: '巡检人', date: '巡检日期', mode: '巡检方式', result: '巡检结果' };
+  const fmtV = (v) => (v === undefined || v === null || v === '') ? '空' : String(v);
+  const byIdM = (arr) => { const m = {}; (arr || []).forEach(x => { if (x && x.id) m[x.id] = x; }); return m; };
+  function diffLogs(oldD, newD) {
+    const out = [];
+    oldD = oldD || { regions: [], customers: [], visits: [] };
+    const cname = (d, id) => { const c = (d.customers || []).filter(x => x.id === id)[0]; return c ? c.name : id; };
+    const oc = byIdM(oldD.customers), nc = byIdM(newD.customers);
+    Object.keys(nc).forEach(id => {
+      if (!oc[id]) { out.push({ kind: 'customer', action: 'add', target: nc[id].name || id, detail: '' }); return; }
+      const df = [];
+      Object.keys(nc[id]).forEach(k => {
+        if (JSON.stringify(oc[id][k]) !== JSON.stringify(nc[id][k])) df.push((FL[k] || k) + '：' + fmtV(oc[id][k]) + ' → ' + fmtV(nc[id][k]));
+      });
+      if (df.length) out.push({ kind: 'customer', action: 'update', target: nc[id].name || id, detail: df.join('；') });
+    });
+    Object.keys(oc).forEach(id => { if (!nc[id]) out.push({ kind: 'customer', action: 'delete', target: oc[id].name || id, detail: '' }); });
+    const ov = byIdM(oldD.visits), nv = byIdM(newD.visits);
+    Object.keys(nv).forEach(id => {
+      const v = nv[id], label = cname(newD, v.customerId) + ' · ' + (v.date || '');
+      if (!ov[id]) { out.push({ kind: 'visit', action: 'add', target: label, detail: v.by ? '巡检人 ' + v.by : '' }); return; }
+      const df = [];
+      Object.keys(v).forEach(k => {
+        if (JSON.stringify(ov[id][k]) !== JSON.stringify(v[k])) df.push((FL[k] || k) + '：' + fmtV(ov[id][k]) + ' → ' + fmtV(v[k]));
+      });
+      if (df.length) out.push({ kind: 'visit', action: 'update', target: label, detail: df.join('；') });
+    });
+    Object.keys(ov).forEach(id => {
+      if (!nv[id]) out.push({ kind: 'visit', action: 'delete', target: cname(oldD, ov[id].customerId) + ' · ' + (ov[id].date || ''), detail: '' });
+    });
+    const org = byIdM(oldD.regions), nrg = byIdM(newD.regions);
+    Object.keys(nrg).forEach(id => {
+      if (!org[id]) out.push({ kind: 'region', action: 'add', target: nrg[id].name || id, detail: '' });
+    });
+    Object.keys(org).forEach(id => { if (!nrg[id]) out.push({ kind: 'region', action: 'delete', target: org[id].name || id, detail: '' }); });
+    return out;
+  }
+  const pushLogs = (owner, actor, oldData, newData) => {
+    const list = oldData ? diffLogs(oldData, newData) : [{ kind: 'init', action: 'add', target: '台账', detail: '初始化台账' }];
+    if (!list.length) return;
+    const at = new Date().toISOString();
+    list.forEach(l => srv.logs.push({
+      username: owner, actor: actor, kind: l.kind, action: l.action, target: l.target || '', detail: l.detail || '', at: at
+    }));
+  };
 
   function route(p, method, body) {
     if (p === '/auth/login' && method === 'POST') {      const u = findUser(body.username);
@@ -202,9 +262,22 @@ function installApiStub(window, opts) {
       if (auth.role !== 'admin' && auth.perm === 'ro') return bad('当前账号为只读权限，不能修改台账。', 403);
       const scope = String(body.scope || '').toLowerCase();
       if (auth.role !== 'admin' && scope !== auth.username) return bad('无权写入该账号的台账', 403);
-      srv.ledgers[scope] = body.data || { regions: [], customers: [], visits: [] };
-      ls.setItem(DATA_PREFIX + scope, JSON.stringify(srv.ledgers[scope]));
+      const owner = dataOwner(scope);
+      const oldData = srv.ledgers[owner] || null;
+      srv.ledgers[owner] = body.data || { regions: [], customers: [], visits: [] };
+      pushLogs(owner, auth.username, oldData, srv.ledgers[owner]);
+      ls.setItem(DATA_PREFIX + owner, JSON.stringify(srv.ledgers[owner]));
       return ok({ scope: scope });
+    }
+
+    /* 数据变更日志：按数据归属查询（共享数据集共用一份历史） */
+    if (p.split('?')[0] === '/logs' && method === 'GET') {
+      const qp = new URLSearchParams(p.split('?')[1] || '');
+      const req = String(qp.get('username') || auth.username).toLowerCase();
+      if (!findUser(req)) return bad('用户不存在', 404);
+      if (auth.role !== 'admin' && req !== auth.username) return bad('无权查看该账号的数据日志', 403);
+      const owner = dataOwner(req);
+      return ok({ owner: owner, logs: srv.logs.filter(l => l.username === owner).slice(-300).reverse() });
     }
 
     /* --- 认证服务器（远程用户） --- */
@@ -268,6 +341,14 @@ function installApiStub(window, opts) {
       const s = serverId ? srv.servers.filter(x => x.id === serverId)[0] : null;
       if (serverId && !s) return bad('所选认证服务器不存在');
       const salt = 'salt-' + un;
+      /* 共享数据集：shareFrom 解析到数据归属者（避免链式），不复制数据 */
+      let shareFrom = '';
+      if (body.shareFrom) {
+        const src = findUser(body.shareFrom);
+        if (!src) return bad('要共享数据的来源用户不存在');
+        shareFrom = src.shareFrom || src.username;
+        if ((body.role === 'admin') && shareFrom !== un) return bad('超级管理员维护全局数据，不参与共享数据集');
+      }
       const nu = {
         id: un, username: un, name: body.name,
         role: body.role === 'admin' ? 'admin' : 'user',
@@ -275,12 +356,13 @@ function installApiStub(window, opts) {
         source: s ? s.type : 'local',
         perm: body.role === 'admin' ? 'rw' : (body.perm === 'ro' ? 'ro' : 'rw'),
         serverId: serverId,
+        shareFrom: shareFrom,
         salt: salt,
         pwd: s ? '' : H.hashPwd(String(body.password || ''), salt),
         mustChange: !s, createdAt: '2026-01-01', lastLogin: ''
       };
       srv.users.push(nu);
-      if (body.data) srv.ledgers[un] = body.data;
+      if (!shareFrom && body.data) srv.ledgers[un] = body.data;
       writeMirror();
       return ok({ user: viewOf(nu) });
     }
@@ -315,8 +397,21 @@ function installApiStub(window, opts) {
       }
       if (method === 'DELETE') {
         if (t.username === auth.username) return bad('不能删除当前登录账号');
+        /* 共享数据集：删 owner 且有成员 → 台账转给最早成员；删成员 → 数据不动 */
+        if (!(t.shareFrom || '').length) {
+          const members = srv.users.filter(x => (x.shareFrom || '') === t.username);
+          if (members.length) {
+            const heir = members[0].username;
+            if (srv.ledgers[t.username]) srv.ledgers[heir] = srv.ledgers[t.username];
+            srv.logs.forEach(l => { if (l.username === t.username) l.username = heir; });
+            members.forEach(x => { x.shareFrom = (x.username === heir) ? '' : heir; });
+          }
+        }
         srv.users = srv.users.filter(x => x.username !== t.username);
-        delete srv.ledgers[t.username];
+        if (!(t.shareFrom || '').length) {
+          const stillMembers = srv.users.filter(x => (x.shareFrom || '') === t.username);
+          if (!stillMembers.length) delete srv.ledgers[t.username];
+        }
         try { ls.removeItem(DATA_PREFIX + t.username); } catch (e) {}
         writeMirror();
         return ok(null);

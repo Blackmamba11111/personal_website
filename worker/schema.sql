@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS users (
   -- 数据权限：rw = 读写；ro = 只读
   perm        TEXT NOT NULL DEFAULT 'rw',
   -- 远程账号绑定的认证服务器 id（auth_servers.id），本地账号为空
-  server_id   TEXT NOT NULL DEFAULT ''
+  server_id   TEXT NOT NULL DEFAULT '',
+  -- 共享数据集：指向数据归属者的用户名（空 = 自己拥有），一层引用
+  share_from  TEXT NOT NULL DEFAULT ''
 );
 
 -- 远程认证服务器（RADIUS / TACACS+ / LDAP）
@@ -57,6 +59,19 @@ CREATE TABLE IF NOT EXISTS attachments (
   data       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(owner);
+
+-- 台账变更日志：按数据归属存（共享数据集共用一份历史），每数据集最多保留 2000 条
+CREATE TABLE IF NOT EXISTS ledger_logs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  username   TEXT NOT NULL,
+  actor      TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  action     TEXT NOT NULL,
+  target     TEXT NOT NULL DEFAULT '',
+  detail     TEXT NOT NULL DEFAULT '',
+  at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_logs_owner ON ledger_logs(username, at);
 
 -- 首页照片：全站单行（id 恒为 1），base64 存 data（D1 单行上限 2MB → 图片上限 1.4MB）
 CREATE TABLE IF NOT EXISTS home_photo (

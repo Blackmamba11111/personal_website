@@ -75,12 +75,13 @@ function mapUser(row, srvMap) {
     perm: row.perm === 'ro' ? 'ro' : 'rw',
     serverId: sid,
     serverName: srv ? srv.name : (sid ? '（认证服务器已删除）' : ''),
-    serverType: srv ? srv.type : (sid ? '' : source)
+    serverType: srv ? srv.type : (sid ? '' : source),
+    shareFrom: row.share_from || ''
   };
 }
 function normName(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
 function validUsername(u) { return /^[A-Za-z0-9_.-]{3,32}$/.test(u); }
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from';
 
 /* ---------------- 表结构迁移（幂等，每实例只跑一次） ---------------- */
 let schemaReady = false;
@@ -89,7 +90,8 @@ async function ensureSchema(env) {
   const cols = [
     "ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT 'local'",
     "ALTER TABLE users ADD COLUMN perm TEXT NOT NULL DEFAULT 'rw'",
-    "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''"
+    "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN share_from TEXT NOT NULL DEFAULT ''"
   ];
   for (const sql of cols) {
     try { await env.DB.prepare(sql).run(); } catch (e) { /* 列已存在 */ }
@@ -100,6 +102,12 @@ async function ensureSchema(env) {
       'host TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, ' +
       'cfg TEXT NOT NULL DEFAULT \'{}\', created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT \'\')'
     ).run();
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS ledger_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, ' +
+      'actor TEXT NOT NULL, kind TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL DEFAULT \'\', ' +
+      'detail TEXT NOT NULL DEFAULT \'\', at TEXT NOT NULL)'
+    ).run();
+    await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_ledger_logs_owner ON ledger_logs(username, at)').run();
   } catch (e) { /* 只读或 DDL 受限时忽略 */ }
   schemaReady = true;
 }
@@ -294,17 +302,108 @@ async function currentUser(env, request) {
   return u;
 }
 
-/* ---------------- 数据读写 ---------------- */
+/* ---------------- 数据读写（共享数据集：share_from 指向数据归属者，一层） ---------------- */
+async function dataOwner(env, username) {
+  const row = await env.DB.prepare('SELECT share_from FROM users WHERE username = ?').bind(username).first();
+  return (row && row.share_from) ? row.share_from : username;
+}
+async function shareMembers(env, owner) {
+  const r = await env.DB.prepare('SELECT username FROM users WHERE share_from = ? ORDER BY created_at').bind(owner).all();
+  return (r.results || []).map(function (x) { return x.username; });
+}
 async function readLedger(env, username) {
-  const row = await env.DB.prepare('SELECT data FROM ledgers WHERE username = ?').bind(username).first();
+  const owner = await dataOwner(env, username);
+  const row = await env.DB.prepare('SELECT data FROM ledgers WHERE username = ?').bind(owner).first();
   if (!row) return null;
   try { return JSON.parse(row.data); } catch (e) { return null; }
 }
+
+/* ---------- 变更日志：新旧台账 diff 出字段级明细 ---------- */
+const FIELD_LABELS = {
+  name: '客户名称', regionId: '所属区域', province: '省份', city: '城市', addr: '地址',
+  lng: '经度', lat: '纬度', freq: '巡检频率', contact: '联系人', phone: '联系电话', note: '备注',
+  by: '巡检人', date: '巡检日期', mode: '巡检方式', result: '巡检结果'
+};
+function fmtVal(v) {
+  if (v === undefined || v === null || v === '') return '空';
+  if (Array.isArray(v)) return '[' + (v.length) + ' 个附件]';
+  if (typeof v === 'object') return '…';
+  const s = String(v);
+  return s.length > 40 ? s.slice(0, 40) + '…' : s;
+}
+function byId(arr) { const m = {}; (arr || []).forEach(function (x) { if (x && x.id) m[x.id] = x; }); return m; }
+function diffLedgerLogs(oldD, newD) {
+  const logs = [];
+  oldD = oldD || { regions: [], customers: [], visits: [] };
+  const cname = (d, id) => { const c = d.customers.filter(function (x) { return x.id === id; })[0]; return c ? c.name : id; };
+
+  const oc = byId(oldD.customers), nc = byId(newD.customers);
+  Object.keys(nc).forEach(function (id) {
+    if (!oc[id]) { logs.push({ kind: 'customer', action: 'add', target: nc[id].name || id, detail: '' }); return; }
+    const diffs = [];
+    Object.keys(nc[id]).forEach(function (k) {
+      if (JSON.stringify(oc[id][k]) !== JSON.stringify(nc[id][k])) {
+        diffs.push((FIELD_LABELS[k] || k) + '：' + fmtVal(oc[id][k]) + ' → ' + fmtVal(nc[id][k]));
+      }
+    });
+    if (diffs.length) logs.push({ kind: 'customer', action: 'update', target: nc[id].name || id, detail: diffs.join('；') });
+  });
+  Object.keys(oc).forEach(function (id) {
+    if (!nc[id]) logs.push({ kind: 'customer', action: 'delete', target: oc[id].name || id, detail: '' });
+  });
+
+  const ov = byId(oldD.visits), nv = byId(newD.visits);
+  Object.keys(nv).forEach(function (id) {
+    const v = nv[id];
+    const label = cname(newD, v.customerId) + ' · ' + (v.date || '');
+    if (!ov[id]) { logs.push({ kind: 'visit', action: 'add', target: label, detail: (v.by ? '巡检人 ' + v.by : '') }); return; }
+    const diffs = [];
+    Object.keys(v).forEach(function (k) {
+      if (JSON.stringify(ov[id][k]) !== JSON.stringify(v[k])) {
+        diffs.push((FIELD_LABELS[k] || k) + '：' + fmtVal(ov[id][k]) + ' → ' + fmtVal(v[k]));
+      }
+    });
+    if (diffs.length) logs.push({ kind: 'visit', action: 'update', target: label, detail: diffs.join('；') });
+  });
+  Object.keys(ov).forEach(function (id) {
+    if (!nv[id]) logs.push({ kind: 'visit', action: 'delete', target: cname(oldD, ov[id].customerId) + ' · ' + (ov[id].date || ''), detail: '' });
+  });
+
+  const org = byId(oldD.regions), nrg = byId(newD.regions);
+  Object.keys(nrg).forEach(function (id) {
+    if (!org[id]) logs.push({ kind: 'region', action: 'add', target: nrg[id].name || id, detail: '' });
+    else if (org[id].name !== nrg[id].name) {
+      logs.push({ kind: 'region', action: 'update', target: nrg[id].name || id, detail: '名称：' + fmtVal(org[id].name) + ' → ' + fmtVal(nrg[id].name) });
+    }
+  });
+  Object.keys(org).forEach(function (id) {
+    if (!nrg[id]) logs.push({ kind: 'region', action: 'delete', target: org[id].name || id, detail: '' });
+  });
+  return logs;
+}
 async function writeLedger(env, username, data, by) {
+  const owner = await dataOwner(env, username);
+  const oldData = await readLedger(env, owner);
   await env.DB.prepare(
     'INSERT INTO ledgers (username, data, updated_at, updated_by) VALUES (?, ?, ?, ?) ' +
     'ON CONFLICT(username) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, updated_by = excluded.updated_by'
-  ).bind(username, JSON.stringify(data), nowIso(), by).run();
+  ).bind(owner, JSON.stringify(data), nowIso(), by).run();
+  const logs = oldData ? diffLedgerLogs(oldData, data) : [{ kind: 'init', action: 'add', target: '台账', detail: '初始化台账' }];
+  if (logs.length) {
+    const at = nowIso();
+    for (const l of logs) {
+      await env.DB.prepare(
+        'INSERT INTO ledger_logs (username, actor, kind, action, target, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(owner, by, l.kind, l.action, l.target || '', l.detail || '', at).run();
+    }
+    /* 容量保护：每数据集最多留 2000 条 */
+    try {
+      await env.DB.prepare(
+        'DELETE FROM ledger_logs WHERE username = ? AND id NOT IN ' +
+        '(SELECT id FROM ledger_logs WHERE username = ? ORDER BY id DESC LIMIT 2000)'
+      ).bind(owner, owner).run();
+    } catch (e) { /* 清理失败不影响主流程 */ }
+  }
 }
 function sanitizeLedger(d) {
   d = d || {};
@@ -330,13 +429,16 @@ async function bundleFor(env, u) {
   }
   const ledgers = {};
   if (isAdmin) {
-    const r = await env.DB.prepare('SELECT username, data FROM ledgers').all();
-    (r.results || []).forEach(function (row) {
-      try { ledgers[row.username] = JSON.parse(row.data); } catch (e) {}
-    });
+    for (const row of users) {
+      const d = await readLedger(env, row.username);   /* 共享成员解析到 owner 的数据 */
+      if (d) ledgers[row.username] = d;
+    }
   } else {
     const d = await readLedger(env, u.username);
     if (d) ledgers[u.username] = d;
+  }
+  for (const x of users) {
+    x.sharedWith = await shareMembers(env, x.username);
   }
   return {
     user: mapUser(u, srvMap), users: users, ledgers: ledgers, admin: isAdmin,
@@ -764,6 +866,18 @@ async function route(request, env) {
       source = srv.type;
     }
 
+    /* 数据集：shareFrom = 与该用户共用同一份台账（双向同步），不复制数据 */
+    let shareFrom = '';
+    if (body.shareFrom) {
+      const src = normName(body.shareFrom);
+      const srcRow = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(src).first();
+      if (!srcRow) return bad('要共享数据的来源用户不存在');
+      shareFrom = srcRow.share_from || src;
+      if (role === 'admin' && shareFrom !== username) {
+        return bad('超级管理员维护全局数据，不参与共享数据集');
+      }
+    }
+
     /* 迁移路径：带 salt+hash 表示沿用原口令（本地旧版迁入），不需要重新设密码 */
     const legacySalt = String(body.salt || '');
     const legacyHash = String(body.hash || '');
@@ -784,11 +898,11 @@ async function route(request, env) {
       return bad('远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，请不要在本地设置密码');
     }
     await env.DB.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId).run();
-    /* 初始化台账：由调用方决定是否复制示例数据 */
-    if (body.data) await writeLedger(env, username, sanitizeLedger(body.data), me.username);
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom).run();
+    /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
+    if (!shareFrom && body.data) await writeLedger(env, username, sanitizeLedger(body.data), me.username);
     return ok({ user: mapUser(await env.DB.prepare(
       'SELECT ' + USER_COLS + ' FROM users WHERE username = ?'
     ).bind(username).first(), await serversMap(env)) });
@@ -862,16 +976,43 @@ async function route(request, env) {
       if (row.role === 'admin' && row.status === 'active' && await activeAdminCount(env, target) === 0) {
         return bad('至少保留一个启用的超级管理员，无法删除');
       }
-      await env.DB.batch([
-        env.DB.prepare('DELETE FROM sessions WHERE username = ?').bind(target),
-        env.DB.prepare('DELETE FROM ledgers WHERE username = ?').bind(target),
-        env.DB.prepare('DELETE FROM users WHERE username = ?').bind(target)
-      ]);
+      /* 共享数据集：删 owner 且有成员 → 台账转给最早成员；删成员 → 数据不动 */
+      const stmts = [env.DB.prepare('DELETE FROM sessions WHERE username = ?').bind(target)];
+      if (!(row.share_from || '').length) {
+        const members = await shareMembers(env, target);
+        if (members.length) {
+          const heir = members[0];
+          stmts.push(env.DB.prepare('UPDATE ledgers SET username = ? WHERE username = ?').bind(heir, target));
+          stmts.push(env.DB.prepare('UPDATE ledger_logs SET username = ? WHERE username = ?').bind(heir, target));
+          stmts.push(env.DB.prepare('UPDATE users SET share_from = ? WHERE share_from = ?').bind(heir, target));
+          /* 归属者本人不再指向别人 */
+          stmts.push(env.DB.prepare("UPDATE users SET share_from = '' WHERE username = ?").bind(heir));
+        } else {
+          stmts.push(env.DB.prepare('DELETE FROM ledgers WHERE username = ?').bind(target));
+        }
+      }
+      stmts.push(env.DB.prepare('DELETE FROM users WHERE username = ?').bind(target));
+      await env.DB.batch(stmts);
       /* 附件表可能尚未创建（从未上传过附件），失败不影响删号 */
       try { await env.DB.prepare('DELETE FROM attachments WHERE owner = ?').bind(target).run(); } catch (e) {}
       return ok(null);
     }
     return bad('不支持的请求方法', 405);
+  }
+
+  /* --- 数据变更日志：按数据归属（共享数据集共用一份历史）查询 --- */
+  if (p === '/api/logs' && method === 'GET') {
+    const req = normName(url.searchParams.get('username') || me.username);
+    if (!await env.DB.prepare('SELECT 1 AS x FROM users WHERE username = ?').bind(req).first()) {
+      return bad('用户不存在', 404);
+    }
+    if (!isAdmin && req !== me.username) return bad('无权查看该账号的数据日志', 403);
+    const owner = await dataOwner(env, req);
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10) || 200, 500);
+    const r = await env.DB.prepare(
+      'SELECT actor, kind, action, target, detail, at FROM ledger_logs WHERE username = ? ORDER BY id DESC LIMIT ?'
+    ).bind(owner, limit).all();
+    return ok({ owner: owner, logs: r.results || [] });
   }
 
   return bad('接口不存在', 404);

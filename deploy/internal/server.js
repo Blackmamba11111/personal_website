@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS users (
   last_login  TEXT NOT NULL DEFAULT '',
   source      TEXT NOT NULL DEFAULT 'local',
   perm        TEXT NOT NULL DEFAULT 'rw',
-  server_id   TEXT NOT NULL DEFAULT ''
+  server_id   TEXT NOT NULL DEFAULT '',
+  share_from  TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS auth_servers (
   id         TEXT PRIMARY KEY,
@@ -112,6 +113,17 @@ CREATE TABLE IF NOT EXISTS attachments (
   ext        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(owner);
+CREATE TABLE IF NOT EXISTS ledger_logs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  username   TEXT NOT NULL,             /* 数据归属（共享数据集的 owner 用户名） */
+  actor      TEXT NOT NULL,             /* 实际操作人 */
+  kind       TEXT NOT NULL,             /* customer / visit / region / init */
+  action     TEXT NOT NULL,             /* add / update / delete */
+  target     TEXT NOT NULL DEFAULT '',  /* 对象名称（客户名 / 日期 / 区域名） */
+  detail     TEXT NOT NULL DEFAULT '',  /* 字段级变更明细 */
+  at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_logs_owner ON ledger_logs(username, at);
 `);
 
 /* 老库补列：attachments.ext（存盘真实扩展名）。SQLite 无 ADD COLUMN IF NOT EXISTS，先查 pragma */
@@ -131,7 +143,8 @@ try {
   const add = [
     ['source', "ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT 'local'"],
     ['perm', "ALTER TABLE users ADD COLUMN perm TEXT NOT NULL DEFAULT 'rw'"],
-    ['server_id', "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''"]
+    ['server_id', "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''"],
+    ['share_from', "ALTER TABLE users ADD COLUMN share_from TEXT NOT NULL DEFAULT ''"]
   ];
   add.forEach(function (pair) {
     if (ucols.indexOf(pair[0]) < 0) {
@@ -180,7 +193,8 @@ function mapUser(row, srvMap) {
     perm: row.perm === 'ro' ? 'ro' : 'rw',
     serverId: sid,
     serverName: srv ? srv.name : (sid ? '（认证服务器已删除）' : ''),
-    serverType: srv ? srv.type : (sid ? '' : source)
+    serverType: srv ? srv.type : (sid ? '' : source),
+    shareFrom: row.share_from || ''
   };
 }
 
@@ -398,7 +412,7 @@ const stmtSessionJoin =
   'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login, ' +
   'u.source, u.perm, u.server_id ' +
   'FROM sessions s JOIN users u ON u.username = s.username WHERE s.token = ?';
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from';
 
 function currentUser(req) {
   const raw = req.headers['authorization'] || '';
@@ -417,16 +431,107 @@ function currentUser(req) {
   return u;
 }
 
+/* ---------- 共享数据集：share_from 指向数据归属者（一层，创建时已解析成最终 owner） ---------- */
+function dataOwner(username) {
+  const row = db.prepare('SELECT share_from FROM users WHERE username = ?').get(username);
+  return (row && row.share_from) ? row.share_from : username;
+}
+function shareMembers(owner) {
+  return db.prepare('SELECT username, name, created_at FROM users WHERE share_from = ? ORDER BY created_at').all(owner);
+}
+
 function readLedger(username) {
-  const row = db.prepare('SELECT data FROM ledgers WHERE username = ?').get(username);
+  const row = db.prepare('SELECT data FROM ledgers WHERE username = ?').get(dataOwner(username));
   if (!row) return null;
   try { return JSON.parse(row.data); } catch (e) { return null; }
 }
+
+/* ---------- 变更日志：新旧台账 diff 出字段级明细 ---------- */
+const FIELD_LABELS = {
+  name: '客户名称', regionId: '所属区域', province: '省份', city: '城市', addr: '地址',
+  lng: '经度', lat: '纬度', freq: '巡检频率', contact: '联系人', phone: '联系电话', note: '备注',
+  by: '巡检人', date: '巡检日期', mode: '巡检方式', result: '巡检结果'
+};
+function fmtVal(v) {
+  if (v === undefined || v === null || v === '') return '空';
+  if (Array.isArray(v)) return '[' + (v.length) + ' 个附件]';
+  if (typeof v === 'object') return '…';
+  const s = String(v);
+  return s.length > 40 ? s.slice(0, 40) + '…' : s;
+}
+function byId(arr) { const m = {}; (arr || []).forEach(function (x) { if (x && x.id) m[x.id] = x; }); return m; }
+function diffLedgerLogs(oldD, newD) {
+  const logs = [];
+  oldD = oldD || { regions: [], customers: [], visits: [] };
+  const cname = (d, id) => { const c = d.customers.filter(function (x) { return x.id === id; })[0]; return c ? c.name : id; };
+
+  const oc = byId(oldD.customers), nc = byId(newD.customers);
+  Object.keys(nc).forEach(function (id) {
+    if (!oc[id]) { logs.push({ kind: 'customer', action: 'add', target: nc[id].name || id, detail: '' }); return; }
+    const diffs = [];
+    Object.keys(nc[id]).forEach(function (k) {
+      if (JSON.stringify(oc[id][k]) !== JSON.stringify(nc[id][k])) {
+        diffs.push((FIELD_LABELS[k] || k) + '：' + fmtVal(oc[id][k]) + ' → ' + fmtVal(nc[id][k]));
+      }
+    });
+    if (diffs.length) logs.push({ kind: 'customer', action: 'update', target: nc[id].name || id, detail: diffs.join('；') });
+  });
+  Object.keys(oc).forEach(function (id) {
+    if (!nc[id]) logs.push({ kind: 'customer', action: 'delete', target: oc[id].name || id, detail: '' });
+  });
+
+  const ov = byId(oldD.visits), nv = byId(newD.visits);
+  Object.keys(nv).forEach(function (id) {
+    const v = nv[id];
+    const label = cname(newD, v.customerId) + ' · ' + (v.date || '');
+    if (!ov[id]) { logs.push({ kind: 'visit', action: 'add', target: label, detail: (v.by ? '巡检人 ' + v.by : '') }); return; }
+    const diffs = [];
+    Object.keys(v).forEach(function (k) {
+      if (JSON.stringify(ov[id][k]) !== JSON.stringify(v[k])) {
+        diffs.push((FIELD_LABELS[k] || k) + '：' + fmtVal(ov[id][k]) + ' → ' + fmtVal(v[k]));
+      }
+    });
+    if (diffs.length) logs.push({ kind: 'visit', action: 'update', target: label, detail: diffs.join('；') });
+  });
+  Object.keys(ov).forEach(function (id) {
+    if (!nv[id]) logs.push({ kind: 'visit', action: 'delete', target: cname(oldD, ov[id].customerId) + ' · ' + (ov[id].date || ''), detail: '' });
+  });
+
+  const org = byId(oldD.regions), nrg = byId(newD.regions);
+  Object.keys(nrg).forEach(function (id) {
+    if (!org[id]) logs.push({ kind: 'region', action: 'add', target: nrg[id].name || id, detail: '' });
+    else if (org[id].name !== nrg[id].name) {
+      logs.push({ kind: 'region', action: 'update', target: nrg[id].name || id, detail: '名称：' + fmtVal(org[id].name) + ' → ' + fmtVal(nrg[id].name) });
+    }
+  });
+  Object.keys(org).forEach(function (id) {
+    if (!nrg[id]) logs.push({ kind: 'region', action: 'delete', target: org[id].name || id, detail: '' });
+  });
+  return logs;
+}
+function pruneLogs() {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM ledger_logs').get();
+  if (row.n > 5000) {
+    db.prepare('DELETE FROM ledger_logs WHERE id <= (SELECT id FROM ledger_logs ORDER BY id DESC LIMIT 1 OFFSET 5000)').run();
+  }
+}
 function writeLedger(username, data, by) {
+  const owner = dataOwner(username);
+  const oldData = readLedger(owner);
   db.prepare(
     'INSERT INTO ledgers (username, data, updated_at, updated_by) VALUES (?, ?, ?, ?) ' +
     'ON CONFLICT(username) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, updated_by = excluded.updated_by'
-  ).run(username, JSON.stringify(data), nowIso(), by);
+  ).run(owner, JSON.stringify(data), nowIso(), by);
+  /* 只在真正有变化时记日志（800ms 防抖的重推大多是内容未变） */
+  const logs = oldData ? diffLedgerLogs(oldData, data) : [{ kind: 'init', action: 'add', target: '台账', detail: '初始化台账' }];
+  if (logs.length) {
+    const at = nowIso();
+    logs.forEach(function (l) {
+      db.prepare('INSERT INTO ledger_logs (username, actor, kind, action, target, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(owner, by, l.kind, l.action, l.target || '', l.detail || '', at);
+    });
+    pruneLogs();
+  }
 }
 function sanitizeLedger(d) {
   d = d || {};
@@ -446,10 +551,12 @@ function bundleFor(u) {
   } else {
     users = [mapUser(u, srvMap)];
   }
+  users.forEach(function (x) { x.sharedWith = shareMembers(x.username).map(function (m) { return m.username; }); });
   const ledgers = {};
   if (isAdmin) {
-    db.prepare('SELECT username, data FROM ledgers').all().forEach(function (row) {
-      try { ledgers[row.username] = JSON.parse(row.data); } catch (e) {}
+    db.prepare('SELECT ' + USER_COLS + ' FROM users').all().forEach(function (r) {
+      const d = readLedger(r.username);          /* 共享成员解析到 owner 的数据 */
+      if (d) ledgers[r.username] = d;
     });
   } else {
     const d = readLedger(u.username);
@@ -846,6 +953,18 @@ async function handleApi(req, res, url) {
     return ok(res, { scope: scope, updatedAt: nowIso() });
   }
 
+  /* --- 数据变更日志：按数据归属（共享数据集共用一份历史）查询 --- */
+  if (p === '/api/logs' && method === 'GET') {
+    const req = normName(url.searchParams.get('username') || me.username);
+    if (!db.prepare('SELECT 1 AS x FROM users WHERE username = ?').get(req)) return bad(res, '用户不存在', 404);
+    if (!isAdmin && req !== me.username) return bad(res, '无权查看该账号的数据日志', 403);
+    const owner = dataOwner(req);
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10) || 200, 500);
+    const rows = db.prepare('SELECT actor, kind, action, target, detail, at FROM ledger_logs WHERE username = ? ORDER BY id DESC LIMIT ?')
+      .all(owner, limit);
+    return ok(res, { owner: owner, logs: rows });
+  }
+
   /* --- 认证服务器管理（仅超管）：远程用户的账号校验由此类服务器完成 --- */
   if (p === '/api/auth-servers' && method === 'GET') {
     if (!isAdmin) return bad(res, '仅超级管理员可查看认证服务器', 403);
@@ -940,6 +1059,19 @@ async function handleApi(req, res, url) {
       source = srv.type;
     }
 
+    /* 数据集：shareFrom = 与该用户共用同一份台账（双向同步），不复制数据；
+       来源本身也是共享成员时，直接挂到数据归属者，避免链式引用 */
+    let shareFrom = '';
+    if (body.shareFrom) {
+      const src = normName(body.shareFrom);
+      const srcRow = db.prepare('SELECT * FROM users WHERE username = ?').get(src);
+      if (!srcRow) return bad(res, '要共享数据的来源用户不存在');
+      shareFrom = srcRow.share_from || src;
+      if (role === 'admin' && shareFrom !== username) {
+        return bad(res, '超级管理员维护全局数据，不参与共享数据集');
+      }
+    }
+
     /* 迁移路径：带 salt+hash 表示沿用原口令（本地旧版迁入），不需要重新设密码 */
     const legacySalt = String(body.salt || '');
     const legacyHash = String(body.hash || '');
@@ -961,10 +1093,11 @@ async function handleApi(req, res, url) {
     }
 
     db.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId);
-    if (body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom);
+    /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
+    if (!shareFrom && body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
     return ok(res, {
       user: mapUser(db.prepare('SELECT ' + USER_COLS + ' FROM users WHERE username = ?').get(username), serversMap())
     });
@@ -1048,7 +1181,21 @@ async function handleApi(req, res, url) {
         });
         db.prepare('DELETE FROM attachments WHERE owner = ?').run(target);
         db.prepare('DELETE FROM sessions WHERE username = ?').run(target);
-        db.prepare('DELETE FROM ledgers WHERE username = ?').run(target);
+        /* 共享数据集处理：删的是数据归属者且有成员 → 台账与日志转给最早的成员；
+           删的是成员 → 数据不动；无成员的普通账号 → 连台账一起删 */
+        if (!(row.share_from || '').length) {
+          const members = shareMembers(target);
+          if (members.length) {
+            const heir = members[0].username;
+            db.prepare('UPDATE ledgers SET username = ? WHERE username = ?').run(heir, target);
+            db.prepare('UPDATE ledger_logs SET username = ? WHERE username = ?').run(heir, target);
+            db.prepare('UPDATE users SET share_from = ? WHERE share_from = ?').run(heir, target);
+            /* 归属者本人不再指向别人 */
+            db.prepare("UPDATE users SET share_from = '' WHERE username = ?").run(heir);
+          } else {
+            db.prepare('DELETE FROM ledgers WHERE username = ?').run(target);
+          }
+        }
         db.prepare('DELETE FROM users WHERE username = ?').run(target);
         db.exec('COMMIT');
       } catch (e) {
