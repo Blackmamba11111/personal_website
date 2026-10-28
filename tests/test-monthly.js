@@ -150,6 +150,11 @@ setTimeout(() => {
   check('频率选项说明「按月考核」', /按月考核/.test(freqHtml), freqHtml.replace(/\s+/g, ' ').trim());
   check('频率选项说明「每月 1 次」', /每月 1 次/.test(freqHtml));
   check('频率选项说明「季度 3 次」', /季度 3 次/.test(freqHtml));
+  check('频率选项已去重（仅 2 项）', id('freqOpts').querySelectorAll('.freq-opt').length === 2,
+    id('freqOpts').querySelectorAll('.freq-opt').length + ' 项');
+  check('「每季度 1 次」按钮已移除', !id('freqOpts').querySelector('[data-freq="quarter"]'));
+  check('旧值 quarter 数据归一为 y4（卡片显示一年4次）', card('c6').textContent.indexOf('一年4次') >= 0,
+    card('c6').textContent.slice(0, 60));
 
   console.log('\n========== 月度考核测试 ==========');
   let pass = 0, fail = 0;

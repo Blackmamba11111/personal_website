@@ -445,6 +445,52 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 8.5 普通用户：数据日志入口 ================= */
+  {
+    const dom = makeDom({
+      fixture: { version: 1, users: [
+        mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+        mkUser({ username: 'zhangsan', name: '张三', password: 'zhang1234' }),
+        Object.assign(mkUser({ username: 'wangwu', name: '王五', password: 'wangw888' }), { shareFrom: 'zhangsan' })
+      ] },
+      sessionUser: 'wangwu',
+      data: { zhangsan: mkDB(3, 'Z-') },
+      errors
+    });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+
+    /* wangwu 以自己账号写一次数据（dataOwner 解析到 zhangsan）→ 产生日志 */
+    const zd = JSON.parse(JSON.stringify(w.__SRV__.ledgers['zhangsan']));
+    zd.customers[0].phone = '13900000000';
+    await w.fetch('/api/ledger', { method: 'PUT', body: JSON.stringify({ scope: 'wangwu', data: zd }),
+      headers: { 'content-type': 'application/json', authorization: 'Bearer test-token' } });
+    await tick(20);
+
+    click(w, id('userChip'));
+    check('普通用户菜单显示「数据日志」入口', id('umLogs').style.display !== 'none',
+      'display=' + id('umLogs').style.display);
+    click(w, id('umLogs'));
+    await tick(40);
+    check('普通用户可打开数据日志页', id('logsView').classList.contains('on'));
+    check('普通用户不显示数据范围切换', id('logsScopeWrap').style.display === 'none',
+      'display=' + id('logsScopeWrap').style.display);
+    check('返回按钮指向看板', id('btnLogsBack').textContent.indexOf('返回看板') >= 0,
+      id('btnLogsBack').textContent);
+    check('日志归属解析到共享数据集（zhangsan）', id('logsSub').textContent.indexOf('zhangsan') >= 0,
+      id('logsSub').textContent);
+    check('能读到该数据集的变更记录（含操作人 wangwu）',
+      d.querySelectorAll('#logsTableWrap tbody tr').length >= 1
+      && id('logsTableWrap').textContent.indexOf('wangwu') >= 0,
+      d.querySelectorAll('#logsTableWrap tbody tr').length + ' 行');
+    click(w, id('btnLogsBack'));
+    await tick(20);
+    check('普通用户返回后直接回看板（不进用户管理）',
+      !id('logsView').classList.contains('on') && !id('usersView').classList.contains('on'));
+    w.close();
+  }
+
   /* ================= 9. 退出登录 ================= */
   {
     const dom = makeDom({ sessionUser: 'demo', errors });

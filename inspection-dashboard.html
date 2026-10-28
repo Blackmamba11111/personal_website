@@ -271,7 +271,7 @@
     background:var(--panel-2);border:1px solid var(--border-2);border-radius:8px;padding:9px 11px;
     font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:8px;justify-content:space-between;
   }
-  .freq-opts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+  .freq-opts{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}
   .freq-opt{
     border:1px solid var(--border);border-radius:9px;padding:9px 8px;text-align:center;background:#fff;transition:.15s;
   }
@@ -726,8 +726,7 @@
       <div class="field">
         <label>巡检频率要求 <span class="req">*</span></label>
         <div class="freq-opts" id="freqOpts">
-          <button type="button" class="freq-opt on" data-freq="quarter"><b>每季度 1 次</b><span>按季度考核 · 季度目标 1 次</span></button>
-          <button type="button" class="freq-opt" data-freq="y4"><b>一年 4 次</b><span>按季度考核 · 每季度 1 次</span></button>
+          <button type="button" class="freq-opt on" data-freq="y4"><b>一年 4 次</b><span>按季度考核 · 每季度 1 次</span></button>
           <button type="button" class="freq-opt" data-freq="y12"><b>一年 12 次</b><span>按月考核 · 每月 1 次 · 季度 3 次</span></button>
         </div>
         <div class="hint" style="margin-top:6px;">选择「一年 12 次」即按月考核：每个自然月需巡检 1 次，季度内 3 个月各 1 次；同一个月内多次巡检只计 1 个月达标。</div>
@@ -899,9 +898,9 @@
       <div class="field">
         <label>方式二：CSV 批量导入客户</label>
         <div class="hint" style="margin-bottom:6px;">
-          每行一个客户，列顺序：客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率(quarter/y4/y12),联系人,联系电话,备注<br>
+          每行一个客户，列顺序：客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率(y4/y12),联系人,联系电话,备注<br>
           也可直接粘贴带表头的内容（含本页导出的巡检报表），系统按列名自动识别，联系人与联系电话均可导入<br>
-          频率取值为 quarter（每季度1次）、y4（一年4次，每季度1次）、y12（一年12次，<b>按月每月1次</b>，季度3次）
+          频率取值为 y4（一年4次，每季度1次）、y12（一年12次，<b>按月每月1次</b>，季度3次）；旧值 quarter 已自动归一为 y4
         </div>
         <textarea id="csvBox" style="min-height:100px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;"
           placeholder="客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率,联系人,联系电话,备注&#10;衡水银行饶阳支行,河北,河北,衡水,人民路 12 号,115.720000,38.230000,y4,张工,13800000000,需提前报备"></textarea>
@@ -993,6 +992,7 @@
     <div class="umenu-lb">数据范围</div>
     <select id="scopeSel"></select>
   </div>
+  <button type="button" id="umLogs">数据日志</button>
   <button type="button" id="umUsers">用户管理</button>
   <button type="button" id="umPwd">修改密码</button>
   <button type="button" id="umLogout" class="danger">退出登录</button>
@@ -1041,15 +1041,17 @@
   </div>
 </div>
 
-<!-- ==================== V4：数据变更日志页（超级管理员） ==================== -->
+<!-- ==================== V4：数据变更日志页（超管可切数据集；普通用户固定看自己） ==================== -->
 <div class="page" id="logsView">
   <div class="page-head">
     <button type="button" class="btn" id="btnLogsBack">← 返回用户管理</button>
     <h2>数据日志</h2>
     <span class="sub" id="logsSub">—</span>
     <div class="spacer"></div>
-    <label style="font-size:12px;color:var(--text-2);">数据范围</label>
-    <select id="logsScope" style="width:auto;"></select>
+    <span id="logsScopeWrap" style="display:inline-flex;align-items:center;gap:6px;">
+      <label for="logsScope" style="font-size:12px;color:var(--text-2);">数据范围</label>
+      <select id="logsScope" style="width:auto;"></select>
+    </span>
   </div>
   <div class="page-body">
     <div class="ucard">
@@ -1499,7 +1501,7 @@
      季度目标 = perQuarter 次（一年12次 → 每月 1 次 → 季度 3 次）。
      按月考核时，状态不看总次数而看「月覆盖数」，即同一月内巡检 3 次仍只算 1 个月达标。 */
   var FREQ = {
-    quarter: { label: '每季度1次', perQuarter: 1, perYear: 4,  perMonth: 0, desc: '每季度至少巡检 1 次' },
+    /* 旧值 quarter（每季度1次）与 y4 口径完全相同，加载时统一归一为 y4（见 migrate） */
     y4:      { label: '一年4次',   perQuarter: 1, perYear: 4,  perMonth: 0, desc: '全年 4 次，每季度 1 次' },
     y12:     { label: '一年12次',  perQuarter: 3, perYear: 12, perMonth: 1, desc: '全年 12 次，按月考核，每月 1 次（季度 3 次）' }
   };
@@ -1533,13 +1535,13 @@
       { id:'c04', name:'衡水银行深州支行',       regionId: 'r-hb', province: '河北', city:'衡水',   addr:'河北省衡水市深州市长江路 15 号', lng:115.724300, lat:38.011800, freq:'y4',  contact:'',       phone:'', note:'', hasCoords:true },
       { id:'c05', name:'河北银行石家庄分行',     regionId: 'r-hb', province: '河北', city:'石家庄', addr:'河北省石家庄市桥西区中山西路 66 号', lng:114.514893, lat:38.042805, freq:'y12', contact:'赵工',   phone:'', note:'涉及新核心系统上线配合', hasCoords:true },
       { id:'c06', name:'唐山银行',               regionId: 'r-hb', province: '河北', city:'唐山',   addr:'河北省唐山市路北区建设北路 88 号', lng:118.180214, lat:39.630396, freq:'y4',  contact:'',       phone:'', note:'', hasCoords:true },
-      { id:'c07', name:'沧州银行',               regionId: 'r-hb', province: '河北', city:'沧州',   addr:'河北省沧州市运河区黄河西路 2 号', lng:116.838452, lat:38.304222, freq:'quarter', contact:'孙工', phone:'', note:'仅按季度常规巡检', hasCoords:true },
+      { id:'c07', name:'沧州银行',               regionId: 'r-hb', province: '河北', city:'沧州',   addr:'河北省沧州市运河区黄河西路 2 号', lng:116.838452, lat:38.304222, freq:'y4', contact:'孙工', phone:'', note:'仅按季度常规巡检', hasCoords:true },
       { id:'c08', name:'廊坊银行',               regionId: 'r-hb', province: '河北', city:'廊坊',   addr:'河北省廊坊市广阳区新华路 100 号', lng:116.683350, lat:39.537940, freq:'y4',  contact:'',       phone:'', note:'', hasCoords:true },
-      { id:'c09', name:'保定银行',               regionId: 'r-hb', province: '河北', city:'保定',   addr:'河北省保定市莲池区朝阳北大街 12 号', lng:115.464478, lat:38.874648, freq:'quarter', contact:'', phone:'', note:'', hasCoords:true },
+      { id:'c09', name:'保定银行',               regionId: 'r-hb', province: '河北', city:'保定',   addr:'河北省保定市莲池区朝阳北大街 12 号', lng:115.464478, lat:38.874648, freq:'y4', contact:'', phone:'', note:'', hasCoords:true },
       { id:'c10', name:'河北省农村信用社联合社', regionId: 'r-hb', province: '河北', city:'石家庄', addr:'河北省石家庄市裕华区裕华东路 118 号', lng:114.540300, lat:38.033100, freq:'y12', contact:'周主任', phone:'', note:'省级汇聚节点，巡检需双人同行', hasCoords:true },
       { id:'c11', name:'晋商银行太原总行',       regionId: 'r-sx', province: '山西', city:'太原',   addr:'山西省太原市杏花岭区府西街 69 号', lng:112.548588, lat:37.870071, freq:'y12', contact:'马工',   phone:'', note:'', hasCoords:true },
-      { id:'c12', name:'山西银行大同分行',       regionId: 'r-sx', province: '山西', city:'大同',   addr:'山西省大同市平城区迎宾街 45 号', lng:113.291477, lat:40.090312, freq:'quarter', contact:'', phone:'', note:'异地巡检，需协调行程', hasCoords:true },
-      { id:'c13', name:'晋城银行',               regionId: 'r-sx', province: '山西', city:'晋城',   addr:'山西省晋城市城区泽州路 3200 号', lng:112.851224, lat:35.497349, freq:'quarter', contact:'', phone:'', note:'', hasCoords:true },
+      { id:'c12', name:'山西银行大同分行',       regionId: 'r-sx', province: '山西', city:'大同',   addr:'山西省大同市平城区迎宾街 45 号', lng:113.291477, lat:40.090312, freq:'y4', contact:'', phone:'', note:'异地巡检，需协调行程', hasCoords:true },
+      { id:'c13', name:'晋城银行',               regionId: 'r-sx', province: '山西', city:'晋城',   addr:'山西省晋城市城区泽州路 3200 号', lng:112.851224, lat:35.497349, freq:'y4', contact:'', phone:'', note:'', hasCoords:true },
       { id:'c14', name:'运城农商行',             regionId: 'r-sx', province: '山西', city:'运城',   addr:'山西省运城市盐湖区河东东街 68 号', lng:111.007305, lat:35.025836, freq:'y4',  contact:'', phone:'', note:'', hasCoords:true }
     ],
     visits: [
@@ -1649,6 +1651,8 @@
       var p = c.province || c.region || '';
       if (!p) p = '未分类';
       c.province = p;
+      /* 旧频率值 quarter 与 y4 口径一致（每季度 1 次），统一归一 */
+      if (c.freq === 'quarter') c.freq = 'y4';
       if (!c.regionId || !DB.regions.some(function (r) { return r.id === c.regionId; })) {
         if (!byProv[p]) {
           var nr = {
@@ -1715,7 +1719,7 @@
     });
   }
   function statusOf(c, qk) {
-    var f = FREQ[c.freq] || FREQ.quarter;
+    var f = FREQ[c.freq] || FREQ.y4;
     var cnt = visitsInQuarter(c.id, qk).length;
     var st, mc = null, need = 0, done = 0;
     if (f.perMonth) {
@@ -3032,7 +3036,7 @@
     var qk = state.quarter, p = quarterParts(qk);
     var s = statusOf(c, qk);
     var yVisits = visitsInYear(id, p.y);
-    var f = FREQ[c.freq] || FREQ.quarter;
+    var f = FREQ[c.freq] || FREQ.y4;
 
     document.getElementById('dName').textContent = c.name;
     document.getElementById('dSub').textContent =
@@ -3251,7 +3255,7 @@
       document.getElementById('fLng').value = f0 ? f0[1].toFixed(6) : (pp ? pp.center[0].toFixed(6) : '');
       document.getElementById('fLat').value = f0 ? f0[2].toFixed(6) : (pp ? pp.center[1].toFixed(6) : '');
     }
-    setFreq(c ? c.freq : 'quarter');
+    setFreq(c ? c.freq : 'y4');
     clearCandidates();
     placeHint('');
 
@@ -3283,7 +3287,7 @@
   }
   function getFreq() {
     var on = document.querySelector('#freqOpts .freq-opt.on');
-    return on ? on.getAttribute('data-freq') : 'quarter';
+    return on ? on.getAttribute('data-freq') : 'y4';
   }
 
   function collectForm() {
@@ -3583,8 +3587,8 @@
         var rName = cellOf(cells, 'region', 1).trim();
         var prov = cellOf(cells, 'province', 2).trim();
         if (!PROV_MAP[prov]) prov = rName && PROV_MAP[rName] ? rName : '河北';
-        var freq = cellOf(cells, 'freq', 7).trim() || 'quarter';
-        if (!FREQ[freq]) freq = 'quarter';
+        var freq = cellOf(cells, 'freq', 7).trim() || 'y4';
+        if (!FREQ[freq]) freq = 'y4';
         DB.customers.push({
           id: uid('c'), name: cellOf(cells, 'name', 0).trim(),
           regionId: findOrCreateRegion(rName || prov, prov),
@@ -3818,7 +3822,7 @@
     document.getElementById('btnExportCsv').onclick = exportReportCsv;
     document.getElementById('btnTemplate').onclick = function () {
       download('客户导入模板.csv',
-        ['客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率(quarter/y4/y12),联系人,联系电话,备注',
+        ['客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率(y4/y12),联系人,联系电话,备注',
          '示例银行XX支行,河北,河北,衡水,人民东路 1 号,115.670186,37.738760,y4,张工,13800000000,需提前报备'].join('\r\n'),
         'text/csv');
       toast('模板已下载');
@@ -4491,15 +4495,25 @@
   var LOG_KIND_LABEL = { customer: '客户', visit: '巡检', region: '区域', init: '台账' };
   var LOG_ACTION_LABEL = { add: '新增', update: '修改', delete: '删除' };
   function openLogsPage(preScope) {
-    if (!isAdmin()) { toast('仅超级管理员可访问数据日志'); return; }
+    var scopeWrap = document.getElementById('logsScopeWrap');
+    if (isAdmin()) {
+      if (scopeWrap) scopeWrap.style.display = '';
+      document.getElementById('btnLogsBack').textContent = '← 返回用户管理';
+      logsScopeOwner = preScope || logsScopeOwner || (AUTH.user ? AUTH.user.username : '');
+      renderLogsScopeSelect();
+    } else {
+      /* 普通用户：固定查看自己（共享数据集按归属者）的日志，服务端按本人放行 */
+      if (scopeWrap) scopeWrap.style.display = 'none';
+      document.getElementById('btnLogsBack').textContent = '← 返回看板';
+      logsScopeOwner = AUTH.user ? AUTH.user.username : '';
+    }
     document.getElementById('usersView').classList.remove('on');
     document.getElementById('serversView').classList.remove('on');
-    logsScopeOwner = preScope || logsScopeOwner || (AUTH.user ? AUTH.user.username : '');
-    renderLogsScopeSelect();
     document.getElementById('logsView').classList.add('on');
     renderLogsPage();
   }
   function renderLogsScopeSelect() {
+    if (!isAdmin()) return;
     var sel = document.getElementById('logsScope');
     var users = userList();
     sel.innerHTML = users.map(function (u) {
@@ -4516,6 +4530,12 @@
   function renderLogsPage() {
     var owner = logsScopeOwner;
     var u = findUser(owner);
+    /* 普通用户拿不到用户列表：用本人会话信息兜底展示归属 */
+    if (!u && AUTH.user && String(AUTH.user.username).toLowerCase() === String(owner).toLowerCase()) {
+      var src = (AUTH.user.shareFrom && findUser(AUTH.user.shareFrom)) || null;
+      u = { name: src ? src.name : (AUTH.user.name || owner), sharedWith: (src && src.sharedWith) || [] };
+      if (src) owner = AUTH.user.shareFrom;
+    }
     var members = (u && u.sharedWith) || [];
     document.getElementById('logsSub').textContent = u
       ? '数据归属：' + u.name + '（' + owner + '）' + (members.length ? ' · 共享成员 ' + members.length + ' 人' : '')
@@ -4766,8 +4786,8 @@
   }
 
   function custsFreqLabel(f) {
-    var o = FREQ[String(f || 'quarter')];
-    return o ? o.label : FREQ.quarter.label;
+    var o = FREQ[String(f || 'y4')];
+    return o ? o.label : FREQ.y4.label;
   }
   function custsCoordText(c) {
     return (isFinite(c.lng) && isFinite(c.lat)) ? Number(c.lng).toFixed(4) + ', ' + Number(c.lat).toFixed(4) : '未定位';
@@ -5249,6 +5269,10 @@
       var u = findUser(v);
       toast(v === SCOPE_ALL ? '已切换到汇总视图（只读）' : '已切换到「' + (u ? u.name : v) + '」的台账');
     });
+    document.getElementById('umLogs').addEventListener('click', function () {
+      document.getElementById('userMenu').classList.remove('on');
+      openLogsPage('');
+    });
     document.getElementById('umUsers').addEventListener('click', openUsersPage);
     document.getElementById('umPwd').addEventListener('click', function () {
       document.getElementById('userMenu').classList.remove('on');
@@ -5269,7 +5293,8 @@
     document.getElementById('btnDataLogs').addEventListener('click', function () { openLogsPage(''); });
     document.getElementById('btnLogsBack').addEventListener('click', function () {
       document.getElementById('logsView').classList.remove('on');
-      document.getElementById('usersView').classList.add('on');
+      /* 超管从用户管理进入 → 回用户管理；普通用户 → 直接回看板 */
+      if (isAdmin()) document.getElementById('usersView').classList.add('on');
     });
     document.getElementById('logsScope').addEventListener('change', function () {
       var v = this.value;
