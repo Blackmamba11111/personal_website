@@ -44,6 +44,12 @@ for i in "${!SRC_FILES[@]}"; do
   echo "    ${DST_FILES[$i]}"
 done
 
+echo "==> 同步 assets/ 静态资源（favicon / 省界数据等，整目录覆盖）"
+tar -C "$REPO_ROOT" -czf /tmp/deploy-assets.tgz assets
+$SCP /tmp/deploy-assets.tgz "root@$HOST:/tmp/deploy-assets.tgz" >/dev/null
+$SSH "mkdir -p $REMOTE_DIR/assets && cd $REMOTE_DIR && tar -xzf /tmp/deploy-assets.tgz && rm -f /tmp/deploy-assets.tgz" </dev/null
+echo "    assets/ 已同步"
+
 echo "==> md5 校验"
 ( cd "$REPO_ROOT" && md5 -q "${SRC_FILES[@]}" ) > /tmp/deploy-md5-local
 $SSH "cd $REMOTE_DIR && md5sum $REMOTE_LIST | awk '{print \$1}'" </dev/null > /tmp/deploy-md5-remote

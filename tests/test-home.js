@@ -73,16 +73,16 @@ async function main() {
     const d = dom.window.document;
     check('粒子画布存在', !!d.getElementById('fx'));
     check('背景三层存在', ['bgBase', 'bgGrid', 'bgVignette'].every(id => d.getElementById(id)));
-    check('站点图标指向 assets/favicon.svg',
-      (d.querySelector('link[rel="icon"]') || {}).getAttribute
-        ? d.querySelector('link[rel="icon"]').getAttribute('href') === 'assets/favicon.svg' : false);
+    check('站点图标链接存在（svg 或 png，版本参数防缓存）',
+      !!d.querySelector('link[rel="icon"]') &&
+      /assets\/favicon\.(png|svg)\?v=\d+/.test(d.querySelector('link[rel="icon"]').getAttribute('href')));
 
     /* 首页不体现巡检功能：正文（除指向看板的链接与资源名外）不得出现「巡检」 */
     const bodyText = d.body.textContent || '';
     check('首页可见文案不含「巡检」', bodyText.indexOf('巡检') < 0,
       (bodyText.match(/.{0,14}巡检.{0,14}/) || [''])[0]);
-    check('标题为个人主页定位', /撒啦嘿/.test(d.title) && !/巡检/.test(d.title), d.title);
-    check('品牌区为「撒啦嘿」', /撒啦嘿/.test((d.querySelector('.brand') || {}).textContent || ''));
+    check('标题为个人主页定位', /ZDNS/.test(d.title) && !/巡检/.test(d.title), d.title);
+    check('品牌区为「ZDNS」', /ZDNS/.test((d.querySelector('.brand') || {}).textContent || ''));
     /* 全站不出现真实姓名与托管信息 */
     const fullHTML = html;
     check('页面不含真实姓名「潘超」', fullHTML.indexOf('潘超') < 0);
@@ -262,7 +262,8 @@ async function main() {
      安全头与静态缓存改由 worker/index.js 在响应阶段注入，CSP 由页面 meta 声明。
      这里改为校验新的载体，避免继续守住一份已经不存在的配置文件。 */
   await block('部署产物', async () => {
-    const need = ['assets/hero-photo.jpg', 'assets/favicon.svg', 'assets/provinces.js',
+    const need = ['assets/hero-photo.jpg',
+      'assets/favicon.svg', 'assets/provinces.js',
       '404.html', 'README.md', 'robots.txt', '.gitignore', 'worker/index.js', 'wrangler.jsonc'];
     need.forEach(f => check('存在 ' + f, fs.existsSync(path.join(DIR, f))));
     check('_headers 不再存在（策略已改由 Worker 注入）', !fs.existsSync(path.join(DIR, '_headers')));
@@ -305,8 +306,9 @@ async function main() {
     const dash = fs.readFileSync(DASH, 'utf8');
     check('看板保留本地代理注入', dash.indexOf('__WB_HTTP_PORT__') >= 0);
     check('看板代理注入带本地环境守卫', /isLocal/.test(dash) && /hostname/.test(dash));
-    check('看板提供线上地图密钥配置位', /window\.TMAP_KEY/.test(dash));
-    check('看板地图 SDK 由密钥配置驱动加载', /gljs\?v=1\.exp/.test(dash) && !/<script src="https:\/\/map\.qq\.com\/api\/gljs/.test(dash));
+    check('看板提供线上地图密钥配置位', /window\.AMAP_KEY/.test(dash));
+    check('看板地图 SDK 由密钥配置驱动加载', /webapi\.amap\.com\/maps\?v=2\.0/.test(dash) && !/<script src="https:\/\/webapi\.amap\.com\/maps/.test(dash));
+    check('看板保留 TMap 门面（AMap 实现）', /buildTMapFacade/.test(dash) && /MultiMarker: MultiMarker/.test(dash));
 
     /* ---------- 省界数据拆分：主文档瘦身 + 数据文件可长期缓存 ---------- */
     const prov = fs.readFileSync(path.join(DIR, 'assets/provinces.js'), 'utf8');
@@ -318,7 +320,7 @@ async function main() {
     const srcVer = (/PROV_SRC = 'assets\/provinces\.js\?v=([^']+)'/.exec(dash) || [])[1];
     const preVer = (/rel="preload" as="script" href="assets\/provinces\.js\?v=([^"]+)"/.exec(dash) || [])[1];
     check('预取地址与 PROV_SRC 版本号一致', !!srcVer && srcVer === preVer, srcVer + ' / ' + preVer);
-    check('看板体积已降到 272 KB 以内', Buffer.byteLength(dash, 'utf8') < 272 * 1024,
+    check('看板体积已降到 290 KB 以内', Buffer.byteLength(dash, 'utf8') < 290 * 1024,
       Math.round(Buffer.byteLength(dash, 'utf8') / 1024) + ' KB');
   });
 

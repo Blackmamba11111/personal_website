@@ -5,12 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <!-- 安全策略：原先由 Cloudflare 的 _headers 提供，但 Workers 静态资源不会更新已存在的 _headers 文件，
-     故改由页面 meta 声明。腾讯地图 GL JS 需要 qq.com / gtimg.com / qpic.cn（地图样式描述文件）。 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://map.qq.com https://*.qq.com https://*.gtimg.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.qpic.cn; font-src 'self' data:; connect-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.map.qq.com https://*.qpic.cn https://cloudflareinsights.com https://static.cloudflareinsights.com; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' https://map.qq.com; base-uri 'self'; form-action 'self'; object-src 'none'">
+     故改由页面 meta 声明。高德地图 JS API 需要 amap.com / autonavi.com（地图样式与瓦片）。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://map.qq.com https://*.qq.com https://*.gtimg.com https://webapi.amap.com https://*.amap.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.qpic.cn https://*.amap.com https://*.autonavi.com; font-src 'self' data:; connect-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.map.qq.com https://*.qpic.cn https://*.amap.com https://*.autonavi.com https://cloudflareinsights.com https://static.cloudflareinsights.com; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' https://map.qq.com; base-uri 'self'; form-action 'self'; object-src 'none'">
 <title>客户巡检管理看板</title>
+<link rel="icon" id="favIcon" href="assets/favicon.png?v=2" type="image/png">
+<script>
+/* 页签图标：内网用 ZDNS logo（favicon.png 不入 git，由部署脚本同步）；
+   公网 demo 站维持原 svg 图标，logo 不上互联网 */
+(function () {
+  if (location.hostname === 'web.aill.top') {
+    var f = document.getElementById('favIcon');
+    f.setAttribute('href', 'assets/favicon.svg?v=2');
+    f.setAttribute('type', 'image/svg+xml');
+  }
+})();
+</script>
 <script type="text/javascript">
   /* 地图代理：仅本地预览环境注入（占位符 __WB_* 由沙箱在本地替换）。
-     线上部署时不会注入，直接走 map.qq.com（需配置 window.TMAP_KEY）。 */
+     线上部署时不会注入，内网走同源 /_tmap 代理、公网直连 webapi.amap.com（需配置 window.AMAP_KEY）。 */
   (function () {
     var serviceHost = 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECRET__';
     var hn = location.hostname;
@@ -527,7 +539,7 @@
         </ul>
       </div>
       <div class="tip">
-        底图：腾讯地图（GCJ-02）。行政区划轮廓取自公开数据并已简化，仅供内部参考，
+        底图：高德地图（GCJ-02）。行政区划轮廓取自公开数据并已简化，仅供内部参考，
         不作为权属界线的法定依据；国界、领海及未定界区域以国家标准地图为准。
       </div>
     </div>
@@ -1321,18 +1333,17 @@
     </div>
   </div>
 </div>
-<!-- ==================== 腾讯地图 SDK ====================
-     已配置 Key（下方 window.TMAP_KEY）。
-     注意：该 Key 是浏览器端公开密钥，安全依赖「腾讯位置服务控制台 → Key 白名单」，
-     必须在白名单里登记站点域名（web.aill.top），否则地图会报 Key 校验失败。
-     留空则不携带 Key 请求；地图不可用（网络不通 / 未配 Key / 域名未白名单）时页面会给出提示，
-     其余功能不受影响。
+<!-- ==================== 高德地图 SDK（2026-10 由腾讯地图切换） ====================
+     已配置 Key（下方 window.AMAP_KEY，Web 端 JS API 与 Web 服务检索共用）。
+     注意：该 Key 是浏览器端公开密钥，安全依赖「高德开放平台控制台 → 域名白名单」，
+     如配置了白名单需登记站点域名；留空则不携带 Key 请求。
+     地图不可用（网络不通 / 未配 Key / Key 类型不符）时页面会给出提示，其余功能不受影响。
 
      ⚠️ 这里只声明 Key，绝不在此同步加载 SDK。
      SDK 由页面脚本在登录界面渲染完成后以 async 方式注入（见 loadTMap）。
      原因：改为同步 script 标签 / document.write 加载时，只要地图域名响应慢或不可达，
      整个文档解析会被无限阻塞，脚本末尾的 boot() 永不执行 → 登录框不出现、页面一直转圈。 -->
-<script>window.TMAP_KEY = '5BDBZ-G6VEQ-SAM5O-BQSZP-FCV6T-DHFMA';</script>
+<script>window.AMAP_KEY = '96eb5c271c76440bcb9a15ed493fa350';</script>
 
 <!-- 省界数据预取：主脚本会按需注入同一 URL（PROV_SRC）。
      预取只下载不执行，不阻塞解析，与页面本身并行，登录后地图通常已就绪。
@@ -1348,7 +1359,7 @@
  *           浏览器 localStorage 退化为「镜像缓存」——便于断网时继续录入，
  *           联网后自动回推，且换电脑登录即可看到同一份数据。
  * 鉴权：服务端签发 Bearer Token（30 天），会话不再依赖 localStorage 判断。
- * 地图：腾讯地图 GL JS（GCJ-02），仅用于区域级客户分布展示
+ * 地图：高德地图 JS API 2.0（GCJ-02），仅用于区域级客户分布展示
  * ========================================================================= */
 (function () {
   'use strict';
@@ -1968,14 +1979,315 @@
   var PIN_SRC_CAND = pinSvg('#94A3B8', 'dot');
   var PIN_SRC_CAND_ON = pinSvg('#0EA5E9', 'dot');
 
-  /* ---------------- 腾讯地图 SDK：异步加载（绝不阻塞首屏） ----------------
+  /* ---------------- 高德资源同源钩子（内网代理模式专用） ----------------
+     SDK 文本里的地图域名已由服务端 /_tmap 代理改写；此钩子兜底拦截运行时
+     动态拼出的外网地址（restapi 等裸域名拼接），统一转成同源 /_tmap/<host>/。
+     直连模式（公网 demo）不安装。 */
+  var amapHookOn = false, amapHookOrig = {};
+  function amapUrlRewrite(u) {
+    if (typeof u !== 'string') return u;
+    var m = /^https?:\/\/([^\/?#]+)/.exec(u);
+    if (!m) return u;
+    var host = m[1].toLowerCase();
+    if (!/([.]amap\.com|[.]autonavi\.com)$/.test(host)) return u;
+    return '/_tmap/' + host + u.slice(m[0].length);
+  }
+  function amapHookInstall() {
+    if (amapHookOn) return;
+    amapHookOn = true;
+    try {
+      var desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+      if (desc && desc.set) {
+        amapHookOrig.img = desc;
+        Object.defineProperty(HTMLImageElement.prototype, 'src', {
+          get: desc.get,
+          set: function (v) { try { v = amapUrlRewrite(String(v)); } catch (e) {} desc.set.call(this, v); },
+          configurable: true
+        });
+      }
+    } catch (e) {}
+    try {
+      if (window.fetch) {
+        amapHookOrig.fetch = window.fetch;
+        window.fetch = function (input, init) {
+          try { if (typeof input === 'string') input = amapUrlRewrite(input); } catch (e) {}
+          return amapHookOrig.fetch.call(this, input, init);
+        };
+      }
+    } catch (e) {}
+    try {
+      amapHookOrig.xhr = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (method, u) {
+        var args = [].slice.call(arguments);
+        try { args[1] = amapUrlRewrite(String(args[1])); } catch (e) {}
+        return amapHookOrig.xhr.apply(this, args);
+      };
+    } catch (e) {}
+  }
+  function amapHookRemove() {
+    if (!amapHookOn) return;
+    amapHookOn = false;
+    try { if (amapHookOrig.img) Object.defineProperty(HTMLImageElement.prototype, 'src', amapHookOrig.img); } catch (e) {}
+    try { if (amapHookOrig.fetch) window.fetch = amapHookOrig.fetch; } catch (e) {}
+    try { if (amapHookOrig.xhr) XMLHttpRequest.prototype.open = amapHookOrig.xhr; } catch (e) {}
+  }
+
+  /* ---------------- TMap 门面（高德 AMap 实现） ----------------
+     页面沿用 TMap API（MultiMarker / MultiLabel / MultiCircle / MultiPolygon /
+     InfoWindow），真实渲染由高德 JS API 2.0 提供：loadTMap 成功后调用
+     buildTMapFacade(window.AMap) 生成 window.TMap。
+     jsdom 测试桩直接注入 window.TMap，与本门面互不干扰。 */
+  function buildTMapFacade(AMap) {
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function toLngLat(p) {
+      if (!p) return null;
+      var lng = (typeof p.getLng === 'function') ? p.getLng() : p.lng;
+      var lat = (typeof p.getLat === 'function') ? p.getLat() : p.lat;
+      return new AMap.LngLat(Number(lng), Number(lat));
+    }
+    function TLatLng(lat, lng) { this.lat = Number(lat); this.lng = Number(lng); }
+    TLatLng.prototype.getLat = function () { return this.lat; };
+    TLatLng.prototype.getLng = function () { return this.lng; };
+
+    /* 样式对象：仅保存属性，图层实现时读取 */
+    function MarkerStyle(o) { o = o || {}; this.width = o.width; this.height = o.height; this.anchor = o.anchor; this.src = o.src; }
+    function LabelStyle(o) { o = o || {}; for (var k in o) this[k] = o[k]; }
+    function CircleStyle(o) { o = o || {}; for (var k in o) this[k] = o[k]; }
+    function PolygonStyle(o) { o = o || {}; for (var k in o) this[k] = o[k]; }
+
+    var iconCache = {};
+    function iconFor(st) {
+      st = st || {};
+      var w = st.width || 24, h = st.height || 24;
+      var k = (st.src || '') + '|' + w + 'x' + h;
+      if (!(k in iconCache)) {
+        iconCache[k] = st.src
+          ? new AMap.Icon({ image: st.src, size: new AMap.Size(w, h), imageSize: new AMap.Size(w, h) })
+          : undefined;
+      }
+      return iconCache[k];
+    }
+    function strokeOf(st) {
+      st = st || {};
+      return {
+        strokeColor: st.borderColor || 'transparent',
+        strokeWeight: st.showBorder === false ? 0 : (st.borderWidth || 1),
+        strokeOpacity: st.showBorder === false ? 0 : 1
+      };
+    }
+
+    /* 地图 */
+    function TMapMap(id, o) {
+      o = o || {};
+      this._amap = new AMap.Map(id, {
+        zoom: o.zoom || 5,
+        center: o.center ? toLngLat(o.center) : undefined,
+        viewMode: '2D',
+        mapStyle: 'amap://styles/normal'
+      });
+      this._handlers = {};
+    }
+    TMapMap.prototype.on = function (ev, cb) { (this._handlers[ev] = this._handlers[ev] || []).push(cb); };
+    TMapMap.prototype.setCenter = function (ll) { try { this._amap.setCenter(toLngLat(ll)); } catch (e) {} };
+    TMapMap.prototype.setZoom = function (z) { try { this._amap.setZoom(Number(z)); } catch (e) {} };
+    TMapMap.prototype.getZoom = function () { try { return this._amap.getZoom(); } catch (e) { return 5; } };
+    TMapMap.prototype.getBounds = function () {
+      var b = this._amap.getBounds();
+      var ne = (b && (b.getNorthEast ? b.getNorthEast() : b.northeast)) || null;
+      var sw = (b && (b.getSouthWest ? b.getSouthWest() : b.southwest)) || null;
+      return {
+        getNorthEast: function () { return ne; },
+        getSouthWest: function () { return sw; }
+      };
+    };
+    TMapMap.prototype.destroy = function () { try { this._amap.destroy(); } catch (e) {} };
+
+    /* 多标记 / 多标签通用基座：按 id 维护高德覆盖物，setGeometries 全量替换、
+       updateGeometries 按 id 增量更新 */
+    function BaseLayer(o) {
+      this._amap = (o && o.map && o.map._amap) || null;
+      this._styles = (o && o.styles) || {};
+      this._handlers = {};
+      this._items = {};
+    }
+    BaseLayer.prototype.on = function (ev, cb) { (this._handlers[ev] = this._handlers[ev] || []).push(cb); };
+    BaseLayer.prototype._emit = function (ev, evt) {
+      (this._handlers[ev] || []).forEach(function (fn) { try { fn(evt); } catch (e) {} });
+    };
+    BaseLayer.prototype._prune = function (list) {
+      var self = this, next = {};
+      (list || []).forEach(function (g) { next[g.id] = true; });
+      Object.keys(this._items).forEach(function (id) {
+        if (!next[id]) { self._dispose(self._items[id]); delete self._items[id]; }
+      });
+    };
+    BaseLayer.prototype.setMap = function (m) {
+      if (!m) { var self = this; Object.keys(this._items).forEach(function (id) { self._dispose(self._items[id]); delete self._items[id]; }); }
+    };
+
+    function MultiMarker(o) { BaseLayer.call(this, o); this.setGeometries((o && o.geometries) || []); }
+    MultiMarker.prototype = Object.create(BaseLayer.prototype);
+    MultiMarker.prototype._dispose = function (it) { try { it.marker.setMap(null); } catch (e) {} };
+    MultiMarker.prototype._sync = function (g) {
+      var self = this;
+      var it = this._items[g.id];
+      if (it) {
+        try { it.marker.setPosition(toLngLat(g.position)); } catch (e) {}
+        if (it.styleId !== g.styleId) { try { it.marker.setIcon(iconFor(this._styles[g.styleId])); } catch (e) {} it.styleId = g.styleId; }
+        return;
+      }
+      var marker = new AMap.Marker({
+        map: this._amap,
+        position: toLngLat(g.position),
+        anchor: 'bottom-center',
+        icon: iconFor(this._styles[g.styleId]),
+        zIndex: 10 + Math.min(90, Number(g.rank) || 1)
+      });
+      it = this._items[g.id] = { marker: marker, styleId: g.styleId };
+      marker.on('click', function (e) {
+        self._emit('click', { geometry: { id: g.id, position: g.position }, latLng: e && e.lnglat });
+      });
+      marker.on('mouseover', function () { self._emit('hover', { geometry: { id: g.id, position: g.position } }); });
+      marker.on('mouseout', function () { self._emit('hover', { geometry: null }); });
+    };
+    MultiMarker.prototype.setGeometries = function (list) { this._prune(list); var self = this; (list || []).forEach(function (g) { self._sync(g); }); };
+    MultiMarker.prototype.updateGeometries = function (list) { this.setGeometries(list); };
+
+    function labelHtml(st, text) {
+      st = st || {};
+      var off = st.offset || { x: 0, y: 0 };
+      var align = st.alignment || 'center';
+      var tx = (align === 'center') ? '-50%' : (align === 'right' ? '-100%' : '0');
+      return '<div style="transform:translate(' + tx + ',-50%) translateY(' + (Number(off.y) || 0) + 'px);' +
+        'white-space:nowrap;font-size:' + (st.size || 11) + 'px;color:' + esc(st.color || '#16233A') + ';' +
+        'background:' + esc(st.backgroundColor || 'transparent') + ';' +
+        'border:' + (st.borderWidth || 0) + 'px solid ' + esc(st.borderColor || 'transparent') + ';' +
+        'padding:' + esc(st.padding || '2px 6px') + ';border-radius:' + (st.borderRadius || 0) + 'px;' +
+        'line-height:1.25;box-shadow:0 1px 4px rgba(15,35,70,0.10);">' + esc(text) + '</div>';
+    }
+    function MultiLabel(o) { BaseLayer.call(this, o); this.setGeometries((o && o.geometries) || []); }
+    MultiLabel.prototype = Object.create(BaseLayer.prototype);
+    MultiLabel.prototype._dispose = function (it) { try { it.marker.setMap(null); } catch (e) {} };
+    MultiLabel.prototype._sync = function (g) {
+      var self = this;
+      var it = this._items[g.id];
+      var st = this._styles[g.styleId] || {};
+      if (it) {
+        try { it.marker.setPosition(toLngLat(g.position)); } catch (e) {}
+        if (it.styleId !== g.styleId || it.content !== g.content) {
+          try { it.marker.setContent(labelHtml(st, g.content)); } catch (e) {}
+          it.styleId = g.styleId; it.content = g.content;
+        }
+        return;
+      }
+      var marker = new AMap.Marker({
+        map: this._amap,
+        position: toLngLat(g.position),
+        content: labelHtml(st, g.content),
+        anchor: 'center',
+        zIndex: 100 + Math.min(90, Number(g.rank) || 1)
+      });
+      it = this._items[g.id] = { marker: marker, styleId: g.styleId, content: g.content };
+      marker.on('click', function (e) {
+        self._emit('click', { geometry: { id: g.id, position: g.position }, latLng: e && e.lnglat });
+      });
+    };
+    MultiLabel.prototype.setGeometries = function (list) { this._prune(list); var self = this; (list || []).forEach(function (g) { self._sync(g); }); };
+    MultiLabel.prototype.updateGeometries = function (list) { this.setGeometries(list); };
+
+    /* TMap 的填充色是 rgba(…,a) 内嵌透明度；高德会丢弃 rgba 里的 alpha，
+       必须拆出来放到 fillOpacity，否则 8% 的淡填充会渲染成 100% 实心 */
+    function fillOf(st, dft) {
+      var c = String(st.color || dft);
+      var m = /rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)/i.exec(c);
+      if (m) return { color: c.replace(/\s*,\s*[\d.]+\s*\)$/, ',1)'), opacity: Number(m[1]) };
+      return { color: c, opacity: 1 };
+    }
+    function MultiCircle(o) { BaseLayer.call(this, o); this.setGeometries((o && o.geometries) || []); }
+    MultiCircle.prototype = Object.create(BaseLayer.prototype);
+    MultiCircle.prototype._dispose = function (it) { try { it.ov.setMap(null); } catch (e) {} };
+    MultiCircle.prototype._sync = function (g) {
+      if (this._items[g.id]) return;
+      var st = this._styles[g.styleId] || {};
+      var f = fillOf(st, 'rgba(37,99,235,0.16)');
+      var ov = new AMap.Circle({
+        map: this._amap,
+        center: toLngLat(g.center),
+        radius: Number(g.radius) || 0,
+        fillColor: f.color,
+        fillOpacity: f.opacity,
+        bubble: true, zIndex: 4
+      });
+      this._items[g.id] = { ov: ov };
+      var so = strokeOf(st);
+      try { ov.setOptions(so); } catch (e) {}
+    };
+    MultiCircle.prototype.setGeometries = function (list) { this._prune(list); var self = this; (list || []).forEach(function (g) { self._sync(g); }); };
+
+    function MultiPolygon(o) { BaseLayer.call(this, o); this.setGeometries((o && o.geometries) || []); }
+    MultiPolygon.prototype = Object.create(BaseLayer.prototype);
+    MultiPolygon.prototype._dispose = function (it) { var self = this; (it.ovs || []).forEach(function (ov) { try { ov.setMap(null); } catch (e) {} }); };
+    MultiPolygon.prototype._sync = function (g) {
+      if (this._items[g.id]) return;
+      var st = this._styles[g.styleId] || {};
+      var so = strokeOf(st);
+      var f = fillOf(st, 'rgba(37,99,235,0.08)');
+      /* geometry.paths = [陆地块][环]；每块一个 AMap.Polygon，首环为外环、其余为洞 */
+      var ovs = (g.paths || []).map(function (block) {
+        return new AMap.Polygon({
+          map: this._amap,
+          path: (block || []).map(function (ring) {
+            return (ring || []).map(function (ll) {
+              return [Number(typeof ll.getLng === 'function' ? ll.getLng() : ll.lng),
+                      Number(typeof ll.getLat === 'function' ? ll.getLat() : ll.lat)];
+            });
+          }),
+          fillColor: f.color,
+          fillOpacity: f.opacity,
+          bubble: true, zIndex: 3
+        });
+      }, this);
+      this._items[g.id] = { ovs: ovs };
+      ovs.forEach(function (ov) { try { ov.setOptions(so); } catch (e) {} });
+    };
+    MultiPolygon.prototype.setGeometries = function (list) { this._prune(list); var self = this; (list || []).forEach(function (g) { self._sync(g); }); };
+
+    function InfoWindow(o) {
+      o = o || {};
+      this._amap = (o.map && o.map._amap) || null;
+      this._pos = o.position ? toLngLat(o.position) : null;
+      this._iw = new AMap.InfoWindow({
+        content: o.content || '',
+        offset: new AMap.Pixel((o.offset && o.offset.x) || 0, (o.offset && o.offset.y) || 0),
+        anchor: 'bottom-center'
+      });
+    }
+    InfoWindow.prototype.setPosition = function (ll) { this._pos = toLngLat(ll); };
+    InfoWindow.prototype.setContent = function (html) { try { this._iw.setContent(html); } catch (e) {} };
+    InfoWindow.prototype.open = function () { try { if (this._amap && this._pos) this._iw.open(this._amap, this._pos); } catch (e) {} };
+    InfoWindow.prototype.close = function () { try { this._iw.close(); } catch (e) {} };
+
+    return {
+      Map: TMapMap, LatLng: TLatLng,
+      MarkerStyle: MarkerStyle, LabelStyle: LabelStyle, CircleStyle: CircleStyle, PolygonStyle: PolygonStyle,
+      MultiMarker: MultiMarker, MultiLabel: MultiLabel, MultiCircle: MultiCircle, MultiPolygon: MultiPolygon,
+      InfoWindow: InfoWindow, service: {}
+    };
+  }
+
+
+  /* ---------------- 地图 SDK：异步加载（绝不阻塞首屏） ----------------
      state: idle → loading → ready | failed
      超时兜底：网络静默丢包（连接卡住、既不成功也不报错）时 script 的 onload/onerror 都不触发，
      15s 后按失败处理并在图区提示；若随后迟到成功，则自动恢复初始化。 */
-  var tmapState = 'idle', tmapWaiters = [], tmapTimer = null;
+  var tmapState = 'idle', tmapWaiters = [], tmapTimer = null, tmapScriptEl = null, tmapAttempts = 0, tmapRetryTimer = null;
+  var TMAP_MAX_ATTEMPTS = 3;   /* SDK 加载失败自动重试次数，超过后给出手动重试按钮 */
 
   /* ---------------- 环境能力检测与诊断 ----------------
-     腾讯地图 GL 依赖浏览器的 WebGL。若 WebGL 被禁用（关闭了硬件加速、
+     高德地图 JS API 依赖浏览器的 WebGL。若 WebGL 被禁用（关闭了硬件加速、
      使用老旧显卡、远程桌面/虚拟机会话、部分企业浏览器策略），
      地图区域会呈现空白，但页面其它功能完全正常 —— 这是「同一网址，
      有的电脑能看到地图、有的看不到」最常见的原因。 */
@@ -2005,7 +2317,7 @@
       '浏览器：' + navigator.userAgent,
       'WebGL：' + webglDetail(),
       '地图 SDK：' + (tmapReadyNow() ? '已加载' : ('未就绪（状态：' + tmapState + '）')),
-      '地图密钥：' + (String(window.TMAP_KEY || '').trim() ? '已配置' : '未配置'),
+      '地图密钥：' + (String(window.AMAP_KEY || '').trim() ? '已配置' : '未配置'),
       '地图实例：' + (map ? '已创建' : '未创建'),
       '客户坐标数：' + (DB.customers || []).filter(function (c) {
         return typeof c.lng === 'number' && typeof c.lat === 'number';
@@ -2039,7 +2351,7 @@
         box.innerHTML =
           '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">当前浏览器无法渲染地图</div>' +
           '<div style="color:var(--text-2);font-size:12.5px;line-height:1.8;">' +
-            '腾讯地图需要浏览器支持 <b>WebGL</b> 图形加速，而本机检测结果为不可用。<br>' +
+            '高德地图需要浏览器支持 <b>WebGL</b> 图形加速，而本机检测结果为不可用。<br>' +
             '常见原因与处理办法：<br>' +
             '① 浏览器设置中开启了「关闭硬件加速」→ 打开并重启浏览器；<br>' +
             '② 显卡驱动过旧或为远程桌面/虚拟机环境 → 更新驱动或改用本机浏览器；<br>' +
@@ -2050,10 +2362,11 @@
       } else {
         box.innerHTML =
           '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">地图未能加载</div>' +
-          '<div style="color:var(--text-2);font-size:12.5px;">可能是当前网络无法访问地图服务，' +
-          '或线上部署尚未配置地图密钥。左侧客户列表、季度统计、录入与检索功能均不受影响；' +
-          '配置完成后刷新页面即可恢复地图。</div>' +
-          '<div id="mapDiagMount"></div>';
+          '<div style="color:var(--text-2);font-size:12.5px;">已自动重试 ' + TMAP_MAX_ATTEMPTS +
+          ' 次仍未成功，可能是当前网络无法访问地图服务，或线上部署尚未配置地图密钥。' +
+          '左侧客户列表、季度统计、录入与检索功能均不受影响。</div>' +
+          '<div id="mapDiagMount"></div>' +
+          '<button type="button" class="btn" id="btnMapRetry" style="margin-top:10px;">重新加载地图</button>';
       }
     }
     el.classList.add('on');
@@ -2061,6 +2374,8 @@
     var mount = document.getElementById('mapDiagMount');
     if (mount && diag) mount.appendChild(diag);
     if (diag) diag.style.display = 'block';
+    var rb = document.getElementById('btnMapRetry');
+    if (rb) rb.addEventListener('click', retryTMap);
   }
 
   function flushTMap(ok) {
@@ -2074,33 +2389,78 @@
     return (typeof TMap !== 'undefined') && !!TMap.Map;
   }
 
+  var tmapVia = 'proxy'; /* proxy=同源 /_tmap 代理（内网），direct=直连高德；代理失败自动降级 */
   function loadTMap(cb) {
     if (cb) tmapWaiters.push(cb);
     if (tmapReadyNow()) { tmapState = 'ready'; flushTMap(true); return; }
     if (tmapState === 'ready') { flushTMap(true); return; }
     if (tmapState === 'loading' || tmapState === 'failed') return;
     tmapState = 'loading';
-    var key = String(window.TMAP_KEY || '').replace(/\s+/g, '');
+    var key = String(window.AMAP_KEY || '').replace(/\s+/g, '');
     var s = document.createElement('script');
     s.async = true;
-    s.src = 'https://map.qq.com/api/gljs?v=1.exp&libraries=service' + (key ? '&key=' + encodeURIComponent(key) : '');
+    /* 每次尝试换 cache-bust 参数：内网代理把失败的请求缓存住时仍能重试 */
+    s.src = (tmapVia === 'proxy' ? '/_tmap/webapi.amap.com/maps?v=2.0'
+                                 : 'https://webapi.amap.com/maps?v=2.0') +
+      (key ? '&key=' + encodeURIComponent(key) : '') +
+      '&_r=' + Date.now() + '-' + (++tmapAttempts);
+    if (tmapVia === 'proxy') amapHookInstall();
     s.onload = function () {
+      if (typeof window.AMap === 'undefined') { tmapFailAttempt(); return; }  /* 脚本到了但 AMap 未定义（如代理返回异常内容） */
+      try {
+        if (!window.TMap) window.TMap = buildTMapFacade(window.AMap);
+      } catch (e) { tmapFailAttempt(); return; }
+      if (!tmapReadyNow()) { tmapFailAttempt(); return; }
       tmapState = 'ready';
       if (tmapTimer) { clearTimeout(tmapTimer); tmapTimer = null; }
       flushTMap(true);
     };
     s.onerror = function () {
-      tmapState = 'failed';
-      if (!map) tmapHint('fail');
-      flushTMap(false);
+      amapHookRemove();
+      if (tmapVia === 'proxy') tmapVia = 'direct';  /* 本站没有代理端点（如公网版）→ 之后直连 */
+      tmapFailAttempt();
     };
+    tmapScriptEl = s;
     tmapTimer = setTimeout(function () {
       if (tmapState !== 'loading') return;
-      tmapState = 'failed';
-      if (!map) tmapHint('fail');
-      flushTMap(false);
+      try { s.parentNode && s.parentNode.removeChild(s); } catch (e) {}
+      tmapFailAttempt();
     }, 15000);
     (document.head || document.documentElement).appendChild(s);
+  }
+
+  /* 单次尝试失败：还有余量就退避后自动重试（等待者保留），耗尽才置终态并提示 */
+  function tmapFailAttempt() {
+    if (tmapTimer) { clearTimeout(tmapTimer); tmapTimer = null; }
+    tmapScriptEl = null;
+    tmapState = 'failed';
+    if (tmapAttempts < TMAP_MAX_ATTEMPTS) {
+      if (tmapRetryTimer) clearTimeout(tmapRetryTimer);
+      tmapRetryTimer = setTimeout(function () {
+        tmapRetryTimer = null;
+        if (tmapState !== 'failed') return;   /* 期间页面已重置或手动重试 */
+        tmapState = 'idle';
+        loadTMap(null);                        /* waiters 不动，成功后一起唤醒 */
+      }, 1500 * tmapAttempts);
+    } else {
+      tmapAttempts = 0;
+      if (!map) tmapHint('fail');
+      flushTMap(false);
+    }
+  }
+
+  /* 手动重试：清状态、重新走完整加载流程（失败提示框按钮入口） */
+  function retryTMap() {
+    if (tmapTimer) { clearTimeout(tmapTimer); tmapTimer = null; }
+    if (tmapRetryTimer) { clearTimeout(tmapRetryTimer); tmapRetryTimer = null; }
+    if (tmapScriptEl && tmapScriptEl.parentNode) { try { tmapScriptEl.parentNode.removeChild(tmapScriptEl); } catch (e) {} }
+    tmapScriptEl = null;
+    tmapAttempts = 0;
+    tmapState = 'idle';
+    tmapHint('loading');
+    loadTMap(function (ok) {
+      if (ok) { tmapHint('off'); if (!map) initMap(); }
+    });
   }
 
   function initMap() {
@@ -2343,12 +2703,14 @@
     var claimed = {};   // 省份去重：即使数据中同省被多个区域包含，也只绘制一次
     DB.regions.forEach(function (r) {
       var sid = 'rg_' + r.id;
+      /* 区域按自身配色做浅色透明填充（18%），描边同色实心；高德需把 alpha 交给
+         fillOpacity，这里仍用 rgba 由 TMap 门面的 fillOf 拆解（见 buildTMapFacade） */
       polyStyles[sid] = new TMap.PolygonStyle({
-        color: hexToRgba(r.color, 0.08),
+        color: hexToRgba(r.color, 0.18),
         showBorder: true, borderColor: r.color, borderWidth: 1.5
       });
       circStyles[sid] = new TMap.CircleStyle({
-        color: hexToRgba(r.color, 0.08),
+        color: hexToRgba(r.color, 0.18),
         showBorder: true, borderColor: r.color, borderWidth: 1.5
       });
       (r.provinces || []).forEach(function (pn) {
@@ -2678,8 +3040,8 @@
   }
 
   function wsFailMsg(st) {
-    if (st === 121) return '检索服务今日调用额度已用尽（腾讯地图 Key 配额限制），请明天再试，或联系管理员在腾讯位置服务控制台提升配额';
-    if (st === 110 || st === 111) return '检索服务密钥无效或来源受限，请联系管理员检查腾讯地图 Key 配置';
+    if (st === 121) return '检索服务今日调用额度已用尽（地图 Key 配额限制），请明天再试，或联系管理员在高德开放平台控制台提升配额';
+    if (st === 110 || st === 111) return '检索服务密钥无效或来源受限，请联系管理员检查高德地图 Key 配置';
     if (st === 120) return '检索服务调用过于频繁，请稍等几秒再试';
     return '在线检索暂不可用（错误码 ' + st + '），请改用城市定位或在地图上点选坐标';
   }
@@ -2723,7 +3085,7 @@
       }
       var res = r.data || {};
       /* 配额/密钥类错误直接明示原因；这类错误换接口也不会好 */
-      if (res.status !== 0) { fail(wsFailMsg(res.status)); return; }
+      if (res.status !== 0) { fail(res.message || wsFailMsg(res.status)); return; }
       var list = res.data || [];
       if (!list.length) { geocode(); return; }
       ok(list);

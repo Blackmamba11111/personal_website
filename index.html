@@ -3,18 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>撒啦嘿 · 个人主页</title>
+<title>ZDNS · 个人主页</title>
 <meta name="description" content="个人主页：作品、工具与一些还在打磨中的想法。">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <!-- 安全策略：原先由 Cloudflare 的 _headers 提供，但 Workers 静态资源不会更新已存在的 _headers 文件，
-     故改由页面 meta 声明。腾讯地图 GL JS 需要 qq.com / gtimg.com / qpic.cn（地图样式文件）。 -->
+     故改由页面 meta 声明。高德地图 JS API 需要 amap.com / autonavi.com（地图样式与瓦片）。 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://map.qq.com https://*.qq.com https://*.gtimg.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.qpic.cn; font-src 'self' data:; connect-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.map.qq.com https://*.qpic.cn https://cloudflareinsights.com https://static.cloudflareinsights.com; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' https://map.qq.com; base-uri 'self'; form-action 'self'; object-src 'none'">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#07070a">
 <meta property="og:type" content="website">
-<meta property="og:title" content="撒啦嘿 · 个人主页">
+<meta property="og:title" content="ZDNS · 个人主页">
 <meta property="og:description" content="作品、工具与一些还在打磨中的想法。">
-<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" id="favIcon" href="assets/favicon.png?v=2" type="image/png">
+<script>
+/* 页签图标：内网用 ZDNS logo（favicon.png 不入 git）；公网 demo 站维持原 svg */
+(function () {
+  if (location.hostname === 'web.aill.top') {
+    var f = document.getElementById('favIcon');
+    f.setAttribute('href', 'assets/favicon.svg?v=2');
+    f.setAttribute('type', 'image/svg+xml');
+  }
+})();
+</script>
 <style>
 /* ============================ 设计令牌 ============================ */
 :root{
@@ -498,8 +508,8 @@ html.still .mote{opacity:.55;transform:none;}
 
 <header class="nav" id="nav">
   <div class="brand">
-    <div class="logo">撒</div>
-    <div class="bt"><strong>撒啦嘿</strong><span>PERSONAL SITE</span></div>
+    <div class="logo">Z</div>
+    <div class="bt"><strong>ZDNS</strong><span>PERSONAL SITE</span></div>
   </div>
   <div class="spacer"></div>
   <nav class="navlinks">
@@ -583,7 +593,7 @@ html.still .mote{opacity:.55;transform:none;}
 </main>
 
 <footer>
-  <span>© 2026 撒啦嘿</span>
+  <span>© 2026 ZDNS</span>
   <span class="dot"></span>
   <span class="spacer"></span>
   <span id="footTime"></span>

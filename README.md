@@ -186,12 +186,14 @@ Line 2: Expected a path before headers [code: 100324]
 
 沙箱预览环境会自动注入地图代理，**线上环境不会**。因此线上要显示真实底图，需要：
 
-1. 到 [腾讯位置服务控制台](https://lbs.qq.com/) 申请一个 **WebService/JavaScript GL** 类型的 Key，
-   并在 Key 的域名白名单里填上你的 Cloudflare 域名（如 `your-site.pages.dev` 和自有域名）；
+1. 到 [高德开放平台控制台](https://console.amap.com/) 申请一个 **Web端(JS API)** 类型的 Key，
+   并在高德控制台的「域名白名单」里填上你的站点域名（如 `your-site.pages.dev` 和自有域名）；
+   另外地点检索（/api/place/search）由服务端代理高德 Web 服务，同一个 Key 即可，
+   Worker 版可在环境变量 `AMAP_KEY` 覆盖，内网版可用环境变量 `AMAP_KEY` 覆盖；
 2. 打开 `inspection-dashboard.html`，在**文件靠前的头部区域**找到这一行：
 
 ```html
-<script>window.TMAP_KEY = '把这里换成你的 Key';</script>
+<script>window.AMAP_KEY = '把这里换成你的 Key';</script>
 ```
 
 3. 只改引号之间的内容，提交推送即可（当前线上已配置好一个 Key，换 Key 时改这一行）。

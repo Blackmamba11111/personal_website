@@ -40,6 +40,19 @@ const MAX_BODY = 32 * 1024 * 1024; // 台账 JSON 可能较大
 /* 腾讯地图 WebService Key（地点检索代理用）：页面已公开该 Key，此处仅作服务端默认值；
    可用环境变量 TMAP_KEY 覆盖。浏览器直连 apis.map.qq.com 会被 CORS 拦截，必须走本代理。 */
 const DEFAULT_TMAP_KEY = '5BDBZ-G6VEQ-SAM5O-BQSZP-FCV6T-DHFMA';
+/* 高德地图 Key（2026-10 换用）：Web 服务 + JS API 同一 Key，可用环境变量 AMAP_KEY 覆盖 */
+const DEFAULT_AMAP_KEY = '96eb5c271c76440bcb9a15ed493fa350';
+/* 高德 WS 常见 infocode → 可读提示 */
+function amapErrMsg(infocode, info) {
+  const code = String(infocode || '');
+  if (code === '10009') return '高德 Key 与服务类型不匹配（USERKEY_PLAT_NOMATCH），请在高德控制台确认 Key 类型';
+  if (code === '10003') return '高德 Key 请求过多，已超出每日配额，请明日再试或在控制台提升配额';
+  if (code === '10021' || code === '10044') return '高德检索服务今日配额已用尽，请明天再试或在控制台提升配额';
+  if (code === '10008') return '高德 Key 非法或已过期，请联系管理员在高德开放平台检查';
+  if (code === '10019') return '高德请求过于频繁，请稍候几秒重试';
+  if (code === '20003') return '高德服务访问量超限，请稍后重试';
+  return '高德检索服务出错（' + (code || '未知') + (info ? ' ' + info : '') + '），请稍后重试';
+}
 /* TLS：进程内终止（https.createServer），无需前置 nginx。
    证书缺失时退回 HTTP 明文（便于本地调试），生产环境务必提供证书。 */
 const TLS_CERT = process.env.TLS_CERT || '/certs/server.crt';
@@ -1207,30 +1220,61 @@ async function handleApi(req, res, url) {
     return bad(res, '不支持的请求方法', 405);
   }
 
-  /* --- 腾讯地图 WebService 代理（地点搜索 / 地理编码） ---
-     apis.map.qq.com 不返回跨域头，浏览器无法直连，由服务端代为请求；
-     腾讯的 status/message/data 原样透传，前端据此给出精确提示（如 121=当日配额用尽）。 */
+  /* --- 高德地图 WebService 代理（地点搜索 / 地理编码） ---
+     restapi.amap.com 不返回跨域头，浏览器无法直连，由服务端代为请求；
+     返回结构与原腾讯 WS 保持一致（status:0 + data/result），前端契约不变：
+       suggestion → 高德 inputtips（提示检索）
+       geocode    → 高德 geocode/geo（地理编码）
+     AMap status 为字符串 "1"/"0"，infocode 10000=成功；错误时给出可读中文。 */
   if (p === '/api/place/search' && method === 'GET') {
-    const tkey = process.env.TMAP_KEY || DEFAULT_TMAP_KEY;
+    const akey = process.env.AMAP_KEY || DEFAULT_AMAP_KEY;
     const type = url.searchParams.get('type') === 'geocode' ? 'geocode' : 'suggestion';
-    const wsParams = new URLSearchParams({ key: tkey });
+    const amapParams = new URLSearchParams({ key: akey });
+    let kwText = '';
     if (type === 'geocode') {
-      const addr = String(url.searchParams.get('address') || '').trim().slice(0, 120);
-      if (!addr) return bad(res, '请输入地址');
-      wsParams.set('address', addr);
+      kwText = String(url.searchParams.get('address') || '').trim().slice(0, 120);
+      if (!kwText) return bad(res, '请输入地址');
+      amapParams.set('address', kwText);
     } else {
-      const kw = String(url.searchParams.get('keyword') || '').trim().slice(0, 100);
-      if (!kw) return bad(res, '请输入关键词');
-      wsParams.set('keyword', kw);
+      kwText = String(url.searchParams.get('keyword') || '').trim().slice(0, 100);
+      if (!kwText) return bad(res, '请输入关键词');
+      amapParams.set('keywords', kwText);
       const region = String(url.searchParams.get('region') || '').trim().slice(0, 40);
-      if (region) wsParams.set('region', region);
+      if (region) { amapParams.set('city', region); amapParams.set('citylimit', 'false'); }
     }
-    const wsPath = type === 'geocode' ? '/geocoder/v1/' : '/place/v1/suggestion';
+    const amapPath = type === 'geocode' ? '/v3/geocode/geo' : '/v3/assistant/inputtips';
     const ctrl = new AbortController();
     const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 10000);
     try {
-      const r = await fetch('https://apis.map.qq.com/ws' + wsPath + '?' + wsParams.toString(), { signal: ctrl.signal });
-      return ok(res, await r.json());
+      const r = await fetch('https://restapi.amap.com' + amapPath + '?' + amapParams.toString(), { signal: ctrl.signal });
+      const j = await r.json();
+      if (String(j.status) !== '1') {
+        return ok(res, { status: 1, message: amapErrMsg(j.infocode, j.info) });
+      }
+      if (type === 'geocode') {
+        const g = (j.geocodes || [])[0];
+        if (!g || !g.location) return ok(res, { status: 1, message: '未找到匹配地址' });
+        const ll = String(g.location || '').split(',');
+        return ok(res, {
+          status: 0,
+          result: {
+            title: g.formatted_address || kwText,
+            address: g.formatted_address || '',
+            location: { lng: Number(ll[0]), lat: Number(ll[1]) }
+          }
+        });
+      }
+      const list = (j.tips || [])
+        .filter(function (t) { return t && t.location && typeof t.location === 'string' && t.location.indexOf(',') >= 0; })
+        .map(function (t) {
+          const ll = t.location.split(',');
+          return {
+            title: t.name || '未命名地点',
+            address: t.address && typeof t.address === 'string' ? t.address : (t.district || ''),
+            location: { lng: Number(ll[0]), lat: Number(ll[1]) }
+          };
+        });
+      return ok(res, { status: 0, data: list });
     } catch (e) {
       return bad(res, '检索服务连接失败，请稍后重试', 502);
     } finally {
@@ -1239,6 +1283,100 @@ async function handleApi(req, res, url) {
   }
 
   return bad(res, '接口不存在', 404);
+}
+
+/* ---------------- 地图资源中转（/_tmap/<host>/<path>） ----------------
+   内网终端访问不到外网时，浏览器地图改走本代理：
+   SDK 脚本经本代理返回时会把硬编码的地图域名整体改写为「页面同源主机 + /_tmap/<host>/」，
+   后续样式 / 瓦片 / 接口请求自动落回本站，由服务器转发（实时转发不落盘，
+   地图数据始终取自官方，规避离线打包的数据许可与更新问题）。
+   2026-10 换用高德：新增 amap.com / autonavi.com 白名单；高德瓦片模板含
+   webrd0{1,2,3,4} 动态展开与 "://" 字符串拼接，改写必须带上页面主机做成绝对地址。 */
+const TMAP_HOST_RE = /^([a-z0-9-]+\.)*(qq\.com|gtimg\.com|qpic\.cn|amap\.com|autonavi\.com)$/;
+function tmapTargetOf(url) {
+  const rest = url.pathname.slice('/_tmap/'.length);
+  const slash = rest.indexOf('/');
+  if (slash < 1) return null;
+  const host = rest.slice(0, slash).toLowerCase();
+  if (!TMAP_HOST_RE.test(host)) return null;
+  return { host: host, path: rest.slice(slash) + url.search };
+}
+/* JS 文本中的地图域名改写。pageHost = 当前请求的页面主机（req.headers.host）。
+   腾讯写法（https:// 与 //host）沿用相对路径改写；高德写法（"://" 拼接、
+   webrd0{1,2,3,4}.is.autonavi.com 模板）改写为页面同源绝对地址，保证
+   Blob Worker 内的相对路径也能解析。 */
+function tmapRewriteJs(text, pageHost) {
+  const ph = String(pageHost || '').replace(/[^a-zA-Z0-9.\-:]/g, '') || 'localhost';
+  /* ① 绝对地址 http(s)://host → 页面同源绝对地址（高德 Blob Worker 内也能解析） */
+  text = text.replace(
+    /(https?:\/\/)((?:[a-z0-9{},\-]+\.)+(?:qq\.com|gtimg\.com|qpic\.cn|amap\.com|autonavi\.com))/gi,
+    function (m0, sch, host) { return 'https://' + ph + '/_tmap/' + host; });
+  /* ② 协议相对 //host → 站内相对路径（主线程场景） */
+  text = text.replace(
+    /([^:\/])\/\/((?:[a-z0-9{},\-]+\.)*(?:qq\.com|gtimg\.com|qpic\.cn|amap\.com|autonavi\.com))/gi,
+    function (m0, c, host) { return c + '/_tmap/' + host; });
+  /* ③ 高德字符串拼接 ji+"://webrd0{1,2,3,4}.is.autonavi.com → 保留 scheme、替换主机 */
+  text = text.replace(
+    /(:\/\/)((?:[a-z0-9{},\-]+\.)+(?:amap\.com|autonavi\.com))/g,
+    function (m0, c, host) { return c + ph + '/_tmap/' + host; });
+  return text;
+}
+async function tmapGljs(req, res, url) {
+  const key = String(url.searchParams.get('key') || '').trim();
+  const target = 'https://map.qq.com/api/gljs?v=1.exp&libraries=service' +
+    (key ? '&key=' + encodeURIComponent(key) : '');
+  const r = await fetch(target, { headers: { referer: 'https://map.qq.com/' } });
+  let text = await r.text();
+  text = tmapRewriteJs(text, req.headers.host);
+  const buf = Buffer.from(text, 'utf8');
+  res.writeHead(r.status, {
+    'content-type': 'application/javascript; charset=utf-8',
+    'cache-control': 'no-cache',
+    'x-content-type-options': 'nosniff'
+  });
+  res.end(buf);
+}
+async function tmapProxy(req, res, url) {
+  const t = tmapTargetOf(url);
+  if (!t) return bad(res, '代理目标不在允许的域名清单内', 403);
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'POST') {
+    return bad(res, 'Method Not Allowed', 405);
+  }
+  const headers = {
+    host: t.host,
+    referer: 'https://' + t.host + '/',
+    'user-agent': req.headers['user-agent'] || 'inspection-ledger-tmap-proxy'
+  };
+  if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 30000);
+  try {
+    const r = await fetch('https://' + t.host + t.path, {
+      method: req.method === 'HEAD' ? 'GET' : req.method,
+      headers: headers,
+      body: req.method === 'POST' ? await readBody(req) : undefined,
+      signal: ctrl.signal
+    });
+    const h = { 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' };
+    const ct = r.headers.get('content-type');
+    if (ct) h['content-type'] = ct;
+    if (req.method === 'HEAD') { res.writeHead(r.status, h); return res.end(); }
+    const ab = await r.arrayBuffer();
+    let buf = Buffer.from(ab);
+    /* JS 资源同样做域名改写：SDK 主包运行时会按硬编码域名拼瓦片/样式请求 */
+    if (ct && /javascript/i.test(ct) && buf.length < 20 * 1024 * 1024) {
+      let text = tmapRewriteJs(buf.toString('utf8'), req.headers.host);
+      buf = Buffer.from(text, 'utf8');
+      h['content-length'] = String(buf.length);
+    }
+    res.writeHead(r.status, h);
+    res.end(buf);
+  } catch (e) {
+    if (!res.headersSent) bad(res, '地图资源转发失败：' + (e && e.message ? e.message : '网络不可达'), 502);
+    else res.end();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /* ---------------- 静态资源 ---------------- */
@@ -1396,6 +1534,21 @@ function handler(req, res) {
 
   if (url.pathname === '/healthz') {
     return sendJson(res, { ok: true, db: DB_FILE, uptime: Math.round(process.uptime()) });
+  }
+
+  if (url.pathname === '/_tmap/gljs') {
+    return tmapGljs(req, res, url).catch(function (e) {
+      console.error('[error] tmap-gljs ' + (e && e.stack ? e.stack : e));
+      if (!res.headersSent) bad(res, '地图引导脚本转发失败', 502);
+      else res.end();
+    });
+  }
+  if (url.pathname.indexOf('/_tmap/') === 0) {
+    return tmapProxy(req, res, url).catch(function (e) {
+      console.error('[error] tmap-proxy ' + (e && e.stack ? e.stack : e));
+      if (!res.headersSent) bad(res, '地图资源转发失败', 502);
+      else res.end();
+    });
   }
 
   if (url.pathname === '/api' || url.pathname.indexOf('/api/') === 0) {

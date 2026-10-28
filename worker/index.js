@@ -21,6 +21,21 @@ const AUTH_TYPES = ['radius', 'tacacs', 'ldap'];
 const AUTH_DEFAULT_PORT = { radius: 1812, tacacs: 49, ldap: 389 };
 const AUTH_LABEL = { local: '本地', radius: 'RADIUS', tacacs: 'TACACS+', ldap: 'LDAP' };
 
+/* 高德地图 Key（Web 服务 + JS API 同一 Key，页面已公开，此处仅作服务端默认值；
+   可用 Worker 环境变量 AMAP_KEY 覆盖）。restapi.amap.com 不返回跨域头，
+   地点检索必须由服务端代理转发。 */
+const DEFAULT_AMAP_KEY = '96eb5c271c76440bcb9a15ed493fa350';
+function amapErrMsg(infocode, info) {
+  const code = String(infocode || '');
+  if (code === '10009') return '高德 Key 与服务类型不匹配（USERKEY_PLAT_NOMATCH），请在高德控制台确认 Key 类型';
+  if (code === '10003') return '高德 Key 请求过多，已超出每日配额，请明日再试或在控制台提升配额';
+  if (code === '10021' || code === '10044') return '高德检索服务今日配额已用尽，请明天再试或在控制台提升配额';
+  if (code === '10008') return '高德 Key 非法或已过期，请联系管理员在高德开放平台检查';
+  if (code === '10019') return '高德请求过于频繁，请稍候几秒重试';
+  if (code === '20003') return '高德服务访问量超限，请稍后重试';
+  return '高德检索服务出错（' + (code || '未知') + (info ? ' ' + info : '') + '），请稍后重试';
+}
+
 /* ---------------- 基础工具 ---------------- */
 function jres(data, status) {
   return new Response(JSON.stringify(data), {
@@ -1013,6 +1028,60 @@ async function route(request, env) {
       'SELECT actor, kind, action, target, detail, at FROM ledger_logs WHERE username = ? ORDER BY id DESC LIMIT ?'
     ).bind(owner, limit).all();
     return ok({ owner: owner, logs: r.results || [] });
+  }
+
+  /* --- 高德地图 WebService 代理（地点搜索 / 地理编码），与内网版契约一致 --- */
+  if (p === '/api/place/search' && method === 'GET') {
+    const akey = env.AMAP_KEY || DEFAULT_AMAP_KEY;
+    const type = url.searchParams.get('type') === 'geocode' ? 'geocode' : 'suggestion';
+    const amapParams = new URLSearchParams({ key: akey });
+    let kwText = '';
+    if (type === 'geocode') {
+      kwText = String(url.searchParams.get('address') || '').trim().slice(0, 120);
+      if (!kwText) return bad('请输入地址');
+      amapParams.set('address', kwText);
+    } else {
+      kwText = String(url.searchParams.get('keyword') || '').trim().slice(0, 100);
+      if (!kwText) return bad('请输入关键词');
+      amapParams.set('keywords', kwText);
+      const region = String(url.searchParams.get('region') || '').trim().slice(0, 40);
+      if (region) { amapParams.set('city', region); amapParams.set('citylimit', 'false'); }
+    }
+    const amapPath = type === 'geocode' ? '/v3/geocode/geo' : '/v3/assistant/inputtips';
+    try {
+      const r = await fetch('https://restapi.amap.com' + amapPath + '?' + amapParams.toString(),
+        { signal: AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined });
+      const j = await r.json();
+      if (String(j.status) !== '1') {
+        return ok({ status: 1, message: amapErrMsg(j.infocode, j.info) });
+      }
+      if (type === 'geocode') {
+        const g = (j.geocodes || [])[0];
+        if (!g || !g.location) return ok({ status: 1, message: '未找到匹配地址' });
+        const ll = String(g.location || '').split(',');
+        return ok({
+          status: 0,
+          result: {
+            title: g.formatted_address || kwText,
+            address: g.formatted_address || '',
+            location: { lng: Number(ll[0]), lat: Number(ll[1]) }
+          }
+        });
+      }
+      const list = (j.tips || [])
+        .filter(function (t) { return t && t.location && typeof t.location === 'string' && t.location.indexOf(',') >= 0; })
+        .map(function (t) {
+          const ll = t.location.split(',');
+          return {
+            title: t.name || '未命名地点',
+            address: t.address && typeof t.address === 'string' ? t.address : (t.district || ''),
+            location: { lng: Number(ll[0]), lat: Number(ll[1]) }
+          };
+        });
+      return ok({ status: 0, data: list });
+    } catch (e) {
+      return bad('检索服务连接失败，请稍后重试', 502);
+    }
   }
 
   return bad('接口不存在', 404);

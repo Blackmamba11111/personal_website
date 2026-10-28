@@ -3,11 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>页面走丢了 · 撒啦嘿</title>
+<title>页面走丢了 · ZDNS</title>
 <meta name="robots" content="noindex">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#07070a">
-<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" id="favIcon" href="/assets/favicon.png?v=2" type="image/png">
+<script>
+(function () {
+  if (location.hostname === 'web.aill.top') {
+    var f = document.getElementById('favIcon');
+    f.setAttribute('href', '/assets/favicon.svg?v=2');
+    f.setAttribute('type', 'image/svg+xml');
+  }
+})();
+</script>
 <style>
 :root{
   --bg:#07070a;--txt:#eceaf0;--dim:#9b98a8;--dim-2:#6f6c7c;
