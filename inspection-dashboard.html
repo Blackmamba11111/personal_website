@@ -460,6 +460,10 @@
   .utable{width:100%;border-collapse:collapse;font-size:12.5px;}
   .utable th{text-align:left;padding:11px 14px;background:var(--panel-2);border-bottom:1px solid var(--border);
     font-size:11.5px;color:var(--text-2);font-weight:650;white-space:nowrap;}
+  .utable th.sortable{cursor:pointer;user-select:none;}
+  .utable th.sortable:hover{color:var(--primary);}
+  .utable th .sort-ind{font-size:9px;margin-left:3px;opacity:.5;}
+  .utable th .sort-ind.on{opacity:1;color:var(--primary);}
   .utable td{padding:11px 14px;border-bottom:1px solid var(--border-2);vertical-align:middle;}
   .utable tr:last-child td{border-bottom:0;}
   .utable tbody tr:hover{background:var(--panel-2);}
@@ -4892,12 +4896,19 @@
   function renderLogsPage() {
     var owner = logsScopeOwner;
     var u = findUser(owner);
+    /* 共享成员入口：数据归属解析到来源用户（普通用户 / 超管一致） */
+    if (u && u.shareFrom) {
+      owner = u.shareFrom;
+      u = findUser(owner);
+    }
     /* 普通用户拿不到用户列表：用本人会话信息兜底展示归属 */
     if (!u && AUTH.user && String(AUTH.user.username).toLowerCase() === String(owner).toLowerCase()) {
       var src = (AUTH.user.shareFrom && findUser(AUTH.user.shareFrom)) || null;
       u = { name: src ? src.name : (AUTH.user.name || owner), sharedWith: (src && src.sharedWith) || [] };
       if (src) owner = AUTH.user.shareFrom;
     }
+    /* 兜底：普通用户看不到来源用户的资料时，至少把归属用户名展示出来 */
+    if (!u) u = { name: owner, sharedWith: [] };
     var members = (u && u.sharedWith) || [];
     document.getElementById('logsSub').textContent = u
       ? '数据归属：' + u.name + '（' + owner + '）' + (members.length ? ' · 共享成员 ' + members.length + ' 人' : '')
@@ -5270,6 +5281,33 @@
     return '<span class="tag ' + (u.perm === 'ro' ? 'ro' : 'rw') + '">' + permText(u) + '</span>';
   }
 
+  /* 用户列表列排序：默认按显示名称升序；点表头切换排序列 / 升降序 */
+  var usersSort = { key: 'name', dir: 1 };
+  var USER_COLS = [
+    { k: 'name', t: '用户' }, { k: 'source', t: '来源' }, { k: 'perm', t: '权限' },
+    { k: 'role', t: '角色' }, { k: 'status', t: '状态' }, { k: 'customers', t: '客户' },
+    { k: 'visits', t: '巡检记录' }, { k: 'createdAt', t: '创建时间' }, { k: 'lastLogin', t: '最后登录' }
+  ];
+  function userSortVal(u, k) {
+    if (k === 'customers' || k === 'visits') return userDataCount(u.username)[k];
+    if (k === 'role') return u.role === 'admin' ? 0 : 1;
+    if (k === 'status') return u.status === 'active' ? 0 : 1;
+    if (k === 'perm') return u.perm === 'ro' ? 1 : 0;
+    if (k === 'source') return sourceText(u);
+    return String(u[k] || '');
+  }
+  function cmpUser(a, b) {
+    var va = userSortVal(a, usersSort.key), vb = userSortVal(b, usersSort.key);
+    var cmp = (typeof va === 'number' && typeof vb === 'number')
+      ? va - vb
+      : String(va).localeCompare(String(vb), 'zh-Hans-CN');
+    if (cmp) return cmp * usersSort.dir;
+    /* 同值时以显示名称稳定排序（不受升降序影响），避免行序跳动 */
+    cmp = String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
+    if (cmp) return cmp;
+    return String(a.username || '').localeCompare(String(b.username || ''), 'zh-Hans-CN');
+  }
+
   function renderUsersPage() {
     var users = userList();
     var totalCust = 0, totalVisit = 0;
@@ -5291,7 +5329,8 @@
       document.getElementById('usersTableWrap').innerHTML = '<div class="empty">暂无账号</div>';
       return;
     }
-    var rows = users.map(function (u) {
+    var sorted = users.slice().sort(cmpUser);
+    var rows = sorted.map(function (u) {
       var s = userDataCount(u.username);
       var isSelf = u.id === AUTH.user.id;
       var lastAdmin = u.role === 'admin' && countAdmins(u.id) === 0;
@@ -5302,10 +5341,10 @@
         : ((u.sharedWith && u.sharedWith.length) ? ' · 已共享给 ' + esc(u.sharedWith.join('、')) : '');
       return '<tr data-uid="' + esc(u.id) + '">' +
         '<td><div class="uname-cell">' +
-          '<span class="uavatar' + (u.role === 'admin' ? ' admin' : '') + '">' + esc(initialOf(u.name)) + '</span>' +
-          '<div><div style="font-weight:600;">' + esc(u.name) +
+          '<span class="uavatar' + (u.role === 'admin' ? ' admin' : '') + '">' + esc(initialOf(u.username)) + '</span>' +
+          '<div><div style="font-weight:600;">' + esc(u.username) +
             (isSelf ? ' <span class="tag user">当前登录</span>' : '') + '</div>' +
-            '<div class="sub2">' + esc(u.username) + (u.note ? ' · ' + esc(u.note) : '') + shareNote + '</div></div>' +
+            '<div class="sub2">' + esc(u.name) + (u.note ? ' · ' + esc(u.note) : '') + shareNote + '</div></div>' +
         '</div></td>' +
         '<td>' + seqTag(u) + '</td>' +
         '<td>' + permTag(u) + '</td>' +
@@ -5320,6 +5359,7 @@
           '<button type="button" class="btn sm" data-ua="view">查看数据</button>' +
           '<button type="button" class="btn sm" data-ua="logs">日志</button>' +
           '<button type="button" class="btn sm" data-ua="edit">编辑</button>' +
+          '<button type="button" class="btn sm" data-ua="clone" title="以该用户的配置新建用户（角色 / 权限 / 账号类型 / 初始数据共享）">复制配置</button>' +
           '<button type="button" class="btn sm" data-ua="pwd"' +
             (remote ? ' disabled title="该账号由 ' + esc(sourceText(u)) + ' 校验密码，请到对应系统重置"' : '') +
             '>重置密码</button>' +
@@ -5333,7 +5373,12 @@
     }).join('');
     document.getElementById('usersTableWrap').innerHTML =
       '<table class="utable"><thead><tr>' +
-      '<th>用户</th><th>来源</th><th>权限</th><th>角色</th><th>状态</th><th>客户</th><th>巡检记录</th><th>创建时间</th><th>最后登录</th><th>操作</th>' +
+      USER_COLS.map(function (c) {
+        var on = usersSort.key === c.k;
+        return '<th class="sortable" data-ukey="' + c.k + '" title="点击按此列排序">' + esc(c.t) +
+          '<span class="sort-ind' + (on ? ' on' : '') + '">' + (on ? (usersSort.dir > 0 ? '▲' : '▼') : '↕') + '</span></th>';
+      }).join('') +
+      '<th>操作</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
@@ -5366,9 +5411,10 @@
     }
   }
 
-  function openUserModal(u) {
+  function openUserModal(u, cloneFrom) {
     editingUserId = u ? u.id : null;
-    document.getElementById('userModalTitle').textContent = u ? '编辑用户' : '新建用户';
+    document.getElementById('userModalTitle').textContent = u ? '编辑用户'
+      : (cloneFrom ? '新建用户（复制「' + cloneFrom.name + '」的配置）' : '新建用户');
     document.getElementById('uUsername').value = u ? u.username : '';
     document.getElementById('uUsername').disabled = !!u;
     document.getElementById('uName').value = u ? u.name : '';
@@ -5398,6 +5444,24 @@
       document.getElementById('uSeed').value = 'empty';
       document.getElementById('uSeedCopyWrap').style.display = 'none';
       fillSeedUserOptions(true);
+      /* 复制配置：预填角色 / 权限 / 账号类型 / 备注 / 初始数据共享，仅需手填用户名（与密码） */
+      if (cloneFrom) {
+        var seedOwner = findUser(cloneFrom.shareFrom || '') || cloneFrom;
+        document.getElementById('uName').value = cloneFrom.name || '';
+        document.getElementById('uRole').value = cloneFrom.role === 'admin' ? 'admin' : 'user';
+        document.getElementById('uPerm').value = cloneFrom.perm === 'ro' ? 'ro' : 'rw';
+        document.getElementById('uNote').value = cloneFrom.note || '';
+        var cRemote = (cloneFrom.source || 'local') !== 'local';
+        document.getElementById('uSourceType').value = cRemote ? 'remote' : 'local';
+        if (cRemote && cloneFrom.serverId) document.getElementById('uServer').value = cloneFrom.serverId;
+        document.getElementById('uSeed').value = 'copy';
+        document.getElementById('uSeedCopyWrap').style.display = 'block';
+        document.getElementById('uSeedUser').value = seedOwner.username;
+        setTimeout(function () {
+          var un = document.getElementById('uUsername');
+          if (!editingUserId && document.getElementById('maskUser').classList.contains('on')) un.focus();
+        }, 120);
+      }
       /* 镜像可能滞后（例如刚给别的用户建完数据），回源服务端刷一次数据量标注 */
       api('/ledger').then(function (r) {
         if (!r.ok || !r.data || !r.data.ledgers) return;
@@ -5416,9 +5480,10 @@
   function fillSeedUserOptions(reset) {
     var sel = document.getElementById('uSeedUser');
     var prev = reset ? '' : sel.value;
+    /* option value 一律用 username：该值会作为 shareFrom（共享来源）提交，服务端按用户名解析 */
     var cand = userList().map(function (x) {
       var s = userDataCount(x.username);
-      return { id: x.id, name: x.name, n: s.customers, v: s.visits };
+      return { id: x.username, name: x.name, n: s.customers, v: s.visits };
     });
     sel.innerHTML = cand.length
       ? cand.map(function (c) {
@@ -5721,6 +5786,15 @@
     });
 
     document.getElementById('usersTableWrap').addEventListener('click', function (e) {
+      /* 表头点击：切换排序列 / 升降序 */
+      var th = e.target.closest ? e.target.closest('th.sortable') : null;
+      if (th) {
+        var k = th.getAttribute('data-ukey');
+        if (usersSort.key === k) usersSort.dir = -usersSort.dir;
+        else { usersSort.key = k; usersSort.dir = 1; }
+        renderUsersPage();
+        return;
+      }
       var el = e.target;
       while (el && el !== this && !(el.getAttribute && el.getAttribute('data-ua'))) el = el.parentNode;
       if (!el || el === this || el.disabled) return;
@@ -5731,6 +5805,7 @@
       if (!u) return;
       if (act === 'view') viewUserData(u);
       else if (act === 'edit') openUserModal(u);
+      else if (act === 'clone') openUserModal(null, u);
       else if (act === 'pwd') openPwdModal(u);
       else if (act === 'toggle') toggleUser(u);
       else if (act === 'logs') openLogsPage(u.username);

@@ -275,7 +275,8 @@ function installApiStub(window, opts) {
       const qp = new URLSearchParams(p.split('?')[1] || '');
       const req = String(qp.get('username') || auth.username).toLowerCase();
       if (!findUser(req)) return bad('用户不存在', 404);
-      if (auth.role !== 'admin' && req !== auth.username) return bad('无权查看该账号的数据日志', 403);
+      /* 共享数据集按归属解析：成员查看归属者的日志与查看本人日志等价（与 Worker 版一致） */
+      if (auth.role !== 'admin' && dataOwner(req) !== dataOwner(auth.username)) return bad('无权查看该账号的数据日志', 403);
       const owner = dataOwner(req);
       return ok({ owner: owner, logs: srv.logs.filter(l => l.username === owner).slice(-300).reverse() });
     }
