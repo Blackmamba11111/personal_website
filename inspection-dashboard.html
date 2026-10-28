@@ -1126,7 +1126,7 @@
         <div class="hint">仅支持字母、数字、下划线、点与连字符，长度 3–32 位。</div>
       </div>
       <div class="field">
-        <label for="uName">显示名称 <span class="req">*</span></label>
+        <label for="uName">区域展示名称 <span class="req">*</span></label>
         <input type="text" id="uName" autocomplete="off" placeholder="如：张三（河北片区）">
       </div>
       <div class="field">
@@ -5281,10 +5281,10 @@
     return '<span class="tag ' + (u.perm === 'ro' ? 'ro' : 'rw') + '">' + permText(u) + '</span>';
   }
 
-  /* 用户列表列排序：默认按显示名称升序；点表头切换排序列 / 升降序 */
+  /* 用户列表列排序：默认按区域展示名称升序；点表头切换排序列 / 升降序 */
   var usersSort = { key: 'name', dir: 1 };
   var USER_COLS = [
-    { k: 'name', t: '用户' }, { k: 'source', t: '来源' }, { k: 'perm', t: '权限' },
+    { k: 'username', t: '用户' }, { k: 'name', t: '区域展示名称' }, { k: 'source', t: '来源' }, { k: 'perm', t: '权限' },
     { k: 'role', t: '角色' }, { k: 'status', t: '状态' }, { k: 'customers', t: '客户' },
     { k: 'visits', t: '巡检记录' }, { k: 'createdAt', t: '创建时间' }, { k: 'lastLogin', t: '最后登录' }
   ];
@@ -5294,6 +5294,7 @@
     if (k === 'status') return u.status === 'active' ? 0 : 1;
     if (k === 'perm') return u.perm === 'ro' ? 1 : 0;
     if (k === 'source') return sourceText(u);
+    if (k === 'username') return String(u.username || '');
     return String(u[k] || '');
   }
   function cmpUser(a, b) {
@@ -5339,13 +5340,16 @@
       var shareNote = u.shareFrom
         ? ' · 共享自 ' + esc(u.shareFrom)
         : ((u.sharedWith && u.sharedWith.length) ? ' · 已共享给 ' + esc(u.sharedWith.join('、')) : '');
+      /* 区域展示名称已独立成列；副行仅保留备注 / 共享信息 */
+      var subParts = ((u.note ? esc(u.note) : '') + shareNote).replace(/^ · /, '');
       return '<tr data-uid="' + esc(u.id) + '">' +
         '<td><div class="uname-cell">' +
           '<span class="uavatar' + (u.role === 'admin' ? ' admin' : '') + '">' + esc(initialOf(u.username)) + '</span>' +
           '<div><div style="font-weight:600;">' + esc(u.username) +
             (isSelf ? ' <span class="tag user">当前登录</span>' : '') + '</div>' +
-            '<div class="sub2">' + esc(u.name) + (u.note ? ' · ' + esc(u.note) : '') + shareNote + '</div></div>' +
+            (subParts ? '<div class="sub2">' + subParts + '</div>' : '') + '</div>' +
         '</div></td>' +
+        '<td>' + esc(u.name) + '</td>' +
         '<td>' + seqTag(u) + '</td>' +
         '<td>' + permTag(u) + '</td>' +
         '<td><span class="tag ' + (u.role === 'admin' ? 'admin' : 'user') + '">' + roleText(u) + '</span></td>' +
@@ -5516,7 +5520,7 @@
     var note = document.getElementById('uNote').value.trim();
     var remote = document.getElementById('uSourceType').value === 'remote';
     var serverId = remote ? document.getElementById('uServer').value : '';
-    if (!name) { toast('请填写显示名称'); return; }
+    if (!name) { toast('请填写区域展示名称'); return; }
     if (remote && !serverId) { toast('请选择认证服务器（没有的话先去「认证服务器」页新增）'); return; }
 
     if (editingUserId) {

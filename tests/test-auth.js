@@ -575,7 +575,7 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     click(w, id('userChip'));
     click(w, id('umUsers'));
     await tick(20);
-    /* 展示：主行 = 加粗的用户名，副行 = 显示名称；头像取用户名首字母
+    /* 展示：主行 = 加粗的用户名；区域展示名称独立成列；头像取用户名首字母
        （jsdom 取不到 inline style，加粗用 HTML 字符串断言；用户名取主行首个文本节点） */
     const cellOf = r => r.querySelector('.uname-cell');
     const mainOf = r => cellOf(r).querySelector('div > div > div');  /* 包裹div > 加粗div */
@@ -583,6 +583,7 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
       const m = mainOf(r);
       return m ? m.textContent.replace('当前登录', '').trim() : '';
     };
+    const nameCellOf = r => r.querySelectorAll('td')[1];             /* 第 2 列 = 区域展示名称 */
     const rowsNow = () => [...d.querySelectorAll('#usersTableWrap tbody tr')];
 
     const firstCell = cellOf(rowsNow()[0]);
@@ -590,16 +591,18 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
       mainOf(rowsNow()[0]).textContent.trim() === 'aa' &&
       mainOf(rowsNow()[0]).outerHTML.indexOf('font-weight:600') >= 0,
       firstCell.innerHTML.slice(0, 60));
-    check('显示名称退为副行（不加粗）', firstCell.querySelector('.sub2').textContent.indexOf('白一') === 0,
-      firstCell.querySelector('.sub2').textContent.slice(0, 20));
+    const nameTh = d.querySelector('#usersTableWrap th[data-ukey="name"]');
+    check('表头含「区域展示名称」列', !!nameTh && nameTh.textContent.indexOf('区域展示名称') >= 0,
+      nameTh && nameTh.textContent);
     const aaRow = rowsNow().filter(r => userOfRow(r) === 'aa')[0];
+    check('「区域展示名称」列展示该字段', !!aaRow && nameCellOf(aaRow).textContent.trim() === '白一',
+      aaRow && nameCellOf(aaRow) && nameCellOf(aaRow).textContent);
     check('头像取用户名首字母', !!aaRow && aaRow.querySelector('.uavatar').textContent === 'a',
       aaRow && aaRow.querySelector('.uavatar').textContent);
 
-    /* 列排序：默认显示名称升序，点表头切换升降序 */
+    /* 列排序：默认区域展示名称升序，点表头切换升降序 */
     const orderNow = () => rowsNow().map(userOfRow).join(',');
-    check('默认按显示名称升序（白一 < 陈二 < 管理员）', orderNow() === 'aa,bb,admin', orderNow());
-    const nameTh = d.querySelector('#usersTableWrap th[data-ukey="name"]');
+    check('默认按区域展示名称升序（白一 < 陈二 < 管理员）', orderNow() === 'aa,bb,admin', orderNow());
     check('表头带排序标识', !!nameTh && !!nameTh.querySelector('.sort-ind.on'), nameTh && nameTh.textContent);
     click(w, nameTh);
     check('再点同一列切换为降序', orderNow() === 'admin,bb,aa', orderNow());
@@ -607,6 +610,10 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     check('切换到角色列（超管在前）', orderNow() === 'admin,aa,bb', orderNow());
     click(w, d.querySelector('#usersTableWrap th[data-ukey="role"]'));
     check('角色列再点反转（超管在后）', orderNow() === 'aa,bb,admin', orderNow());
+    click(w, d.querySelector('#usersTableWrap th[data-ukey="username"]'));
+    check('用户列按登录名排序', orderNow() === 'aa,admin,bb', orderNow());
+    click(w, d.querySelector('#usersTableWrap th[data-ukey="name"]'));
+    check('切回区域展示名称列恢复升序', orderNow() === 'aa,bb,admin', orderNow());
 
     /* 复制配置：预填全部配置，仅需手填用户名 */
     const bbRow = rowsNow().filter(r => userOfRow(r) === 'bb')[0];
@@ -615,7 +622,7 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     check('弹窗标题标注复制来源', id('userModalTitle').textContent.indexOf('陈二') >= 0,
       id('userModalTitle').textContent);
     check('用户名留空待手填', id('uUsername').value === '' && !id('uUsername').disabled);
-    check('显示名称 / 权限已预填', id('uName').value === '陈二' && id('uPerm').value === 'rw');
+    check('区域展示名称 / 权限已预填', id('uName').value === '陈二' && id('uPerm').value === 'rw');
     check('初始数据已选「共享现有用户」且来源为被复制者',
       id('uSeed').value === 'copy' && id('uSeedUser').value === 'bb',
       id('uSeed').value + ' / ' + id('uSeedUser').value);
