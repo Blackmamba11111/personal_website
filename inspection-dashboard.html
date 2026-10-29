@@ -592,7 +592,6 @@
       <span class="dot" id="remindDot"></span><span id="remindCount">0</span> <span id="remindLabel">项待处理</span>
     </button>
     <button type="button" class="btn" id="btnExport">导出报表</button>
-    <button type="button" class="btn" id="btnImport">导入数据</button>
     <button type="button" class="btn" id="btnRegions" title="自定义区域分组，如「北京 + 天津 + 东北三省」">
       区域设置
     </button>
@@ -904,8 +903,8 @@
   </div>
 </div>
 
-<!-- 导入数据 -->
-<div class="mask" id="maskImport">
+<!-- 导入数据（从看板 / 客户管理内容页打开 → 需 .high 浮于内容页之上） -->
+<div class="mask high" id="maskImport">
   <div class="modal">
     <div class="modal-head">
       <h3>导入 / 导出数据</h3>
@@ -1109,7 +1108,7 @@
         </div>
         <span class="hint" id="custsHint" style="display:inline-block;"></span>
         <div class="spacer"></div>
-        <button type="button" class="btn" id="btnCustsBatchAdd" title="粘贴多行客户名称 / 地址等，一次导入">批量添加</button>
+        <button type="button" class="btn" id="btnImport" title="粘贴 JSON / CSV 批量导入客户，支持导出备份与 CSV 模板">导入数据</button>
         <button type="button" class="btn" id="btnCustsBatchDel" style="display:none;color:var(--miss);border-color:#F5C9C9;">删除选中（0）</button>
       </div>
       <div class="custs-scroll" id="custsTableWrap"></div>
@@ -1118,29 +1117,6 @@
       本页只维护<b>客户基本资料</b>，不含巡检记录；巡检完成情况请回看板在地图与客户卡片中查看。
       删除客户会同时清掉该客户的巡检记录，操作不可恢复。所有改动实时同步到服务端对应账号的台账。
     </p>
-  </div>
-</div>
-
-<!-- ==================== 批量添加客户 ==================== -->
-<div class="mask high" id="maskCustBatch">
-  <div class="modal" style="max-width:560px;">
-    <div class="modal-head">
-      <h3>批量添加客户</h3>
-      <button type="button" class="icon-btn" data-close="maskCustBatch">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="field">
-        <label for="custBatchText">客户列表（每行一个）</label>
-        <textarea id="custBatchText" rows="9"
-          placeholder="客户名称,详细地址,联系人,电话&#10;示例：&#10;衡水第一中学,桃城区英才路 199 号,王老师,0318-8888888&#10;衡水第二小学"></textarea>
-        <div class="hint">每行一个客户，字段用中文/英文逗号或 Tab 分隔：<b>客户名称,详细地址,联系人,电话</b>（后三项可省略）。名称与已有客户重复的行会自动跳过。</div>
-      </div>
-      <div class="hint" id="custBatchHint"></div>
-    </div>
-    <div class="modal-foot">
-      <button type="button" class="btn" data-close="maskCustBatch">取消</button>
-      <button type="button" class="btn primary" id="btnCustBatchDo">导入</button>
-    </div>
   </div>
 </div>
 
@@ -2190,7 +2166,8 @@
       marker.on('mouseout', function () { self._emit('hover', { geometry: null }); });
     };
     MultiMarker.prototype.setGeometries = function (list) { this._prune(list); var self = this; (list || []).forEach(function (g) { self._sync(g); }); };
-    MultiMarker.prototype.updateGeometries = function (list) { this.setGeometries(list); };
+    /* 与 TMap 语义一致：按 id 增量更新，不能 prune（否则只传一个就会删掉其余标记） */
+    MultiMarker.prototype.updateGeometries = function (list) { var self = this; (list || []).forEach(function (g) { self._sync(g); }); };
 
     function labelHtml(st, text) {
       st = st || {};
@@ -2232,7 +2209,9 @@
       });
     };
     MultiLabel.prototype.setGeometries = function (list) { this._prune(list); var self = this; (list || []).forEach(function (g) { self._sync(g); }); };
-    MultiLabel.prototype.updateGeometries = function (list) { this.setGeometries(list); };
+    /* 关键：客户名称标签在悬浮 / 选中时只 update 一个几何；
+       若这里 prune，会把其余客户名称一起删掉（表现为「名字时有时无」） */
+    MultiLabel.prototype.updateGeometries = function (list) { var self = this; (list || []).forEach(function (g) { self._sync(g); }); };
 
     /* TMap 的填充色是 rgba(…,a) 内嵌透明度；高德会丢弃 rgba 里的 alpha，
        必须拆出来放到 fillOpacity，否则 8% 的淡填充会渲染成 100% 实心 */
@@ -2313,6 +2292,8 @@
       InfoWindow: InfoWindow, service: {}
     };
   }
+  /* 暴露门面工厂：自动化测试需要直接用假的 AMap 构造门面，验证图层增量更新语义 */
+  window.__buildTMapFacade = buildTMapFacade;
 
 
   /* ---------------- 地图 SDK：异步加载（绝不阻塞首屏） ----------------
@@ -2841,7 +2822,8 @@
     if (!mapReady) return;
     var qk = state.quarter, geos = [], labels = [];
     DB.customers.forEach(function (c) {
-      if (typeof c.lng !== 'number' || typeof c.lat !== 'number') return;
+      /* 无坐标（如 CSV 导入未填经纬度 → NaN）的客户不参与地图标记与名称标签 */
+      if (!isFinite(c.lng) || !isFinite(c.lat)) return;
       var s = statusOf(c, qk);
       geos.push({ id: c.id, styleId: s.status, position: new TMap.LatLng(c.lat, c.lng) });
       labels.push({
@@ -3927,7 +3909,7 @@
   function doImport() {
     var json = document.getElementById('importBox').value.trim();
     var csv = document.getElementById('csvBox').value.trim();
-    var added = 0;
+    var added = 0, csvDup = 0, csvDupName = '';
     if (json) {
       try {
         var o = JSON.parse(json);
@@ -3989,8 +3971,12 @@
         if (!PROV_MAP[prov]) prov = rName && PROV_MAP[rName] ? rName : '河北';
         var freq = cellOf(cells, 'freq', 7).trim() || 'y4';
         if (!FREQ[freq]) freq = 'y4';
+        /* 客户名称为唯一条件：CSV 导入撞名即跳过（不区分大小写） */
+        var csvName = cellOf(cells, 'name', 0).trim();
+        if (!csvName) return;
+        if (custNameExists(csvName)) { csvDup++; if (!csvDupName) csvDupName = csvName; return; }
         DB.customers.push({
-          id: uid('c'), name: cellOf(cells, 'name', 0).trim(),
+          id: uid('c'), name: csvName,
           regionId: findOrCreateRegion(rName || prov, prov),
           province: prov,
           city: cellOf(cells, 'city', 3).trim(), addr: cellOf(cells, 'addr', 4).trim(),
@@ -4003,11 +3989,16 @@
       });
     }
     if (!added && !json && !csv) { toast('请先粘贴需要导入的内容'); return; }
+    /* 全部撞名 → 不导入并明确提示（与新增 / 批量添加同一套唯一性口径） */
+    if (!added && csvDup) {
+      toast('客户「' + esc(csvDupName) + '」等 ' + csvDup + ' 个名称已存在，未新增客户');
+      return;
+    }
     migrate();
     save(); renderAll(); closeModal('maskImport');
     document.getElementById('importBox').value = '';
     document.getElementById('csvBox').value = '';
-    toast('导入完成，新增客户 ' + added + ' 家');
+    toast('导入完成，新增客户 ' + added + ' 家' + (csvDup ? '，跳过已存在 ' + csvDup + ' 个' : ''));
   }
   function parseCsvLine(line) {
     var out = [], cur = '', q = false;
@@ -4858,7 +4849,7 @@
     CUSTS_OPEN = false;
     CUSTS_SEL = {};
     document.getElementById('custsView').classList.remove('on');
-    ['maskCust', 'maskDetail', 'maskRegion', 'maskImport', 'maskConfirm', 'maskRemind', 'maskUser', 'maskPwd', 'maskServer', 'maskCustBatch'].forEach(function (id) {
+    ['maskCust', 'maskDetail', 'maskRegion', 'maskImport', 'maskConfirm', 'maskRemind', 'maskUser', 'maskPwd', 'maskServer'].forEach(function (id) {
       var el = document.getElementById(id); if (el) el.classList.remove('on');
     });
     clearMapLayers();
@@ -5404,62 +5395,6 @@
         toast('已删除 ' + targets.length + ' 家客户');
       }, '确认删除');
   }
-  function openCustsBatchAdd() {
-    if (!custsGuardEdit()) return;
-    document.getElementById('custBatchText').value = '';
-    document.getElementById('custBatchHint').textContent = '';
-    openModal('maskCustBatch');
-    setTimeout(function () { document.getElementById('custBatchText').focus(); }, 120);
-  }
-  /* 解析批量文本：每行 = 客户名称[,详细地址][,联系人][,电话]，名称为唯一条件 */
-  function custsBatchParse() {
-    var text = document.getElementById('custBatchText').value || '';
-    var out = [], seen = {}, dupNames = [], bad = 0;
-    String(text).split(/\r?\n/).forEach(function (ln) {
-      ln = String(ln || '').trim();
-      if (!ln) return;
-      var parts = ln.split(/[，,、\t]+/).map(function (s) { return s.trim(); });
-      var name = parts[0] || '';
-      if (!name) { bad++; return; }
-      if (seen[name.toLowerCase()] || custNameExists(name)) {
-        if (dupNames.indexOf(name) < 0) dupNames.push(name);
-        return;
-      }
-      seen[name.toLowerCase()] = true;
-      out.push({
-        id: uid('c'), name: name,
-        regionId: (DB.regions[0] || {}).id || '', province: '', city: '',
-        addr: parts[1] || '', contact: parts[2] || '', phone: parts[3] || '',
-        lng: NaN, lat: NaN, freq: 'y4', note: '', hasCoords: false
-      });
-    });
-    return { list: out, dupNames: dupNames, bad: bad };
-  }
-  function custsBatchImport() {
-    var r = custsBatchParse();
-    if (!r.list.length) {
-      toast(r.dupNames.length
-        ? '客户「' + esc(r.dupNames[0]) + '」等 ' + r.dupNames.length + ' 个名称已存在，未导入任何客户'
-        : '没有可导入的客户：每行至少要填写客户名称');
-      return;
-    }
-    var proceed = function () {
-      DB.customers = DB.customers.concat(r.list);
-      save(); renderAll(); renderCustsPage();
-      closeModal('maskCustBatch');
-      toast('已批量添加 ' + r.list.length + ' 家客户' +
-        (r.dupNames.length ? '，跳过已存在 ' + r.dupNames.length + ' 个' : '') +
-        '，可在列表中逐个补全区域与坐标');
-    };
-    if (r.dupNames.length) {
-      askConfirm('部分客户名称已存在',
-        '以下 ' + r.dupNames.length + ' 个名称已存在，将跳过：<b>' + esc(r.dupNames.slice(0, 8).join('、')) +
-        (r.dupNames.length > 8 ? ' 等' : '') + '</b><br>是否导入其余 ' + r.list.length + ' 家？',
-        proceed, '导入其余');
-    } else {
-      proceed();
-    }
-  }
 
   /* ---------- 账号来源 / 权限的展示文案 ---------- */
   function sourceText(u) {
@@ -5981,9 +5916,7 @@
     document.getElementById('custsSearch').addEventListener('input', renderCustsPage);
     document.getElementById('custsTableWrap').addEventListener('click', custsRowAction);
     document.getElementById('custsTableWrap').addEventListener('change', custsSelChange);
-    document.getElementById('btnCustsBatchAdd').addEventListener('click', openCustsBatchAdd);
     document.getElementById('btnCustsBatchDel').addEventListener('click', custsBatchDelete);
-    document.getElementById('btnCustBatchDo').addEventListener('click', custsBatchImport);
     document.getElementById('btnSaveUser').addEventListener('click', saveUser);
     document.getElementById('btnSavePwd').addEventListener('click', savePwd);
 
@@ -6020,7 +5953,7 @@
 
     /* 只读拦截（汇总视图 + 只读账号共用）：捕获阶段先于业务处理器生效 */
     var WRITE_SEL = '#btnAdd,#btnRegions,#btnImport,#btnAddRegion,#btnSaveCust,#btnDoImport,' +
-      '#btnCustsBatchAdd,#btnCustsBatchDel,#btnCustBatchDo,#custsTableWrap input[type="checkbox"],' +
+      '#btnCustsBatchDel,#custsTableWrap input[type="checkbox"],' +
       '#btnResetDemo,#btnPick,#btnAddVisit,#btnEditCust,#btnDelCust,#dTimeline .tl-del,' +
       '#btnPickAttach,#regionList [data-act],#regionList input';
     document.addEventListener('click', function (e) {

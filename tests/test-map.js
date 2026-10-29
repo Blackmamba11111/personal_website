@@ -150,6 +150,52 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
     check('检索配额用尽（121）有明确提示', src.indexOf('今日调用额度已用尽') > 0);
   }
 
+  /* 门面回归（高德路径）：updateGeometries 必须按 id 增量更新，不能 prune 掉其他元素 ——
+     否则悬浮 / 选中某个客户时只更新它自己的名称标签，其余客户名称会被整体删除。 */
+  {
+    const marks = [];
+    function FakeMarker(o) {
+      this.opts = o || {}; this.map = this.opts.map; this.position = this.opts.position;
+      this.content = this.opts.content; this.handlers = {};
+      marks.push(this);
+    }
+    FakeMarker.prototype.setMap = function (m) { this.map = m; };
+    FakeMarker.prototype.setPosition = function (p) { this.position = p; };
+    FakeMarker.prototype.setContent = function (c) { this.content = c; };
+    FakeMarker.prototype.setIcon = function () {};
+    FakeMarker.prototype.on = function (e, cb) { this.handlers[e] = cb; };
+
+    const F = w.__buildTMapFacade({
+      LngLat: function (lng, lat) { this.lng = lng; this.lat = lat; },
+      Marker: FakeMarker,
+      Map: function () { return {}; }
+    });
+    const layer = new F.MultiLabel({
+      map: { _amap: {} },
+      styles: { name: {}, nameOn: { backgroundColor: '#2563EB', color: '#FFFFFF' } }
+    });
+    layer.setGeometries([
+      { id: 'a', styleId: 'name', position: { lat: 37.7, lng: 115.7 }, content: 'A' },
+      { id: 'b', styleId: 'name', position: { lat: 37.8, lng: 115.8 }, content: 'B' },
+      { id: 'c', styleId: 'name', position: { lat: 37.9, lng: 115.9 }, content: 'C' }
+    ]);
+    check('门面：3 个客户名称标签都已挂到地图', marks.filter(m => m.map).length === 3);
+    layer.updateGeometries([{ id: 'a', styleId: 'nameOn', position: { lat: 37.7, lng: 115.7 }, content: 'A' }]);
+    check('门面：updateGeometries 保留其余标签（悬浮时客户名不再消失）',
+      marks.filter(m => m.map).length === 3, marks.filter(m => m.map).length + ' 个在图上');
+    check('门面：被更新的标签切换为高亮样式',
+      marks[0].content.indexOf('background:#2563EB') >= 0, marks[0].content.slice(0, 60));
+
+    const mlayer = new F.MultiMarker({ map: { _amap: {} }, styles: { ok: { width: 26, height: 35 } } });
+    mlayer.setGeometries([
+      { id: 'm1', styleId: 'ok', position: { lat: 1, lng: 2 } },
+      { id: 'm2', styleId: 'ok', position: { lat: 1, lng: 2 } }
+    ]);
+    mlayer.updateGeometries([{ id: 'm1', styleId: 'ok', position: { lat: 3, lng: 4 } }]);
+    check('门面：MultiMarker 同样保留其余标记', marks.filter(m => m.map).length === 5,
+      marks.filter(m => m.map).length + ' 个在图上');
+  }
+
   w.close();
 
   const pass = results.filter(r => r[0] === 'PASS').length;

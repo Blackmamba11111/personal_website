@@ -297,30 +297,32 @@ const seedRegions = [
   check('台账中同步删除 2 家', store3().customers.length === 1, store3().customers.length + '');
   check('删除后按钮隐藏且勾选清空', id3('btnCustsBatchDel').style.display === 'none');
 
-  /* 批量添加：解析多行文本，重名跳过并提示（上一节删除后仅剩「北京分行」） */
-  click3(id3('btnCustsBatchAdd'));
-  check('批量添加弹窗已打开', id3('maskCustBatch').classList.contains('on'));
-  id3('custBatchText').value = '北京分行\n新客户甲,某路1号,李四,13800000000\n新客户乙';
-  click3(id3('btnCustBatchDo'));
-  check('重名时弹出确认提示', id3('maskConfirm').classList.contains('on') &&
-    id3('maskConfirm').textContent.indexOf('已存在') >= 0,
-    id3('maskConfirm').textContent.slice(0, 80));
-  click3(id3('cfOk'));
+  /* 批量添加：客户管理内「导入数据」菜单（CSV），重名跳过并在结果提示 */
+  click3(id3('btnImport'));
+  check('导入数据菜单已打开（客户管理内）', id3('maskImport').classList.contains('on'));
+  id3('csvBox').value = [
+    '客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率,联系人,联系电话,备注',
+    '北京分行,河北,河北,衡水,,115.7,37.7,y4,张三,0318-1111111,',
+    '新客户甲,河北,河北,衡水,某路1号,,,y4,李四,13800000000,',
+    '新客户乙,河北,河北,衡水,,,y4,,,'
+  ].join('\n');
+  click3(id3('btnDoImport'));
   await tick(40);
-  check('导入后共 3 家（新增 2 家）', rows3().length === 3, rows3().length + '');
+  check('CSV 导入后共 3 家（新增 2 家）', rows3().length === 3, rows3().length + '');
   check('重名客户未被复制', store3().customers.filter(c => c.name === '北京分行').length === 1);
   const jia = store3().customers.filter(c => c.name === '新客户甲')[0];
-  check('批量行字段解析正确（地址/联系人/电话）', !!jia && jia.addr === '某路1号' &&
+  check('CSV 字段解析正确（地址/联系人/电话）', !!jia && jia.addr === '某路1号' &&
     jia.contact === '李四' && jia.phone === '13800000000', JSON.stringify(jia));
-  check('导入后弹窗已关闭', !id3('maskCustBatch').classList.contains('on'));
+  check('导入结果提示跳过重名', id3('toast').textContent.indexOf('跳过已存在') >= 0, id3('toast').textContent);
+  check('导入后菜单已关闭', !id3('maskImport').classList.contains('on'));
 
-  /* 名称唯一：批量全部重名 → 不导入并提示；单个新增重名 → 提示已存在 */
-  click3(id3('btnCustsBatchAdd'));
-  id3('custBatchText').value = '新客户甲';
-  click3(id3('btnCustBatchDo'));
-  check('全部重名时提示已存在且不导入', id3('toast').textContent.indexOf('已存在') >= 0 &&
-    id3('maskCustBatch').classList.contains('on') && rows3().length === 3, id3('toast').textContent);
-  click3(d3.querySelector('#maskCustBatch [data-close="maskCustBatch"]'));
+  /* 名称唯一：CSV 全部重名 → 不导入并提示；单个新增重名 → 提示已存在 */
+  click3(id3('btnImport'));
+  id3('csvBox').value = '客户名称,所属区域,所在省份,城市,详细地址,经度,纬度,频率,联系人,联系电话,备注\n新客户甲,河北,河北,衡水,,,y4,,,';
+  click3(id3('btnDoImport'));
+  check('CSV 全部重名时提示已存在且不导入', id3('toast').textContent.indexOf('已存在') >= 0 &&
+    id3('maskImport').classList.contains('on') && rows3().length === 3, id3('toast').textContent);
+  click3(d3.querySelector('#maskImport [data-close="maskImport"]'));
   await tick(20);
   click3(id3('btnCustsAdd'));
   id3('fName').value = '新客户甲';
