@@ -233,6 +233,105 @@ const seedRegions = [
 
   w2.close();
 
+  /* ================= 三、列排序 / 批量添加 / 批量删除（勾选）================= */
+  const dom3 = makeDom({
+    errors,
+    sessionUser: 'demo',
+    data: {
+      demo: {
+        regions: seedRegions,
+        customers: [
+          { id: 'k1', name: '阿里巴巴', regionId: 'r-hb', province: '河北', city: '石家庄', addr: '', lng: 114.5, lat: 38.0, freq: 'y4', contact: '', phone: '', note: '' },
+          { id: 'k2', name: '北京分行', regionId: 'r-bj', province: '北京', city: '海淀', addr: '', lng: 116.3, lat: 39.9, freq: 'y4', contact: '', phone: '', note: '' },
+          { id: 'k3', name: '衡水银行', regionId: 'r-hb', province: '河北', city: '衡水', addr: '', lng: 115.7, lat: 37.7, freq: 'y4', contact: '', phone: '', note: '' }
+        ],
+        visits: []
+      }
+    }
+  });
+  const w3 = dom3.window, d3 = w3.document;
+  const id3 = x => d3.getElementById(x);
+  const click3 = el => el && el.dispatchEvent(new w3.MouseEvent('click', { bubbles: true, cancelable: true }));
+  const fire3 = (el, t) => el.dispatchEvent(new w3.Event(t, { bubbles: true }));
+  const store3 = () => JSON.parse(w3.localStorage.getItem(dataKey('demo')));
+  const rows3 = () => id3('custsTableWrap').querySelectorAll('table.custs tbody tr');
+  const names3 = () => [...rows3()].map(r => r.querySelectorAll('td')[1].textContent.trim());
+  const chks3 = () => [...id3('custsTableWrap').querySelectorAll('input[data-chkid]')];
+
+  await tick(60);
+  click3(id3('btnCusts'));
+  check('测试页已打开（3 家客户）', rows3().length === 3, rows3().length + '');
+
+  /* 列排序：客户名称 / 所属区域 / 省市 */
+  check('默认按客户名称升序', names3().join(',') === '阿里巴巴,北京分行,衡水银行', names3().join(','));
+  click3(id3('custsTableWrap').querySelector('th[data-ckey="region"]'));
+  check('按所属区域排序（北京组在前）', names3().join(',') === '北京分行,阿里巴巴,衡水银行', names3().join(','));
+  click3(id3('custsTableWrap').querySelector('th[data-ckey="pc"]'));
+  check('按省市排序（北京在前，同省按城市拼音）', names3().join(',') === '北京分行,衡水银行,阿里巴巴', names3().join(','));
+  click3(id3('custsTableWrap').querySelector('th[data-ckey="name"]'));
+  check('切到客户名称列先为升序', names3().join(',') === '阿里巴巴,北京分行,衡水银行', names3().join(','));
+  click3(id3('custsTableWrap').querySelector('th[data-ckey="name"]'));
+  check('客户名称列再点为降序', names3().join(',') === '衡水银行,北京分行,阿里巴巴', names3().join(','));
+
+  /* 批量删除：勾选 → 确认 → 删除（含巡检记录级联） */
+  check('未勾选时「删除选中」隐藏', id3('btnCustsBatchDel').style.display === 'none');
+  click3(chks3()[0]);                                  /* 勾选第 1 行（阿里巴巴） */
+  fire3(chks3()[0], 'change');
+  check('勾选后显示删除按钮与数量', id3('btnCustsBatchDel').style.display !== 'none' &&
+    id3('btnCustsBatchDel').textContent.indexOf('（1）') >= 0, id3('btnCustsBatchDel').textContent);
+  click3(id3('custsSelAll'));
+  fire3(id3('custsSelAll'), 'change');
+  check('全选后 3 行复选框都勾上', chks3().every(cb => cb.checked) &&
+    id3('btnCustsBatchDel').textContent.indexOf('（3）') >= 0, id3('btnCustsBatchDel').textContent);
+  click3(id3('custsSelAll'));
+  fire3(id3('custsSelAll'), 'change');
+  check('取消全选后清空且按钮隐藏', chks3().every(cb => !cb.checked) &&
+    id3('btnCustsBatchDel').style.display === 'none');
+  chks3()[0].checked = true; fire3(chks3()[0], 'change');
+  chks3()[2].checked = true; fire3(chks3()[2], 'change');   /* 勾选 阿里巴巴 + 衡水银行 */
+  click3(id3('btnCustsBatchDel'));
+  check('批量删除弹出确认框', id3('maskConfirm').classList.contains('on'));
+  click3(id3('cfOk'));
+  await tick(40);
+  check('批量删除后剩 1 家（北京分行）', rows3().length === 1 && names3()[0] === '北京分行', names3().join(','));
+  check('台账中同步删除 2 家', store3().customers.length === 1, store3().customers.length + '');
+  check('删除后按钮隐藏且勾选清空', id3('btnCustsBatchDel').style.display === 'none');
+
+  /* 批量添加：解析多行文本，重名跳过并提示（上一节删除后仅剩「北京分行」） */
+  click3(id3('btnCustsBatchAdd'));
+  check('批量添加弹窗已打开', id3('maskCustBatch').classList.contains('on'));
+  id3('custBatchText').value = '北京分行\n新客户甲,某路1号,李四,13800000000\n新客户乙';
+  click3(id3('btnCustBatchDo'));
+  check('重名时弹出确认提示', id3('maskConfirm').classList.contains('on') &&
+    id3('maskConfirm').textContent.indexOf('已存在') >= 0,
+    id3('maskConfirm').textContent.slice(0, 80));
+  click3(id3('cfOk'));
+  await tick(40);
+  check('导入后共 3 家（新增 2 家）', rows3().length === 3, rows3().length + '');
+  check('重名客户未被复制', store3().customers.filter(c => c.name === '北京分行').length === 1);
+  const jia = store3().customers.filter(c => c.name === '新客户甲')[0];
+  check('批量行字段解析正确（地址/联系人/电话）', !!jia && jia.addr === '某路1号' &&
+    jia.contact === '李四' && jia.phone === '13800000000', JSON.stringify(jia));
+  check('导入后弹窗已关闭', !id3('maskCustBatch').classList.contains('on'));
+
+  /* 名称唯一：批量全部重名 → 不导入并提示；单个新增重名 → 提示已存在 */
+  click3(id3('btnCustsBatchAdd'));
+  id3('custBatchText').value = '新客户甲';
+  click3(id3('btnCustBatchDo'));
+  check('全部重名时提示已存在且不导入', id3('toast').textContent.indexOf('已存在') >= 0 &&
+    id3('maskCustBatch').classList.contains('on') && rows3().length === 3, id3('toast').textContent);
+  click3(d3.querySelector('#maskCustBatch [data-close="maskCustBatch"]'));
+  await tick(20);
+  click3(id3('btnCustsAdd'));
+  id3('fName').value = '新客户甲';
+  id3('fLng').value = '115.670000';
+  id3('fLat').value = '37.730000';
+  click3(id3('btnSaveCust'));
+  check('单个新增重名被拒绝并提示', id3('toast').textContent.indexOf('已存在') >= 0 &&
+    id3('maskCust').classList.contains('on') && store3().customers.length === 3, id3('toast').textContent);
+  check('确认框提示含客户名称', id3('toast').textContent.indexOf('新客户甲') >= 0, id3('toast').textContent);
+  w3.close();
+
   /* ================= 输出 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));
