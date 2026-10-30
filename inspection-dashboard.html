@@ -2503,7 +2503,13 @@
   }
 
   function initMap() {
-    if (map) return;                                  /* 只初始化一次 */
+    if (map) {
+      /* 地图对象还在（退出登录 / 会话失效后再登录）：clearMapLayers 会把覆盖物
+         图层置空，这里必须补齐，否则标记与客户名称标签永远不再渲染 */
+      ensureMapLayers();
+      renderMarkers();
+      return;
+    }
     if (tmapReadyNow()) tmapState = 'ready';
     if (tmapState !== 'ready') {
       /* SDK 尚未就绪：异步等待，绝不同步阻塞首屏；失败时图区给出提示 */
@@ -2523,7 +2529,22 @@
       return;
     }
 
-    /* 区域范围图层在 mapReady 置位后构建 */
+    /* 地图级点击只绑定一次（地图对象与页面同生命周期） */
+    map.on('click', function (evt) {
+      pickAt(evt.latLng);
+    });
+    mapReady = true;
+    ensureMapLayers();
+    buildRegionLayers();
+    /* 补一次渲染：登录 signIn 时 SDK 往往尚未就绪，当时那次 renderMarkers 是空操作 */
+    renderMarkers();
+    document.getElementById('mapHintTip').classList.add('on');
+  }
+
+  /* 覆盖物图层逐个补建：退出登录 / 会话失效会经 clearMapLayers() 把图层置空，
+     重登录后必须在这里重建，否则标记与客户名称标签永远不再出现 */
+  function ensureMapLayers() {
+    if (!mapReady) return;
     function mstyle(color) {
       return new TMap.MarkerStyle({
         width: 26, height: 35,
@@ -2531,54 +2552,86 @@
         src: PIN_SRC[color]
       });
     }
-    markerLayer = new TMap.MultiMarker({
-      map: map,
-      styles: { ok: mstyle('ok'), part: mstyle('part'), miss: mstyle('miss') },
-      geometries: []
-    });
-    markerLayer.on('click', function (evt) {
-      /* 点选模式下点中客户标记：同样完成坐标拾取，不再打开详情弹窗 */
-      if (pickAt(evt && (evt.latLng || (evt.geometry && evt.geometry.position)))) return;
-      var g = evt.geometry; if (!g) return;
-      state.selectedId = g.id;
-      renderList(); focusOn(g.id); openDetail(g.id);
-    });
-    /* 悬浮预览：hover 在「悬停对象改变」时触发，geometry 为 null 表示已移出全部标记。
-       注意腾讯 GL 的 MultiMarker 没有 mouseover/mouseout，只有 hover。 */
-    markerLayer.on('hover', function (evt) {
-      var g = evt && evt.geometry;
-      if (g && g.id) hoverCustomer(g.id);
-      else hoverLeave();
-    });
+    if (!markerLayer) {
+      markerLayer = new TMap.MultiMarker({
+        map: map,
+        styles: { ok: mstyle('ok'), part: mstyle('part'), miss: mstyle('miss') },
+        geometries: []
+      });
+      markerLayer.on('click', function (evt) {
+        /* 点选模式下点中客户标记：同样完成坐标拾取，不再打开详情弹窗 */
+        if (pickAt(evt && (evt.latLng || (evt.geometry && evt.geometry.position)))) return;
+        var g = evt.geometry; if (!g) return;
+        state.selectedId = g.id;
+        renderList(); focusOn(g.id); openDetail(g.id);
+      });
+      /* 悬浮预览：hover 在「悬停对象改变」时触发，geometry 为 null 表示已移出全部标记。
+         注意腾讯 GL 的 MultiMarker 没有 mouseover/mouseout，只有 hover。 */
+      markerLayer.on('hover', function (evt) {
+        var g = evt && evt.geometry;
+        if (g && g.id) hoverCustomer(g.id);
+        else hoverLeave();
+      });
+    }
     /* 客户名称标签层：与标记同源渲染；开启图层内碰撞，密集区域自动让位避免文字互相压盖 */
-    custLabelLayer = new TMap.MultiLabel({
-      map: map,
-      styles: {
-        name: new TMap.LabelStyle({
-          color: '#16233A', size: 11,
-          alignment: 'center', verticalAlignment: 'middle',
-          offset: { x: 0, y: -44 },
-          backgroundColor: 'rgba(255,255,255,0.92)',
-          borderColor: '#D8E0EE', borderWidth: 1, padding: '2px 6px', borderRadius: 5
-        }),
-        nameOn: new TMap.LabelStyle({
-          color: '#FFFFFF', size: 11,
-          alignment: 'center', verticalAlignment: 'middle',
-          offset: { x: 0, y: -44 },
-          backgroundColor: '#2563EB',
-          borderColor: '#1D4ED8', borderWidth: 1, padding: '2px 6px', borderRadius: 5
-        })
-      },
-      collisionOptions: { sameSource: true },
-      geometries: []
-    });
-    map.on('click', function (evt) {
-      pickAt(evt.latLng);
-    });
-    /* 名称标签同样可点：点选模式下点击标签完成拾取，平时标签不响应点击 */
-    custLabelLayer.on('click', function (evt) {
-      pickAt(evt && (evt.latLng || (evt.geometry && evt.geometry.position)));
-    });
+    if (!custLabelLayer) {
+      custLabelLayer = new TMap.MultiLabel({
+        map: map,
+        styles: {
+          name: new TMap.LabelStyle({
+            color: '#16233A', size: 11,
+            alignment: 'center', verticalAlignment: 'middle',
+            offset: { x: 0, y: -44 },
+            backgroundColor: 'rgba(255,255,255,0.92)',
+            borderColor: '#D8E0EE', borderWidth: 1, padding: '2px 6px', borderRadius: 5
+          }),
+          nameOn: new TMap.LabelStyle({
+            color: '#FFFFFF', size: 11,
+            alignment: 'center', verticalAlignment: 'middle',
+            offset: { x: 0, y: -44 },
+            backgroundColor: '#2563EB',
+            borderColor: '#1D4ED8', borderWidth: 1, padding: '2px 6px', borderRadius: 5
+          })
+        },
+        collisionOptions: { sameSource: true },
+        geometries: []
+      });
+      /* 名称标签同样可点：点选模式下点击标签完成拾取，平时标签不响应点击 */
+      custLabelLayer.on('click', function (evt) {
+        pickAt(evt && (evt.latLng || (evt.geometry && evt.geometry.position)));
+      });
+    }
+    if (!focusLayer) {
+      focusLayer = new TMap.MultiCircle({
+        map: map,
+        styles: { halo: new TMap.CircleStyle({ color: 'rgba(37,99,235,0.16)', showBorder: false }) },
+        geometries: []
+      });
+    }
+    /* 地点搜索结果候选标记层 */
+    if (!candidateLayer) {
+      candidateLayer = new TMap.MultiMarker({
+        map: map,
+        styles: {
+          cand: new TMap.MarkerStyle({ width: 22, height: 30, anchor: { x: 11, y: 30 }, src: PIN_SRC_CAND }),
+          candOn: new TMap.MarkerStyle({ width: 30, height: 40, anchor: { x: 15, y: 40 }, src: PIN_SRC_CAND_ON })
+        },
+        geometries: []
+      });
+      candidateLayer.on('click', function (evt) {
+        if (evt.geometry && evt.geometry.id) pickCandidate(evt.geometry.id);
+      });
+    }
+    if (!infoWindow) {
+      infoWindow = new TMap.InfoWindow({
+        map: map,
+        position: new TMap.LatLng(0, 0),
+        offset: { x: 0, y: -34 },
+        content: ''
+      });
+      infoWindow.close();
+    }
+  }
 
   /* 点选模式核心：把地图上点到的位置带回客户表单。
      返回 true 表示确实处于点选模式并已拾取（调用方据此跳过原有行为）。 */
@@ -2594,34 +2647,6 @@
     openCustModal(picking.form);
     toast('已拾取坐标：' + Number(lng).toFixed(6) + ', ' + Number(lat).toFixed(6));
     return true;
-  }
-    focusLayer = new TMap.MultiCircle({
-      map: map,
-      styles: { halo: new TMap.CircleStyle({ color: 'rgba(37,99,235,0.16)', showBorder: false }) },
-      geometries: []
-    });
-    /* 地点搜索结果候选标记层 */
-    candidateLayer = new TMap.MultiMarker({
-      map: map,
-      styles: {
-        cand: new TMap.MarkerStyle({ width: 22, height: 30, anchor: { x: 11, y: 30 }, src: PIN_SRC_CAND }),
-        candOn: new TMap.MarkerStyle({ width: 30, height: 40, anchor: { x: 15, y: 40 }, src: PIN_SRC_CAND_ON })
-      },
-      geometries: []
-    });
-    candidateLayer.on('click', function (evt) {
-      if (evt.geometry && evt.geometry.id) pickCandidate(evt.geometry.id);
-    });
-    infoWindow = new TMap.InfoWindow({
-      map: map,
-      position: new TMap.LatLng(0, 0),
-      offset: { x: 0, y: -34 },
-      content: ''
-    });
-    infoWindow.close();
-    mapReady = true;
-    buildRegionLayers();
-    document.getElementById('mapHintTip').classList.add('on');
   }
 
   /* ---------------- 区域范围图层 ---------------- */
@@ -2842,6 +2867,7 @@
 
   function renderMarkers() {
     if (!mapReady) return;
+    ensureMapLayers();          /* 兜底：图层被 clearMapLayers 置空时现场重建 */
     var qk = state.quarter, geos = [], labels = [];
     DB.customers.forEach(function (c) {
       /* 无坐标（如 CSV 导入未填经纬度 → NaN）的客户不参与地图标记与名称标签 */

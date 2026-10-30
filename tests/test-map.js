@@ -134,6 +134,12 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
   check('重新登录后标记恢复（2 家）', ML && ML.geometries.length === 2,
     ML ? ML.geometries.length + '' : '无');
   check('重新登录未重复初始化地图（地图对象唯一）', rec().layers.filter(L => L.handlers.click).length >= 1);
+  /* 回归：退出登录时 clearMapLayers 会把客户名称标签层置空，
+     重登录后必须重建（否则名称标签永远不再出现） */
+  const CLL = lastLayer('MultiLabel', L => L.opts.styles && L.opts.styles.nameOn);
+  check('重新登录后客户名称标签层已重建', !!CLL, '无标签层');
+  check('重建后名称标签几何数 = 客户数（2）',
+    CLL && CLL.geometries.length === 2, CLL ? CLL.geometries.length + '' : '无');
 
   /* ================= N. 地图点选与地点搜索的防呆 ================= */
   {
@@ -148,6 +154,11 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
       && src.indexOf("wsApi('geocode'") > 0
       && src.indexOf("api('/place/search?type='") > 0);
     check('检索配额用尽（121）有明确提示', src.indexOf('今日调用额度已用尽') > 0);
+    /* 回归：登录时 SDK 尚未就绪的那次 renderMarkers 是空操作，
+       SDK 就绪后 initMap 必须补渲染（否则登录后标记/名称标签一直不出来） */
+    check('SDK 就绪后会补齐图层并补渲染标记（登录竞态修复）',
+      /mapReady = true;\s*ensureMapLayers\(\);[\s\S]{0,300}renderMarkers\(\);/.test(src));
+    check('renderMarkers 自带图层兜底重建', /renderMarkers\(\) \{[\s\S]{0,120}ensureMapLayers\(\)/.test(src));
   }
 
   /* 门面回归（高德路径）：updateGeometries 必须按 id 增量更新，不能 prune 掉其他元素 ——
