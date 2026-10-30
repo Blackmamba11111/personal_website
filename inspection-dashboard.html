@@ -2123,8 +2123,23 @@
         mapStyle: 'amap://styles/normal'
       });
       this._handlers = {};
+      /* 转发高德地图级 click：坐标点选（pickAt）依赖它 */
+      var self = this;
+      if (typeof this._amap.on === 'function') {
+        this._amap.on('click', function (e) {
+          var ll = e && e.lnglat;
+          self._emit('click', {
+            latLng: ll ? new TLatLng(ll.getLat ? ll.getLat() : ll.lat,
+                                    ll.getLng ? ll.getLng() : ll.lng) : null,
+            domEvent: e && (e.originEvent || e.domEvent || e)
+          });
+        });
+      }
     }
     TMapMap.prototype.on = function (ev, cb) { (this._handlers[ev] = this._handlers[ev] || []).push(cb); };
+    TMapMap.prototype._emit = function (ev, evt) {
+      (this._handlers[ev] || []).forEach(function (fn) { try { fn(evt); } catch (e) {} });
+    };
     TMapMap.prototype.setCenter = function (ll) { try { this._amap.setCenter(toLngLat(ll)); } catch (e) {} };
     TMapMap.prototype.setZoom = function (z) { try { this._amap.setZoom(Number(z)); } catch (e) {} };
     TMapMap.prototype.getZoom = function () { try { return this._amap.getZoom(); } catch (e) { return 5; } };
@@ -2536,13 +2551,13 @@
     mapReady = true;
     ensureMapLayers();
     buildRegionLayers();
-    /* 补一次渲染：登录 signIn 时 SDK 往往尚未就绪，当时那次 renderMarkers 是空操作 */
+    /* 补渲染：登录时 SDK 未就绪的那次 renderMarkers 是空操作 */
     renderMarkers();
     document.getElementById('mapHintTip').classList.add('on');
   }
 
-  /* 覆盖物图层逐个补建：退出登录 / 会话失效会经 clearMapLayers() 把图层置空，
-     重登录后必须在这里重建，否则标记与客户名称标签永远不再出现 */
+  /* 覆盖物图层逐个补建：退出登录 / 会话失效经 clearMapLayers() 置空后，
+     重登录必须在这里重建，否则标记与客户名称标签永远不再出现 */
   function ensureMapLayers() {
     if (!mapReady) return;
     function mstyle(color) {

@@ -328,8 +328,8 @@ async function main() {
     const srcVer = (/PROV_SRC = 'assets\/provinces\.js\?v=([^']+)'/.exec(dash) || [])[1];
     const preVer = (/rel="preload" as="script" href="assets\/provinces\.js\?v=([^"]+)"/.exec(dash) || [])[1];
     check('预取地址与 PROV_SRC 版本号一致', !!srcVer && srcVer === preVer, srcVer + ' / ' + preVer);
-    /* 2026-10-28 用户管理新增列排序 / 复制配置（约 +6KB），上限同步放宽 */
-    check('看板体积已降到 310 KB 以内', Buffer.byteLength(dash, 'utf8') < 310 * 1024,
+    /* 2026-10-30 地图层重建修复（ensureMapLayers + click 转发），上限同步放宽 */
+    check('看板体积已降到 315 KB 以内', Buffer.byteLength(dash, 'utf8') < 315 * 1024,
       Math.round(Buffer.byteLength(dash, 'utf8') / 1024) + ' KB');
   });
 

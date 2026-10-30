@@ -205,6 +205,39 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
     mlayer.updateGeometries([{ id: 'm1', styleId: 'ok', position: { lat: 3, lng: 4 } }]);
     check('门面：MultiMarker 同样保留其余标记', marks.filter(m => m.map).length === 5,
       marks.filter(m => m.map).length + ' 个在图上');
+
+    /* 回归：门面必须转发高德地图级 click —— 「在地图上点击拾取客户坐标」依赖它 */
+    const mapClickHandlers = [];
+    function FakeMap2() {}
+    FakeMap2.prototype.on = function (ev, cb) { if (ev === 'click') mapClickHandlers.push(cb); };
+    const F2 = w.__buildTMapFacade({
+      LngLat: function (lng, lat) { this.lng = lng; this.lat = lat; },
+      Marker: FakeMarker,
+      Map: FakeMap2
+    });
+    const tm = new F2.Map('map', { zoom: 5 });
+    let got = null;
+    tm.on('click', function (evt) { got = evt; });
+    mapClickHandlers.forEach(function (h) {
+      h({ lnglat: { getLat: function () { return 39.9; }, getLng: function () { return 116.3; } } });
+    });
+    check('门面：高德地图级 click 已转发（拾取坐标可用）',
+      !!got && !!got.latLng
+      && Math.abs(got.latLng.getLat() - 39.9) < 1e-9
+      && Math.abs(got.latLng.getLng() - 116.3) < 1e-9,
+      JSON.stringify(got && got.latLng));
+    check('门面：地图对象缺 on 方法时不抛错（测试桩兼容）',
+      (function () {
+        try {
+          const F3 = w.__buildTMapFacade({
+            LngLat: function (lng, lat) { this.lng = lng; this.lat = lat; },
+            Marker: FakeMarker,
+            Map: function () { return {}; }
+          });
+          new F3.Map('m2', {});
+          return true;
+        } catch (e) { return false; }
+      })());
   }
 
   w.close();
