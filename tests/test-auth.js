@@ -134,13 +134,13 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
 
     check('超管默认进入汇总视图', id('roBanner').classList.contains('on'));
     check('汇总视图合并全部账号数据（2+3=5）', id('stTotal').textContent === '5', id('stTotal').textContent);
-    check('汇总视图按账号拆分区域（全部 + 2 个）',
-      d.querySelectorAll('#regionChips .chip').length === 3,
+    check('汇总视图同名区域跨账号合并（全部 + 1 个）',
+      d.querySelectorAll('#regionChips .chip').length === 2,
       d.querySelectorAll('#regionChips .chip').length + ' 个 chip');
     check('汇总视图账号标识显示「汇总」', id('userRoleText').textContent === '汇总', id('userRoleText').textContent);
-    check('汇总视图列表出现账号前缀分组',
-      id('custList').textContent.indexOf('超级管理员 · 片区') >= 0
-      && id('custList').textContent.indexOf('演示用户 · 片区') >= 0);
+    check('汇总视图区域不再带账号前缀（同名合并）',
+      id('custList').textContent.indexOf('片区') >= 0
+      && id('custList').textContent.indexOf('超级管理员 · 片区') < 0);
 
     const before = {
       admin: w.localStorage.getItem(dataKey('admin')),

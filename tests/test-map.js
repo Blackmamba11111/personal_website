@@ -62,8 +62,9 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
   let PL = polyLayer();
   check('区域多边形图层已构建', !!PL);
   if (PL) {
-    const tj = PL.geometries.filter(g => g.id.indexOf('r-tj') >= 0)[0];
-    const hb = PL.geometries.filter(g => g.id.indexOf('r-hb') >= 0)[0];
+    /* 汇总视图同名区域跨账号合并，id 变为 'm::区域名' */
+    const tj = PL.geometries.filter(g => g.id.indexOf('天津片区') >= 0)[0];
+    const hb = PL.geometries.filter(g => g.id.indexOf('河北片区') >= 0)[0];
     check('天津以独立多边形送达地图', !!tj);
     if (tj) {
       check('天津轮廓为带洞结构（外环 + 1 洞环）', tj.paths.length === 1 && tj.paths[0].length === 2,

@@ -4840,27 +4840,38 @@
     }, function () { return false; });
   }
 
-  /* ---------- 超管汇总视图：把各账号台账合并为一份只读数据集（id 加账号前缀避免冲突） ---------- */
+  /* ---------- 超管汇总视图：把各账号台账合并为一份只读数据集 ----------
+     区域跨账号按名称合并：各账号普遍建有同名区域（北京 / 河北 / 山西…），
+     原样拼接会出现几十个「账号名 · 区域名」碎片。合并后省份取并集、
+     客户数累加，并按客户数降序排列，便于超管快速定位。 */
   function buildMergedDB() {
-    var regions = [], customers = [], visits = [];
+    var regionList = [], rByKey = {};
+    var customers = [], visits = [];
     userList().forEach(function (u) {
       var d = readUserData(u.username) || { regions: [], customers: [], visits: [] };
-      var rmap = {};
-      d.regions.forEach(function (r) {
-        var nid = u.username + '::' + r.id;
-        rmap[r.id] = nid;
-        regions.push({
-          id: nid, name: u.name + ' · ' + (r.name || '未命名'),
-          color: r.color, provinces: (r.provinces || []).slice(),
-          owner: u.username, ownerName: u.name
-        });
-      });
       var cmap = {};
+      var lmap = {};                                   /* 账号内区域 id → 合并区域 */
+      d.regions.forEach(function (r) {
+        var nm = String(r.name || '未命名').trim();
+        var key = nm.toLowerCase();
+        var m = rByKey[key];
+        if (!m) {
+          m = rByKey[key] = { id: 'm::' + key, name: nm, color: r.color || '', provinces: [], owners: [] };
+          regionList.push(m);
+        }
+        (r.provinces || []).forEach(function (pn) {
+          if (pn && m.provinces.indexOf(pn) < 0) m.provinces.push(pn);
+        });
+        if (!m.color && r.color) m.color = r.color;
+        if (m.owners.indexOf(u.name) < 0) m.owners.push(u.name);
+        lmap[r.id] = m;
+      });
       d.customers.forEach(function (c) {
         cmap[c.id] = u.username + '::' + c.id;
+        var mr = lmap[c.regionId];
         customers.push(Object.assign({}, c, {
           id: u.username + '::' + c.id,
-          regionId: rmap[c.regionId] || '',
+          regionId: mr ? mr.id : '',
           owner: u.username, ownerName: u.name
         }));
       });
@@ -4871,7 +4882,11 @@
         }));
       });
     });
-    return { regions: regions, customers: customers, visits: visits, merged: true };
+    /* 合并区域按客户数降序（0 客户的沉底，保持出现顺序） */
+    var cnt = {};
+    customers.forEach(function (c) { if (c.regionId) cnt[c.regionId] = (cnt[c.regionId] || 0) + 1; });
+    regionList.sort(function (a, b) { return (cnt[b.id] || 0) - (cnt[a.id] || 0); });
+    return { regions: regionList, customers: customers, visits: visits, merged: true };
   }
 
   /* ---------- 数据范围 ---------- */
