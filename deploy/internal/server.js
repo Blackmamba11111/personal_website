@@ -2,7 +2,7 @@
  * 客户巡检台账 · 内部部署服务端（单进程：静态资源 + /api）
  *
  * 由 Cloudflare Workers 版本等价移植，接口契约、口令算法、权限模型完全一致：
- *   · 鉴权   Bearer Token，sessions 表，30 天
+ *   · 鉴权   Bearer Token，sessions 表，按用户配置的登录超时滑动过期（默认 30 分钟）
  *   · 口令   随机盐 + 400 轮 SHA-256（与前端 hashPwd 同算法）
  *   · 存储   SQLite（Node 24 内置 node:sqlite，WAL），单文件 /data/inspection.db
  *
@@ -34,7 +34,6 @@ const { DatabaseSync } = require('node:sqlite');
 const PORT = parseInt(process.env.PORT || '8443', 10);
 const APP_DIR = path.resolve(process.env.APP_DIR || '/app');
 const DATA_DIR = path.resolve(process.env.DATA_DIR || '/data');
-const SESSION_DAYS = 30;
 const HASH_ROUNDS = 400;
 const MAX_BODY = 32 * 1024 * 1024; // 台账 JSON 可能较大
 /* 腾讯地图 WebService Key（地点检索代理用）：页面已公开该 Key，此处仅作服务端默认值；
@@ -157,7 +156,8 @@ try {
     ['source', "ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT 'local'"],
     ['perm', "ALTER TABLE users ADD COLUMN perm TEXT NOT NULL DEFAULT 'rw'"],
     ['server_id', "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''"],
-    ['share_from', "ALTER TABLE users ADD COLUMN share_from TEXT NOT NULL DEFAULT ''"]
+    ['share_from', "ALTER TABLE users ADD COLUMN share_from TEXT NOT NULL DEFAULT ''"],
+    ['session_mins', 'ALTER TABLE users ADD COLUMN session_mins INTEGER NOT NULL DEFAULT 30']
   ];
   add.forEach(function (pair) {
     if (ucols.indexOf(pair[0]) < 0) {
@@ -207,7 +207,8 @@ function mapUser(row, srvMap) {
     serverId: sid,
     serverName: srv ? srv.name : (sid ? '（认证服务器已删除）' : ''),
     serverType: srv ? srv.type : (sid ? '' : source),
-    shareFrom: row.share_from || ''
+    shareFrom: row.share_from || '',
+    sessionMins: normSessionMins(row.session_mins)
   };
 }
 
@@ -423,9 +424,18 @@ function ensureServerInput(body, base) {
 /* ---------------- 数据访问 ---------------- */
 const stmtSessionJoin =
   'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login, ' +
-  'u.source, u.perm, u.server_id ' +
+  'u.source, u.perm, u.server_id, u.session_mins ' +
   'FROM sessions s JOIN users u ON u.username = s.username WHERE s.token = ?';
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins';
+
+/* 登录超时（分钟）：按用户配置，默认 30，范围 5 ~ 43200（30 天）。
+   会话为滑动过期：每次通过鉴权的请求都会把过期时间顺延到 now + session_mins。 */
+function normSessionMins(v) {
+  if (v === '' || v == null) return 30;
+  const n = Math.round(Number(v));
+  if (!isFinite(n)) return 30;
+  return Math.min(43200, Math.max(5, n));
+}
 
 function currentUser(req) {
   const raw = req.headers['authorization'] || '';
@@ -434,9 +444,19 @@ function currentUser(req) {
   const token = m[1].trim();
   const row = db.prepare(stmtSessionJoin).get(token);
   if (!row) return null;
-  if (Date.parse(row.exp) < Date.now()) {
+  const mins = normSessionMins(row.session_mins);
+  const expMs = Date.parse(row.exp);
+  if (expMs < Date.now()) {
     try { db.prepare('DELETE FROM sessions WHERE token = ?').run(token); } catch (e) {}
     return null;
+  }
+  /* 滑动续期：剩余时间不足半个周期时，把过期时间顺延到 now + session_mins */
+  if (expMs - Date.now() < mins * 30000) {
+    try {
+      db.prepare('UPDATE sessions SET expires_at = ? WHERE token = ?')
+        .run(new Date(Date.now() + mins * 60000).toISOString(), token);
+    } catch (e) { /* 续期失败不影响本次请求 */
+    }
   }
   if (row.status !== 'active') return null;
   const u = mapUser(row, serversMap());
@@ -802,7 +822,8 @@ async function handleApi(req, res, url) {
     if (u.status !== 'active') return bad(res, '该账号已停用，请联系超级管理员。', 403);
 
     const token = newToken();
-    const exp = new Date(Date.now() + SESSION_DAYS * 86400000).toISOString();
+    const mins = normSessionMins(u.session_mins);
+    const exp = new Date(Date.now() + mins * 60000).toISOString();
     db.prepare('INSERT INTO sessions (token, username, created_at, expires_at) VALUES (?, ?, ?, ?)')
       .run(token, u.username, nowIso(), exp);
     db.prepare('UPDATE users SET last_login = ? WHERE username = ?').run(nowIso(), u.username);
@@ -1106,9 +1127,9 @@ async function handleApi(req, res, url) {
     }
 
     db.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom);
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins));
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
     return ok(res, {
@@ -1158,8 +1179,8 @@ async function handleApi(req, res, url) {
         return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
-      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ? WHERE username = ?')
-        .run(name, role, status, note, perm, source, serverId, target);
+      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ? WHERE username = ?')
+        .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), target);
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad(res, '密码至少 6 位');

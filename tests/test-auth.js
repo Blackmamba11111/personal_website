@@ -638,6 +638,70 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 13. 登录超时（sessionMins）配置 ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '管理员', role: 'admin', password: 'admin888' }),
+      mkUser({ username: 'bb', name: '陈二', password: 'bb88888' })
+    ] };
+    const dom = makeDom({ fixture: fx, sessionUser: 'admin', data: { admin: mkDB(1, 'A-') }, errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    await tick(20);
+    const rowsNow = () => [...d.querySelectorAll('#usersTableWrap tbody tr')];
+    /* 表格每次保存后会重绘，行节点必须现取现用（旧节点已脱离文档树） */
+    const bbRowNow = () => rowsNow().filter(r => r.textContent.indexOf('bb') >= 0)[0];
+    const bbRow = bbRowNow();
+
+    /* 捕获发往 /api/users 的请求体 */
+    const origFetch = w.fetch;
+    let lastBody = null, lastMethod = '', lastUrl = '';
+    w.fetch = function (u, o) {
+      try {
+        o = o || {};
+        if (o.body && String(u).indexOf('/api/users') >= 0) {
+          lastBody = JSON.parse(o.body); lastMethod = o.method || 'GET'; lastUrl = String(u);
+        }
+      } catch (e) {}
+      return origFetch.apply(this, arguments);
+    };
+
+    /* 编辑弹窗：超时字段存在并预填 */
+    click(w, bbRow.querySelector('[data-ua="edit"]'));
+    check('登录超时字段存在', !!id('uSessionMins'));
+    check('旧数据用户编辑时超时预填 30', id('uSessionMins').value === '30' || id('uSessionMins').value === 30,
+      id('uSessionMins').value);
+    id('uSessionMins').value = '45';
+    click(w, id('btnSaveUser'));
+    await tick(60);
+    check('保存时 PATCH 携带 sessionMins=45',
+      lastBody && lastMethod === 'PATCH' && lastBody.sessionMins === 45,
+      lastBody ? lastMethod + ' ' + JSON.stringify(lastBody).slice(0, 120) : '无请求');
+    await tick(40);
+    const bbAfter = usersOf(w).filter(u => u.username === 'bb')[0];
+    check('保存后用户会话超时为 45 分钟', bbAfter && Number(bbAfter.sessionMins) === 45,
+      JSON.stringify(bbAfter && bbAfter.sessionMins));
+
+    /* 非法值拦截 */
+    click(w, bbRowNow().querySelector('[data-ua="edit"]'));
+    id('uSessionMins').value = '3';
+    click(w, id('btnSaveUser'));
+    check('超时小于 5 分钟被拦截', id('toast').textContent.indexOf('5–43200') >= 0,
+      id('toast').textContent);
+    check('拦截后弹窗未关闭', id('maskUser').classList.contains('on'));
+    click(w, d.querySelector('#maskUser [data-close="maskUser"]'));
+
+    /* 复制配置：超时一并复制 */
+    click(w, bbRowNow().querySelector('[data-ua="clone"]'));
+    check('复制配置时超时预填为来源用户值', String(id('uSessionMins').value) === '45',
+      id('uSessionMins').value);
+    click(w, d.querySelector('#maskUser [data-close="maskUser"]'));
+    w.close();
+  }
+
   /* ================= 汇总 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));

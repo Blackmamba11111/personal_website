@@ -366,6 +366,23 @@
   #vwBody img{max-width:100%;max-height:66vh;object-fit:contain;border-radius:6px;background:#fff;}
   #vwBody iframe{width:100%;height:66vh;border:0;border-radius:6px;background:#fff;}
   #vwBody .vw-none{font-size:12.5px;color:var(--text-3);padding:26px;text-align:center;}
+  /* Excel / Word 在线预览 */
+  #vwBody .vw-tabs{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:8px;}
+  #vwBody .vw-tab{border:1px solid var(--border);background:var(--panel-2);border-radius:20px;
+    padding:3px 12px;font-size:11.5px;color:var(--text-2);cursor:pointer;}
+  #vwBody .vw-tab.on{background:var(--brand);border-color:var(--brand);color:#fff;}
+  #vwBody .vw-sheet,#vwBody .vw-doc{width:100%;max-height:64vh;overflow:auto;background:#fff;
+    border-radius:6px;padding:10px 14px;text-align:left;}
+  #vwBody .vw-sheet table{border-collapse:collapse;font-size:12px;width:max-content;min-width:100%;}
+  #vwBody .vw-sheet td{border:1px solid #E3E8F0;padding:3px 9px;white-space:nowrap;color:#24303F;}
+  #vwBody .vw-doc{font-size:13px;line-height:1.75;color:#24303F;}
+  #vwBody .vw-doc h1,#vwBody .vw-doc h2,#vwBody .vw-doc h3{margin:10px 0 6px;}
+  #vwBody .vw-doc p{margin:6px 0;}
+  #vwBody .vw-doc img{max-width:100%;}
+  #vwBody .vw-doc table{border-collapse:collapse;margin:8px 0;}
+  #vwBody .vw-doc td,#vwBody .vw-doc th{border:1px solid #D9DFE9;padding:4px 9px;}
+  /* 拖拽悬停时附件区高亮 */
+  .attach-box.dropping{border-color:#7FA3EF;background:#EDF3FF;}
   .toast{
     position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(10px);z-index:200;
     background:#1B2333;color:#fff;padding:9px 16px;border-radius:9px;font-size:12.5px;
@@ -831,7 +848,7 @@
 
         <div class="attach-box" id="visitAttachBox">
           <div class="attach-head">
-            <span id="attachTip">附件：图片 / 文件，可多选，图片与 PDF 可在线浏览</span>
+            <span id="attachTip">附件：图片 / 文件，可多选；可在线浏览图片、PDF、Excel、Word</span>
             <button type="button" class="btn sm" id="btnPickAttach">＋ 添加附件</button>
             <input type="file" id="visitAttachInput" multiple style="display:none"
               accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.log,.zip,.rar,.7z,.eml">
@@ -1163,6 +1180,11 @@
           <option value="ro">只读 — 只能查看与导出，不能修改</option>
         </select>
       </div>
+      <div class="field">
+        <label for="uSessionMins">登录超时（分钟）</label>
+        <input type="number" id="uSessionMins" min="5" max="43200" step="1" placeholder="默认 30 分钟">
+        <div class="hint">无操作超过该时长后需重新登录；使用中自动续期。范围 5–43200（最长 30 天），留空或填错按 30 处理。</div>
+      </div>
       <div class="field" id="uPwdField">
         <label for="uPwd">初始密码 <span class="req">*</span></label>
         <div class="pwd-wrap">
@@ -1370,7 +1392,7 @@
  * 数据存储：服务端台账（Cloudflare Workers + D1）为唯一权威来源；
  *           浏览器 localStorage 退化为「镜像缓存」——便于断网时继续录入，
  *           联网后自动回推，且换电脑登录即可看到同一份数据。
- * 鉴权：服务端签发 Bearer Token（30 天），会话不再依赖 localStorage 判断。
+ * 鉴权：服务端签发 Bearer Token（按用户配置的登录超时滑动过期，默认 30 分钟），会话不再依赖 localStorage 判断。
  * 地图：高德地图 JS API 2.0（GCJ-02），仅用于区域级客户分布展示
  * ========================================================================= */
 (function () {
@@ -3238,6 +3260,87 @@
   function canPreview(mime) {
     return /^image\//.test(mime || '') || /^application\/pdf/.test(mime || '') || /^text\//.test(mime || '');
   }
+  /* Excel / Word 在线预览判定（mime 缺失时按扩展名兜底，服务端可能给 application/octet-stream） */
+  function attExt(name) { return String(name || '').split('.').pop().toLowerCase(); }
+  function attIsExcel(name, mime) {
+    var m = String(mime || ''), e = attExt(name);
+    return e === 'xlsx' || e === 'xls' || /spreadsheetml\.sheet|ms-excel/i.test(m);
+  }
+  function attIsWord(name, mime) {
+    var m = String(mime || ''), e = attExt(name);
+    return e === 'docx' || /wordprocessingml\.document/i.test(m);
+  }
+  /* 预览组件延迟加载：只有真正预览 Excel / Word 时才拉取（xlsx ≈ 950KB、mammoth ≈ 630KB） */
+  var VW_SEQ = 0;
+  var ATT_VENDOR = {
+    xlsx: 'assets/vendor/xlsx.full.min.js?v=1',
+    mammoth: 'assets/vendor/mammoth.browser.min.js?v=1'
+  };
+  function loadVendor(url, probe) {
+    if (probe()) return Promise.resolve();
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = url;
+      s.onload = function () { probe() ? resolve() : reject(new Error('预览组件加载异常，请刷新后重试')); };
+      s.onerror = function () { reject(new Error('预览组件加载失败，请下载后查看')); };
+      document.head.appendChild(s);
+    });
+  }
+  function attBytes(url) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) throw new Error('附件内容读取失败');
+      return r.arrayBuffer();
+    });
+  }
+  function vwActive(seq) {
+    return seq === VW_SEQ && document.getElementById('maskViewer').classList.contains('on');
+  }
+  function vwFail(seq, body, e) {
+    if (vwActive(seq)) body.innerHTML = '<div class="vw-none">' +
+      esc((e && e.message) || '预览失败') + '<br>可点击下方「下载」查看</div>';
+  }
+  function renderExcelPreview(att, body) {
+    var seq = ++VW_SEQ;
+    body.innerHTML = '<div class="vw-none">正在加载表格预览组件…</div>';
+    Promise.all([loadVendor(ATT_VENDOR.xlsx, function () { return window.XLSX; }), attBytes(att.url)])
+      .then(function (r) {
+        if (!vwActive(seq)) return;
+        var wb = window.XLSX.read(r[1], { type: 'array' });
+        var names = wb.SheetNames;
+        if (!names.length) throw new Error('表格中没有工作表');
+        var cur = names[0];
+        var draw = function () {
+          var html = window.XLSX.utils.sheet_to_html(wb.Sheets[cur], { header: '', footer: '' });
+          body.innerHTML =
+            (names.length > 1
+              ? '<div class="vw-tabs">' + names.map(function (n) {
+                  return '<button type="button" class="vw-tab' + (n === cur ? ' on' : '') +
+                    '" data-sheet="' + esc(n) + '">' + esc(n) + '</button>';
+                }).join('') + '</div>'
+              : '') +
+            '<div class="vw-sheet">' + html + '</div>';
+          Array.prototype.forEach.call(body.querySelectorAll('.vw-tab'), function (b) {
+            b.onclick = function () { cur = b.getAttribute('data-sheet') || cur; draw(); };
+          });
+        };
+        draw();
+      })
+      .catch(function (e) { vwFail(seq, body, e); });
+  }
+  function renderWordPreview(att, body) {
+    var seq = ++VW_SEQ;
+    body.innerHTML = '<div class="vw-none">正在加载文档预览组件…</div>';
+    Promise.all([loadVendor(ATT_VENDOR.mammoth, function () { return window.mammoth; }), attBytes(att.url)])
+      .then(function (r) {
+        if (!vwActive(seq)) return;
+        return window.mammoth.convertToHtml({ arrayBuffer: r[1] }).then(function (res) {
+          if (!vwActive(seq)) return;
+          body.innerHTML = '<div class="vw-doc">' +
+            (res && res.value ? res.value : '<p>（文档没有可显示的文本内容）</p>') + '</div>';
+        });
+      })
+      .catch(function (e) { vwFail(seq, body, e); });
+  }
 
   function renderPendingAtts() {
     var box = document.getElementById('visitAttachList');
@@ -3381,6 +3484,10 @@
     var body = document.getElementById('vwBody');
     if (isImgMime(att.mime)) {
       body.innerHTML = '<img src="' + esc(att.url) + '" alt="' + esc(att.name || '') + '">';
+    } else if (attIsExcel(att.name, att.mime)) {
+      renderExcelPreview(att, body);
+    } else if (attIsWord(att.name, att.mime)) {
+      renderWordPreview(att, body);
     } else if (canPreview(att.mime)) {
       body.innerHTML = '<iframe src="' + esc(att.url) + '" title="' + esc(att.name || '') + '"></iframe>';
     } else {
@@ -3391,7 +3498,8 @@
     dl.href = att.url;
     dl.setAttribute('download', att.name || 'download');
     document.getElementById('vwHint').textContent =
-      canPreview(att.mime) ? '附件存放于服务器，跨设备、刷新后均可查看。' : '';
+      (canPreview(att.mime) || attIsExcel(att.name, att.mime) || attIsWord(att.name, att.mime))
+        ? '附件存放于服务器，跨设备、刷新后均可查看。' : '';
     openModal('maskViewer');
   }
 
@@ -3510,7 +3618,7 @@
     document.getElementById('dVisitResult').value = 'ok';
     clearPendingAtts();
     document.getElementById('attachTip').textContent =
-      '附件：图片 / 文件，可多选，图片与 PDF 可在线浏览（单个上限 ' + fmtSize(attachLimit()) + '）';
+      '附件：图片 / 文件，可多选、可直接粘贴或拖入；可在线浏览图片、PDF、Excel、Word（单个上限 ' + fmtSize(attachLimit()) + '）';
     document.getElementById('btnAddVisit').onclick = function () {
       var date = document.getElementById('dVisitDate').value;
       if (!date) { toast('请选择巡检日期'); return; }
@@ -4096,29 +4204,57 @@
     if (btnAtt && inpAtt) {
       btnAtt.onclick = function () { inpAtt.click(); };
       inpAtt.onchange = function () { addFiles(inpAtt.files); inpAtt.value = ''; };
-      var boxAtt = document.getElementById('visitAttachBox');
-      if (boxAtt) {
-        ['dragenter', 'dragover'].forEach(function (t) {
-          boxAtt.addEventListener(t, function (e) { e.preventDefault(); boxAtt.style.borderColor = '#AFC4F5'; });
-        });
-        ['dragleave', 'drop'].forEach(function (t) {
-          boxAtt.addEventListener(t, function () { boxAtt.style.borderColor = ''; });
-        });
-        boxAtt.addEventListener('drop', function (e) {
-          if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
-        });
-      }
-      /* 调试/测试入口：无 UI 依赖地驱动附件队列 */
-      window.__visitAtts = {
-        add: function (files) { addFiles(files); },
-        pending: function () {
-          return pendingAtts.map(function (a) {
-            return { key: a.key, name: a.name, status: a.status, size: a.size, id: a.id, url: a.url };
-          });
-        },
-        clear: function () { clearPendingAtts(); }
-      };
     }
+    /* 拖拽上传：整个客户详情弹窗都是投放区，拖拽时附件框高亮 */
+    var boxAtt = document.getElementById('visitAttachBox');
+    var maskDetail = document.getElementById('maskDetail');
+    if (maskDetail) {
+      var dragDepth = 0;
+      var dropHi = function (on) { if (boxAtt) boxAtt.classList[on ? 'add' : 'remove']('dropping'); };
+      maskDetail.addEventListener('dragenter', function (e) {
+        if (!e.dataTransfer) return;
+        e.preventDefault(); dragDepth++; dropHi(true);
+      });
+      maskDetail.addEventListener('dragover', function (e) { e.preventDefault(); });
+      maskDetail.addEventListener('dragleave', function () {
+        if (--dragDepth <= 0) { dragDepth = 0; dropHi(false); }
+      });
+      maskDetail.addEventListener('drop', function (e) {
+        e.preventDefault(); dragDepth = 0; dropHi(false);
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+          addFiles(e.dataTransfer.files);
+        }
+      });
+    }
+    /* 备注/巡检记录文本框：直接粘贴图片 → 进附件队列 */
+    var noteAtt = document.getElementById('dVisitNote');
+    if (noteAtt) {
+      noteAtt.addEventListener('paste', function (e) {
+        var items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        var imgs = [];
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].kind !== 'file') continue;
+          var f = items[i].getAsFile && items[i].getAsFile();
+          if (f && isImgMime(f.type || '')) imgs.push(f);
+        }
+        if (imgs.length) {
+          e.preventDefault();
+          addFiles(imgs);
+        }
+      });
+    }
+    /* 调试/测试入口：无 UI 依赖地驱动附件队列 */
+    window.__visitAtts = {
+      add: function (files) { addFiles(files); },
+      pending: function () {
+        return pendingAtts.map(function (a) {
+          return { key: a.key, name: a.name, status: a.status, size: a.size, id: a.id, url: a.url };
+        });
+      },
+      clear: function () { clearPendingAtts(); },
+      isExcel: attIsExcel, isWord: attIsWord
+    };
     /* 地图异常时的环境诊断：一键生成可复制信息，便于跨设备排查 */
     var bdiag = document.getElementById('btnMapDiag');
     if (bdiag) bdiag.onclick = showMapDiag;
@@ -4453,7 +4589,7 @@
   }
 
   /* 会话失效：清凭据并回到登录界面（避免继续在失效态下操作） */
-  function onAuthExpired() {
+  function onAuthExpired(msg) {
     clearToken();
     if (!AUTH.user) return;
     AUTH.user = null; AUTH.scope = '';
@@ -4462,8 +4598,32 @@
     closeUsersPage();
     renderAll();
     showAuth();
-    authError('登录状态已失效，请重新登录。');
+    authError(msg || '登录状态已失效，请重新登录。');
   }
+
+  /* ---------- 空闲自动登出 ----------
+     登录超时时长按当前用户的配置（默认 30 分钟）：页面上没有任何
+     操作（点击 / 按键 / 滚动 / 移动鼠标）超过该时长即自动退出。
+     服务端侧会话同时按同一时长滑动过期，双保险。 */
+  var lastActiveAt = Date.now();
+  function touchActive() { lastActiveAt = Date.now(); }
+  (function bindIdleWatch() {
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function (t) {
+      document.addEventListener(t, touchActive, { passive: true });
+    });
+    var mmLast = 0;
+    document.addEventListener('mousemove', function () {
+      var now = Date.now();
+      if (now - mmLast > 10000) { mmLast = now; touchActive(); }
+    }, { passive: true });
+    setInterval(function () {
+      if (!AUTH.user) return;
+      var mins = (AUTH.user.sessionMins || 30) * 60000;
+      if (Date.now() - lastActiveAt > mins) {
+        onAuthExpired('已超过 ' + (AUTH.user.sessionMins || 30) + ' 分钟未操作，请重新登录。');
+      }
+    }, 30000);
+  })();
 
   /* ---------- 服务端快照 → 本地镜像 ---------- */
   function applyServerUsers(users) {
@@ -5557,6 +5717,7 @@
     document.getElementById('uName').value = u ? u.name : '';
     document.getElementById('uRole').value = u ? u.role : 'user';
     document.getElementById('uPerm').value = u ? (u.perm === 'ro' ? 'ro' : 'rw') : 'rw';
+    document.getElementById('uSessionMins').value = u ? (u.sessionMins || 30) : 30;
     document.getElementById('uNote').value = u ? (u.note || '') : '';
     document.getElementById('uPwd').value = '';
 
@@ -5587,6 +5748,7 @@
         document.getElementById('uName').value = cloneFrom.name || '';
         document.getElementById('uRole').value = cloneFrom.role === 'admin' ? 'admin' : 'user';
         document.getElementById('uPerm').value = cloneFrom.perm === 'ro' ? 'ro' : 'rw';
+        document.getElementById('uSessionMins').value = cloneFrom.sessionMins || 30;
         document.getElementById('uNote').value = cloneFrom.note || '';
         var cRemote = (cloneFrom.source || 'local') !== 'local';
         document.getElementById('uSourceType').value = cRemote ? 'remote' : 'local';
@@ -5653,6 +5815,12 @@
     var note = document.getElementById('uNote').value.trim();
     var remote = document.getElementById('uSourceType').value === 'remote';
     var serverId = remote ? document.getElementById('uServer').value : '';
+    var minsRaw = document.getElementById('uSessionMins').value.trim();
+    var mins = Number(minsRaw);
+    if (minsRaw === '') mins = 30;
+    if (!isFinite(mins) || Math.round(mins) !== mins || mins < 5 || mins > 43200) {
+      toast('登录超时需为 5–43200 之间的整数分钟（留空默认 30）'); return;
+    }
     if (!name) { toast('请填写区域展示名称'); return; }
     if (remote && !serverId) { toast('请选择认证服务器（没有的话先去「认证服务器」页新增）'); return; }
 
@@ -5663,7 +5831,7 @@
         toast('至少需要保留一个超级管理员，无法降级'); return;
       }
       var wasRemote = (target.source || 'local') !== 'local';
-      var patch = { name: name, role: role, note: note, perm: perm, serverId: serverId };
+      var patch = { name: name, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins };
       /* 远程 → 本地：必须补一个本地初始密码，否则该账号无法再登录 */
       if (wasRemote && !remote) {
         var np = String(document.getElementById('uPwd').value || '');
@@ -5712,7 +5880,7 @@
     initDataP.then(function (initData) {
       if (!initData) return;
       var payload = {
-        username: username, name: name, role: role, note: note, perm: perm
+        username: username, name: name, role: role, note: note, perm: perm, sessionMins: mins
       };
       if (initData.shareFrom) payload.shareFrom = initData.shareFrom;
       else payload.data = initData;

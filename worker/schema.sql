@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS users (
   -- 远程账号绑定的认证服务器 id（auth_servers.id），本地账号为空
   server_id   TEXT NOT NULL DEFAULT '',
   -- 共享数据集：指向数据归属者的用户名（空 = 自己拥有），一层引用
-  share_from  TEXT NOT NULL DEFAULT ''
+  share_from  TEXT NOT NULL DEFAULT '',
+  -- 登录超时（分钟）：会话滑动过期，默认 30，范围 5~43200
+  session_mins INTEGER NOT NULL DEFAULT 30
 );
 
 -- 远程认证服务器（RADIUS / TACACS+ / LDAP）

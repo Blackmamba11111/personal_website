@@ -37,7 +37,8 @@ function userView(u) {
     serverId: u.serverId || '',
     serverName: u.serverName || '',
     serverType: u.serverType || '',
-    shareFrom: u.shareFrom || ''
+    shareFrom: u.shareFrom || '',
+    sessionMins: Number(u.sessionMins) > 0 ? Number(u.sessionMins) : 30
   };
 }
 
@@ -360,7 +361,9 @@ function installApiStub(window, opts) {
         shareFrom: shareFrom,
         salt: salt,
         pwd: s ? '' : H.hashPwd(String(body.password || ''), salt),
-        mustChange: !s, createdAt: '2026-01-01', lastLogin: ''
+        mustChange: !s, createdAt: '2026-01-01', lastLogin: '',
+        sessionMins: isFinite(Number(body.sessionMins)) && Number(body.sessionMins) > 0
+          ? Math.min(43200, Math.max(5, Math.round(Number(body.sessionMins)))) : 30
       };
       srv.users.push(nu);
       if (!shareFrom && body.data) srv.ledgers[un] = body.data;
@@ -379,6 +382,11 @@ function installApiStub(window, opts) {
         if (body.status != null) t.status = body.status === 'disabled' ? 'disabled' : 'active';
         if (body.note != null) t.note = body.note;
         if (body.perm != null) t.perm = body.perm === 'ro' ? 'ro' : 'rw';
+        /* 登录超时（分钟）：与 Worker 版 normSessionMins 同口径（5–43200，非法回退 30） */
+        if (body.sessionMins !== undefined) {
+          const n = Math.round(Number(body.sessionMins));
+          t.sessionMins = isFinite(n) ? Math.min(43200, Math.max(5, n)) : 30;
+        }
         if (body.serverId !== undefined) {
           const sid = String(body.serverId || '');
           const s = sid ? srv.servers.filter(x => x.id === sid)[0] : null;

@@ -122,6 +122,60 @@ const store = () => JSON.parse(w.localStorage.getItem(dataKey('demo')));
   /* ---------- 7) 旧数据兼容 ---------- */
   const legacy = store().visits.filter(v => !v.mode && !v.result);
   check('历史记录缺少 mode/result 时不报错', true, legacy.length + ' 条旧记录');
+
+  /* ---------- 8) 粘贴图片 / 拖拽上传 / Excel·Word 预览判定 ---------- */
+  const mkFile = (name, type) => new w.File(['x'], name, { type });
+  const pendCount = () => w.__visitAtts.pending().length;
+  w.__visitAtts.clear();
+
+  /* 8a) 备注文本框粘贴图片 → 进附件队列 */
+  const pasteEv = new w.Event('paste', { bubbles: true, cancelable: true });
+  const pngFile = mkFile('paste-shot.png', 'image/png');
+  Object.defineProperty(pasteEv, 'clipboardData', { value: { items: [
+    { kind: 'string', type: 'text/plain', getAsFile: () => null },
+    { kind: 'file', type: 'image/png', getAsFile: () => pngFile }
+  ] } });
+  id('dVisitNote').dispatchEvent(pasteEv);
+  check('备注框粘贴图片进入附件队列', pendCount() === 1 && w.__visitAtts.pending()[0].name === 'paste-shot.png',
+    JSON.stringify(w.__visitAtts.pending()));
+  check('纯文本粘贴不加附件', (() => {
+    const ev2 = new w.Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(ev2, 'clipboardData', { value: { items: [
+      { kind: 'string', type: 'text/plain', getAsFile: () => null }
+    ] } });
+    const n0 = pendCount();
+    id('dVisitNote').dispatchEvent(ev2);
+    return pendCount() === n0;
+  })());
+
+  /* 8b) 整个客户详情弹窗支持拖拽投放 */
+  const dropEv = new w.Event('drop', { bubbles: true, cancelable: true });
+  const xlsxBlob = mkFile('盘点表.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  Object.defineProperty(dropEv, 'dataTransfer', { value: { files: [xlsxBlob] } });
+  id('maskDetail').dispatchEvent(dropEv);
+  check('弹窗拖拽文件进入附件队列', pendCount() === 2, pendCount() + ' 个');
+  check('拖拽后附件框高亮已复位', !id('visitAttachBox').classList.contains('dropping'));
+  const dropEv2 = new w.Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(dropEv2, 'dataTransfer', { value: { files: [] } });
+  id('maskDetail').dispatchEvent(dropEv2);
+  check('空拖拽不报错不加附件', pendCount() === 2 && (!dom.__errors || dom.__errors.length === 0),
+    (dom.__errors || []).join(' | ').slice(0, 120));
+  w.__visitAtts.clear();
+
+  /* 8c) Excel / Word 判定：mime 与扩展名双通道 */
+  check('xlsx 判定为 Excel', w.__visitAtts.isExcel('盘点表.xlsx', ''));
+  check('xls 判定为 Excel', w.__visitAtts.isExcel('老表.xls', 'application/vnd.ms-excel'));
+  check('octet-stream + xlsx 扩展名仍判定 Excel', w.__visitAtts.isExcel('a.xlsx', 'application/octet-stream'));
+  check('docx 判定为 Word', w.__visitAtts.isWord('报告.docx', ''));
+  check('wordprocessingml 判定为 Word', w.__visitAtts.isWord('b.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'));
+  check('doc 不判定为 Word（在线预览仅 docx）', !w.__visitAtts.isWord('老文档.doc', 'application/msword'));
+  check('txt/pdf 不误判为 Excel/Word', !w.__visitAtts.isExcel('c.txt', 'text/plain') && !w.__visitAtts.isWord('d.pdf', 'application/pdf'));
+  check('附件提示含 Excel/Word', /Excel/.test(id('attachTip').textContent) && /Word/.test(id('attachTip').textContent),
+    id('attachTip').textContent);
+  check('预览组件资源已就位',
+    require('fs').existsSync(require('path').join(__dirname, '..', 'assets', 'vendor', 'xlsx.full.min.js')) &&
+    require('fs').existsSync(require('path').join(__dirname, '..', 'assets', 'vendor', 'mammoth.browser.min.js')));
+
   check('运行期无 JS 错误', !dom.__errors || dom.__errors.length === 0,
     (dom.__errors || []).join(' | ').slice(0, 200));
 

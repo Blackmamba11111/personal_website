@@ -2,7 +2,7 @@
  * 客户巡检台账 · 服务端
  * 部署形态：Cloudflare Workers 静态资源 + D1（SQLite）
  * 路由约定：/api/* 由本脚本处理；其余请求交给静态资源（env.ASSETS）
- * 鉴权：Bearer Token（存 sessions 表，30 天有效）
+ * 鉴权：Bearer Token（存 sessions 表，按用户配置的登录超时滑动过期，默认 30 分钟）
  *
  * 账号口令有两种来源（users.source）：
  *   local  —— 盐 + 400 轮 SHA-256，存在本库
@@ -13,7 +13,6 @@
 
 import * as AUTH_P from './auth-protocols.mjs';
 
-const SESSION_DAYS = 30;
 const HASH_ROUNDS = 400;
 
 /* 认证服务器默认端口 / 展示名 */
@@ -91,12 +90,22 @@ function mapUser(row, srvMap) {
     serverId: sid,
     serverName: srv ? srv.name : (sid ? '（认证服务器已删除）' : ''),
     serverType: srv ? srv.type : (sid ? '' : source),
-    shareFrom: row.share_from || ''
+    shareFrom: row.share_from || '',
+    sessionMins: normSessionMins(row.session_mins)
   };
 }
 function normName(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
 function validUsername(u) { return /^[A-Za-z0-9_.-]{3,32}$/.test(u); }
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins';
+
+/* 登录超时（分钟）：按用户配置，默认 30，范围 5 ~ 43200（30 天）。
+   会话为滑动过期：每次通过鉴权的请求都会把过期时间顺延到 now + session_mins。 */
+function normSessionMins(v) {
+  if (v === '' || v == null) return 30;
+  const n = Math.round(Number(v));
+  if (!isFinite(n)) return 30;
+  return Math.min(43200, Math.max(5, n));
+}
 
 /* ---------------- 表结构迁移（幂等，每实例只跑一次） ---------------- */
 let schemaReady = false;
@@ -106,7 +115,8 @@ async function ensureSchema(env) {
     "ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT 'local'",
     "ALTER TABLE users ADD COLUMN perm TEXT NOT NULL DEFAULT 'rw'",
     "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE users ADD COLUMN share_from TEXT NOT NULL DEFAULT ''"
+    "ALTER TABLE users ADD COLUMN share_from TEXT NOT NULL DEFAULT ''",
+    'ALTER TABLE users ADD COLUMN session_mins INTEGER NOT NULL DEFAULT 30'
   ];
   for (const sql of cols) {
     try { await env.DB.prepare(sql).run(); } catch (e) { /* 列已存在 */ }
@@ -303,13 +313,23 @@ async function currentUser(env, request) {
   const token = m[1].trim();
   const row = await env.DB.prepare(
     'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login, ' +
-    'u.source, u.perm, u.server_id ' +
+    'u.source, u.perm, u.server_id, u.session_mins ' +
     'FROM sessions s JOIN users u ON u.username = s.username WHERE s.token = ?'
   ).bind(token).first();
   if (!row) return null;
-  if (Date.parse(row.exp) < Date.now()) {
+  const mins = normSessionMins(row.session_mins);
+  const expMs = Date.parse(row.exp);
+  if (expMs < Date.now()) {
     try { await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run(); } catch (e) {}
     return null;
+  }
+  /* 滑动续期：剩余时间不足半个周期时，把过期时间顺延到 now + session_mins（减少写库次数） */
+  if (expMs - Date.now() < mins * 30000) {
+    try {
+      await env.DB.prepare('UPDATE sessions SET expires_at = ? WHERE token = ?')
+        .bind(new Date(Date.now() + mins * 60000).toISOString(), token).run();
+    } catch (e) { /* 续期失败不影响本次请求 */
+    }
   }
   if (row.status !== 'active') return null;
   const u = mapUser(row, await serversMap(env));
@@ -609,7 +629,8 @@ async function route(request, env) {
     if (u.status !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
 
     const token = newToken();
-    const exp = new Date(Date.now() + SESSION_DAYS * 86400000).toISOString();
+    const mins = normSessionMins(u.session_mins);
+    const exp = new Date(Date.now() + mins * 60000).toISOString();
     await env.DB.prepare('INSERT INTO sessions (token, username, created_at, expires_at) VALUES (?, ?, ?, ?)')
       .bind(token, u.username, nowIso(), exp).run();
     await env.DB.prepare('UPDATE users SET last_login = ? WHERE username = ?').bind(nowIso(), u.username).run();
@@ -913,9 +934,9 @@ async function route(request, env) {
       return bad('远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，请不要在本地设置密码');
     }
     await env.DB.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom).run();
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins)).run();
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) await writeLedger(env, username, sanitizeLedger(body.data), me.username);
     return ok({ user: mapUser(await env.DB.prepare(
@@ -965,8 +986,8 @@ async function route(request, env) {
         return bad('远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
-      await env.DB.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ? WHERE username = ?')
-        .bind(name, role, status, note, perm, source, serverId, target).run();
+      await env.DB.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ? WHERE username = ?')
+        .bind(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), target).run();
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad('密码至少 6 位');
