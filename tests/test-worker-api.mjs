@@ -202,6 +202,15 @@ check('超管为受限户写入台账', r.ok === true, JSON.stringify(r));
 
 r = await api('/auth/login', { method: 'POST', body: { username: 'sensw', password: 'Sens@123' } });
 const swk = r.data.token;
+check('登录响应里 hideSensitive 为 true', r.data.user.hideSensitive === true, JSON.stringify(r.data.user));
+r = await api('/ledger', { method: 'GET' }, swk);
+check('/api/ledger 返回的当前用户 hideSensitive 仍为 true（不得被二次映射丢失）',
+  r.data.user.hideSensitive === true, JSON.stringify(r.data.user));
+r = await api('/auth/me', { method: 'GET' }, swk);
+check('/api/auth/me 返回的当前用户 hideSensitive 仍为 true', r.data.user.hideSensitive === true, JSON.stringify(r.data.user));
+check('/api/auth/me 保留 createdAt / mustChange 字段',
+  /^\d{4}-\d{2}-\d{2}$/.test(String(r.data.user.createdAt)) && typeof r.data.user.mustChange === 'boolean',
+  JSON.stringify({ c: r.data.user.createdAt, m: r.data.user.mustChange }));
 r = await api('/ledger', { method: 'GET' }, swk);
 const swC = r.data.ledgers.sensw.customers[0];
 check('受限户仍可见完整详细地址', swC.addr === '河北省衡水市桃城区人民东路528号', swC.addr);

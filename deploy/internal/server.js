@@ -189,9 +189,14 @@ function validUsername(u) { return /^[A-Za-z0-9_.-]{3,32}$/.test(u); }
 /* 认证来源：local = 本地口令；radius / tacacs / ldap = 由对应认证服务器校验
    perm：rw = 读写；ro = 只读（可看可导出，不能改台账）
    mapUser 的第二个参数是「认证服务器 id → 记录」的映射，用于带出名称，避免前端二次查询 */
+/* 注意：本函数必须对「数据库行」和「已映射的对象」都成立——
+   resolveAuth() 返回的已是映射对象，bundleFor() 里再次 mapUser 时若只读下划线列名，
+   hide_sensitive / must_change / created_at 等会全部丢失（曾导致隐藏账号在前端被判为
+   「可见」而重新画出眼睛）。因此这里统一做两种字段名的兼容。 */
 function mapUser(row, srvMap) {
+  row = row || {};
   const source = row.source || 'local';
-  const sid = row.server_id || '';
+  const sid = row.server_id || row.serverId || '';
   const srv = (sid && srvMap) ? srvMap[sid] : null;
   return {
     id: row.username,
@@ -200,17 +205,17 @@ function mapUser(row, srvMap) {
     role: row.role,
     status: row.status,
     note: row.note || '',
-    mustChange: !!row.must_change,
-    createdAt: (row.created_at || '').slice(0, 10),
-    lastLogin: row.last_login || '',
+    mustChange: row.must_change != null ? !!row.must_change : !!row.mustChange,
+    createdAt: String(row.created_at || row.createdAt || '').slice(0, 10),
+    lastLogin: row.last_login || row.lastLogin || '',
     source: source,
     perm: row.perm === 'ro' ? 'ro' : 'rw',
     serverId: sid,
     serverName: srv ? srv.name : (sid ? '（认证服务器已删除）' : ''),
     serverType: srv ? srv.type : (sid ? '' : source),
-    shareFrom: row.share_from || '',
-    sessionMins: normSessionMins(row.session_mins),
-    hideSensitive: !!row.hide_sensitive
+    shareFrom: row.share_from != null ? row.share_from : (row.shareFrom || ''),
+    sessionMins: normSessionMins(row.session_mins != null ? row.session_mins : row.sessionMins),
+    hideSensitive: row.hide_sensitive != null ? !!row.hide_sensitive : !!row.hideSensitive
   };
 }
 

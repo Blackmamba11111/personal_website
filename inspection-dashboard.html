@@ -5035,11 +5035,20 @@
       }
       var fresh = (d.users || []).filter(function (x) { return x.username === AUTH.user.username; })[0];
       if (fresh && fresh.mustChange !== AUTH.user.mustChange) AUTH.user.mustChange = fresh.mustChange;
+      /* 超管改「隐藏敏感字段」后无需再次登录即生效：权限收紧时清掉已展开的明文并重绘 */
+      if (fresh && !!fresh.hideSensitive !== !!AUTH.user.hideSensitive) {
+        AUTH.user.hideSensitive = !!fresh.hideSensitive;
+        SENS_SHOW = {};
+        if (AUTH.user.hideSensitive) scrubSensitive(DB);
+        renderAll();
+        buildRegionLayers();
+      }
       /* 权限被超管调整后无需重新登录也能立刻生效（服务端本就是每次请求判定） */
       if (fresh && (fresh.perm !== AUTH.user.perm || fresh.source !== AUTH.user.source)) {
         AUTH.user.perm = fresh.perm;
         AUTH.user.source = fresh.source;
         renderUserChip();
+        renderReadonlyBanner();
       }
       return true;
     }, function () { return false; });
@@ -5667,6 +5676,16 @@
     if (!s) return '';
     if (!canSeeSensitive()) return s;
     return SENS_SHOW[id + ':' + f] ? s : SENS_HIDDEN;
+  }
+  /* 隐藏账号的兜底：本地镜像可能残留设置隐藏之前的明文（旧缓存/离线未刷新），
+     渲染前在内存里再抹一遍，避免首屏闪出明文；服务端 PUT 会回填库内原值，写回也安全。 */
+  function scrubSensitive(db) {
+    if (!db || !Array.isArray(db.customers)) return;
+    db.customers.forEach(function (c) {
+      if (!c) return;
+      if (c.contact) c.contact = SENS_HIDDEN;
+      if (c.phone) c.phone = SENS_HIDDEN;
+    });
   }
   function dispAddr(c) { return String((c && c.addr) == null ? '' : c.addr).trim(); }
   function dispContact(c) { return sensVal(c && c.id, 'contact', c && c.contact); }
@@ -6670,6 +6689,8 @@
       startAutoSync();
     }
     load();
+    /* 隐藏敏感字段的账号：本地镜像若还留着旧明文，先在内存里抹掉再渲染 */
+    if (user.hideSensitive) scrubSensitive(DB);
     renderQuarters();
     renderAll();
     buildRegionLayers();
