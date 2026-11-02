@@ -697,6 +697,9 @@ const ATTACH_MIME = {
   '.txt': 'text/plain; charset=utf-8', '.csv': 'text/csv; charset=utf-8', '.log': 'text/plain; charset=utf-8',
   '.doc': 'application/msword',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  /* WPS 文字（.wps/.wpt）与 RTF：前端用内置解析器预览 */
+  '.wps': 'application/vnd.ms-works', '.wpt': 'application/vnd.ms-works',
+  '.rtf': 'application/rtf',
   '.xls': 'application/vnd.ms-excel',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   '.ppt': 'application/vnd.ms-powerpoint',

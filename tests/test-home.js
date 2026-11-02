@@ -328,8 +328,9 @@ async function main() {
     const srcVer = (/PROV_SRC = 'assets\/provinces\.js\?v=([^']+)'/.exec(dash) || [])[1];
     const preVer = (/rel="preload" as="script" href="assets\/provinces\.js\?v=([^"]+)"/.exec(dash) || [])[1];
     check('预取地址与 PROV_SRC 版本号一致', !!srcVer && srcVer === preVer, srcVer + ' / ' + preVer);
-    /* 2026-11-02 批量编辑补齐名称模板 / 账号类型切换，上限同步放宽 */
-    check('看板体积已降到 330 KB 以内', Buffer.byteLength(dash, 'utf8') < 330 * 1024,
+    /* 2026-11-02 区域视野贴合客户 + Word(doc/wps) 预览分派，上限同步放宽。
+       注意：doc97 解析器本身在 assets/vendor/doc97.js，不计入主页体积。 */
+    check('看板体积已降到 340 KB 以内', Buffer.byteLength(dash, 'utf8') < 340 * 1024,
       Math.round(Buffer.byteLength(dash, 'utf8') / 1024) + ' KB');
   });
 

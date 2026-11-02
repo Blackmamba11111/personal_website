@@ -109,6 +109,34 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
   check('切换过程中未泄漏旧图层引用（图层总数保持有界）',
     rec().layers.length <= layersBefore + 4, rec().layers.length + ' 个');
 
+  /* ---------- 3.5 点击区域 / 全部区域：视野贴合客户坐标 ---------- */
+  {
+    /* jsdom 不做布局，容器尺寸为 0；显式给个可视区尺寸，走真实的反算分支 */
+    const mapEl = id('map');
+    Object.defineProperty(mapEl, 'clientWidth', { configurable: true, value: 900 });
+    Object.defineProperty(mapEl, 'clientHeight', { configurable: true, value: 600 });
+    const chipOf = rid => [].slice.call(d.querySelectorAll('#regionChips .chip'))
+      .filter(b => b.getAttribute('data-rid') === rid)[0];
+    check('区域 chip 已渲染（全部区域 + 天津片区）', !!chipOf('all') && !!chipOf('r-tj'));
+
+    click(w, chipOf('r-tj'));
+    await tick(20);
+    const c1 = rec().map.center;
+    check('单客户区域：中心落到该客户坐标',
+      !!c1 && Math.abs(c1.getLng() - 117.2) < 0.01 && Math.abs(c1.getLat() - 39.12) < 0.01,
+      c1 ? c1.getLng().toFixed(3) + ',' + c1.getLat().toFixed(3) : '无');
+    check('单客户区域：限制在 12 级（避免糊成一片）', rec().map.zoom === 12, String(rec().map.zoom));
+
+    click(w, chipOf('all'));
+    await tick(20);
+    const c2 = rec().map.center, zAll = rec().map.zoom;
+    check('全部区域：中心为两家客户的中点（116.435, 38.425）',
+      !!c2 && Math.abs(c2.getLng() - 116.435) < 0.01 && Math.abs(c2.getLat() - 38.425) < 0.01,
+      c2 ? c2.getLng().toFixed(3) + ',' + c2.getLat().toFixed(3) : '无');
+    check('全部区域：缩放按客户边界反算（≥7 且 <12）',
+      zAll >= 7 && zAll < 12, zAll.toFixed(2) + ' 级');
+  }
+
   /* ---------- 4. 退出登录：不抛错且清空 ---------- */
   let threw = null;
   try {
@@ -160,6 +188,11 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
     check('SDK 就绪后会补齐图层并补渲染标记（登录竞态修复）',
       /mapReady = true;\s*ensureMapLayers\(\);[\s\S]{0,300}renderMarkers\(\);/.test(src));
     check('renderMarkers 自带图层兜底重建', /renderMarkers\(\) \{[\s\S]{0,120}ensureMapLayers\(\)/.test(src));
+    /* 区域视野：无坐标客户回退省份范围；缩放用边界+容器尺寸反算 */
+    check('无坐标客户时回退省份范围',
+      /if \(!pts\.length\) \{ focusProvinces\(fallbackProvs \|\| \[\]\); return; \}/.test(src));
+    check('缩放级别由边界与容器尺寸反算（含上限收敛）',
+      /zoomForBounds\(b, pts\.length\)/.test(src) && /var cap = n <= 2 \? 12 : 15;/.test(src));
   }
 
   /* 门面回归（高德路径）：updateGeometries 必须按 id 增量更新，不能 prune 掉其他元素 ——

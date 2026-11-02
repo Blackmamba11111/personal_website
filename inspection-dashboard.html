@@ -381,6 +381,19 @@
   #vwBody .vw-doc img{max-width:100%;}
   #vwBody .vw-doc table{border-collapse:collapse;margin:8px 0;}
   #vwBody .vw-doc td,#vwBody .vw-doc th{border:1px solid #D9DFE9;padding:4px 9px;}
+  /* .doc/.wps 解析结果：按文档原样排版。
+     表格用 fixed 布局：auto 布局下没有列宽信息（TAP 在部分文档里缺失），
+     长编号会把某一列挤到只剩几个字宽，其余列占满整行 */
+  #vwBody .vw-doc .doc97-p{margin:2px 0;white-space:pre-wrap;word-break:break-word;}
+  #vwBody .vw-doc .doc97-tb{width:100%;margin:8px 0;table-layout:fixed;}
+  #vwBody .vw-doc .doc97-tb td{vertical-align:top;word-break:break-word;}
+  #vwBody .vw-doc .doc97-tb .doc97-p{white-space:normal;}
+  /* 图片用固定像素上限：auto 表格布局里 max-width:100% 会按图片原始尺寸参与列宽计算，
+     把整列撑到几百像素宽（截图/印章类大图尤甚） */
+  #vwBody .vw-doc .doc97-img{max-width:360px;max-height:280px;height:auto;margin:4px 0;}
+  #vwBody .vw-doc .doc97-pb{display:block;border-top:1px dashed #D9DFE9;margin:10px 0;}
+  #vwBody .vw-warn{font-size:12px;color:#9A6B00;background:#FFF8E6;border:1px solid #F3E0B0;
+    border-radius:6px;padding:6px 10px;margin:0 0 8px;}
   /* 拖拽悬停时附件区高亮 */
   .attach-box.dropping{border-color:#7FA3EF;background:#EDF3FF;}
   .toast{
@@ -848,10 +861,10 @@
 
         <div class="attach-box" id="visitAttachBox">
           <div class="attach-head">
-            <span id="attachTip">附件：图片 / 文件，可多选；可在线浏览图片、PDF、Excel、Word</span>
+            <span id="attachTip">附件：图片 / 文件，可多选；可在线浏览图片、PDF、Excel、Word（doc/docx/wps）</span>
             <button type="button" class="btn sm" id="btnPickAttach">＋ 添加附件</button>
             <input type="file" id="visitAttachInput" multiple style="display:none"
-              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.log,.zip,.rar,.7z,.eml">
+              accept="image/*,.pdf,.doc,.docx,.wps,.wpt,.rtf,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.log,.zip,.rar,.7z,.eml">
           </div>
           <div class="attach-list" id="visitAttachList"></div>
         </div>
@@ -2818,10 +2831,48 @@
       map.setZoom(zoomForSpan(b.span));
     } catch (e) {}
   }
+  /* 墨卡托纬度分量：按容器像素数反算缩放级别时需要 */
+  function mercY(lat) {
+    var r = Math.max(-85, Math.min(85, Number(lat) || 0)) * Math.PI / 180;
+    return Math.log(Math.tan(Math.PI / 4 + r / 2));
+  }
+  /* 按「边界 + 容器尺寸」算缩放级别：客户占可视区约 82%（四周各留 9% 边距）。
+     只有一两家客户时限制到 12 级，避免放大到糊成一片。 */
+  function zoomForBounds(b, n) {
+    var el = document.getElementById('map');
+    var W = (el && (el.clientWidth || el.offsetWidth)) || 0;
+    var H = (el && (el.clientHeight || el.offsetHeight)) || 0;
+    if (!W || !H) return zoomForSpan(b.span);       /* 容器不可测量（隐藏/测试环境）退回旧算法 */
+    var COVER = 0.82;
+    var dLng = Math.max(b.maxLng - b.minLng, 1e-7);
+    var dY = Math.max(Math.abs(mercY(b.maxLat) - mercY(b.minLat)), 1e-7);
+    var zLng = Math.log(COVER * W * 360 / (256 * dLng)) / Math.LN2;
+    var zLat = Math.log(COVER * H * 2 * Math.PI / (256 * dY)) / Math.LN2;
+    var z = Math.min(zLng, zLat);
+    var cap = n <= 2 ? 12 : 15;
+    if (!isFinite(z)) z = cap;
+    return Math.max(3, Math.min(cap, z));
+  }
+  /* 视野贴合客户：以客户实际坐标算边界并铺满可视区，视野外的其他区域自然被裁掉。
+     范围内没有带坐标的客户时，回退到省份范围（与旧行为一致）。 */
+  function fitCustomers(custs, fallbackProvs) {
+    if (!mapReady) return;
+    var pts = [];
+    (custs || []).forEach(function (c) {
+      if (!c || !isFinite(c.lng) || !isFinite(c.lat)) return;
+      pts.push([Number(c.lng), Number(c.lat)]);
+    });
+    if (!pts.length) { focusProvinces(fallbackProvs || []); return; }
+    var b = boundsOfPoints(pts);
+    try {
+      map.setCenter(new TMap.LatLng(b.cLat, b.cLng));
+      map.setZoom(zoomForBounds(b, pts.length));
+    } catch (e) {}
+  }
   function focusAllRegions() {
     var all = [];
     DB.regions.forEach(function (r) { all = all.concat(r.provinces || []); });
-    focusProvinces(all);
+    fitCustomers(DB.customers, all);
   }
 
   /* 标签落点：取所辖省份中心点的均值，避免落在被包围的空洞（如河北包围北京）内 */
@@ -3303,7 +3354,7 @@
           focusAllRegions();
         } else {
           var r = DB.regions.filter(function (x) { return x.id === state.regionFilter; })[0];
-          if (r) focusProvinces(r.provinces);
+          if (r) fitCustomers(customersOfRegion(r.id), r.provinces);
         }
       };
     });
@@ -3363,7 +3414,8 @@
   function attKind(name, mime) {
     if (isImgMime(mime)) return 'IMG';
     var ext = String(name || '').split('.').pop().toLowerCase();
-    var map = { pdf: 'PDF', doc: 'DOC', docx: 'DOC', xls: 'XLS', xlsx: 'XLS', ppt: 'PPT', pptx: 'PPT',
+    var map = { pdf: 'PDF', doc: 'DOC', docx: 'DOC', wps: 'WPS', wpt: 'WPT', rtf: 'RTF',
+      xls: 'XLS', xlsx: 'XLS', ppt: 'PPT', pptx: 'PPT',
       txt: 'TXT', csv: 'CSV', log: 'LOG', zip: 'ZIP', rar: 'RAR', '7z': '7Z', eml: 'EML' };
     return map[ext] || (ext ? ext.slice(0, 4).toUpperCase() : 'FILE');
   }
@@ -3378,13 +3430,15 @@
   }
   function attIsWord(name, mime) {
     var m = String(mime || ''), e = attExt(name);
-    return e === 'docx' || /wordprocessingml\.document/i.test(m);
+    return e === 'docx' || e === 'doc' || e === 'wps' || e === 'wpt' || e === 'rtf'
+      || /wordprocessingml\.document|msword|ms-works/i.test(m);
   }
   /* 预览组件延迟加载：只有真正预览 Excel / Word 时才拉取（xlsx ≈ 950KB、mammoth ≈ 630KB） */
   var VW_SEQ = 0;
   var ATT_VENDOR = {
     xlsx: 'assets/vendor/xlsx.full.min.js?v=1',
-    mammoth: 'assets/vendor/mammoth.browser.min.js?v=1'
+    mammoth: 'assets/vendor/mammoth.browser.min.js?v=1',
+    doc97: 'assets/vendor/doc97.js?v=1'
   };
   function loadVendor(url, probe) {
     if (probe()) return Promise.resolve();
@@ -3437,19 +3491,49 @@
       })
       .catch(function (e) { vwFail(seq, body, e); });
   }
+  /* Word 预览：先按文件头判断真实格式，再决定用哪套解析器。
+     PK 开头 = OOXML（docx，含被改名成 .doc/.wps 的），交给 mammoth；
+     D0CF11E0 开头 = Word 97-2003 二进制（doc / wps），交给内置 doc97 解析器。 */
+  function wordMagic(u8) {
+    if (u8.length > 3 && u8[0] === 0x50 && u8[1] === 0x4B && (u8[2] === 3 || u8[2] === 5)) return 'zip';
+    if (u8.length > 7 && u8[0] === 0xD0 && u8[1] === 0xCF && u8[2] === 0x11 && u8[3] === 0xE0) return 'ole';
+    if (u8.length > 4 && u8[0] === 0x7B && u8[1] === 0x5C && u8[2] === 0x72) return 'rtf';
+    return 'other';
+  }
   function renderWordPreview(att, body) {
     var seq = ++VW_SEQ;
     body.innerHTML = '<div class="vw-none">正在加载文档预览组件…</div>';
-    Promise.all([loadVendor(ATT_VENDOR.mammoth, function () { return window.mammoth; }), attBytes(att.url)])
-      .then(function (r) {
-        if (!vwActive(seq)) return;
-        return window.mammoth.convertToHtml({ arrayBuffer: r[1] }).then(function (res) {
+    attBytes(att.url).then(function (ab) {
+      if (!vwActive(seq)) return;
+      var u8 = new Uint8Array(ab);
+      var magic = wordMagic(u8);
+      var showWarn = function (msg) {
+        return msg ? '<div class="vw-warn">' + esc(msg) + '</div>' : '';
+      };
+      if (magic === 'zip') {
+        return loadVendor(ATT_VENDOR.mammoth, function () { return window.mammoth; })
+          .then(function () {
+            if (!vwActive(seq)) return;
+            return window.mammoth.convertToHtml({ arrayBuffer: ab }).then(function (res) {
+              if (!vwActive(seq)) return;
+              body.innerHTML = '<div class="vw-doc">' +
+                (res && res.value ? res.value : '<p>（文档没有可显示的文本内容）</p>') + '</div>';
+            });
+          });
+      }
+      return loadVendor(ATT_VENDOR.doc97, function () { return window.DOC97; })
+        .then(function () {
           if (!vwActive(seq)) return;
-          body.innerHTML = '<div class="vw-doc">' +
-            (res && res.value ? res.value : '<p>（文档没有可显示的文本内容）</p>') + '</div>';
+          var out;
+          try {
+            out = window.DOC97.toHtml(ab);
+          } catch (e) {
+            throw new Error('该文档无法解析（' + (e && e.message ? e.message : '格式不支持') + '），请下载后查看');
+          }
+          if (!vwActive(seq)) return;
+          body.innerHTML = showWarn(out.warn) + '<div class="vw-doc">' + (out.html || '<p>（空白文档）</p>') + '</div>';
         });
-      })
-      .catch(function (e) { vwFail(seq, body, e); });
+    }).catch(function (e) { vwFail(seq, body, e); });
   }
 
   function renderPendingAtts() {

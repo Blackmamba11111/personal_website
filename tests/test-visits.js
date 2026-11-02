@@ -168,13 +168,43 @@ const store = () => JSON.parse(w.localStorage.getItem(dataKey('demo')));
   check('octet-stream + xlsx 扩展名仍判定 Excel', w.__visitAtts.isExcel('a.xlsx', 'application/octet-stream'));
   check('docx 判定为 Word', w.__visitAtts.isWord('报告.docx', ''));
   check('wordprocessingml 判定为 Word', w.__visitAtts.isWord('b.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'));
-  check('doc 不判定为 Word（在线预览仅 docx）', !w.__visitAtts.isWord('老文档.doc', 'application/msword'));
+  check('doc 判定为 Word（走内置 doc97 解析器）', w.__visitAtts.isWord('老文档.doc', 'application/msword'));
+  check('wps 判定为 Word', w.__visitAtts.isWord('申请单.wps', ''));
   check('txt/pdf 不误判为 Excel/Word', !w.__visitAtts.isExcel('c.txt', 'text/plain') && !w.__visitAtts.isWord('d.pdf', 'application/pdf'));
   check('附件提示含 Excel/Word', /Excel/.test(id('attachTip').textContent) && /Word/.test(id('attachTip').textContent),
     id('attachTip').textContent);
   check('预览组件资源已就位',
     require('fs').existsSync(require('path').join(__dirname, '..', 'assets', 'vendor', 'xlsx.full.min.js')) &&
-    require('fs').existsSync(require('path').join(__dirname, '..', 'assets', 'vendor', 'mammoth.browser.min.js')));
+    require('fs').existsSync(require('path').join(__dirname, '..', 'assets', 'vendor', 'mammoth.browser.min.js')) &&
+    require('fs').existsSync(require('path').join(__dirname, '..', 'assets', 'vendor', 'doc97.js')));
+  check('上传类型允许 .wps/.wpt/.rtf',
+    /accept="[^"]*\.wps/.test(require('fs').readFileSync(require('path').join(__dirname, '..', 'inspection-dashboard.html'), 'utf8')));
+
+  /* 8d) Word 预览按文件头分派：OOXML → mammoth，OLE → doc97 */
+  {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'inspection-dashboard.html'), 'utf8');
+    check('预览前嗅探文件头（PK / OLE / RTF）', /function wordMagic[\s\S]{0,400}0xD0/.test(src));
+    check('OLE 文档交给内置解析器', /window\.DOC97\.toHtml\(ab\)/.test(src));
+    check('OOXML 仍走 mammoth', /window\.mammoth\.convertToHtml/.test(src));
+    /* 解析器本体：用真实 .doc 夹具跑一遍（正文 + 表格 + 粗体） */
+    const g = { window: {} };
+    const run = new Function('window', 'Buffer',
+      require('fs').readFileSync(require('path').join(__dirname, '..', 'assets', 'vendor', 'doc97.js'), 'utf8') +
+      '\nreturn window.DOC97;');
+    const DOC97 = run(g.window, Buffer);
+    const buf = require('fs').readFileSync(require('path').join(__dirname, 'fixtures', 'sample.doc'));
+    const out = DOC97.toHtml(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    check('doc 夹具解析出正文', out.html.indexOf('巡检报告') >= 0, out.html.slice(0, 80));
+    check('doc 夹具还原表格（2 行 2 列）',
+      (out.html.match(/<tr>/g) || []).length === 2 && (out.html.match(/<td>/g) || []).length === 4);
+    check('doc 夹具保留粗体与斜体',
+      out.html.indexOf('<b>加粗文字</b>') >= 0 && out.html.indexOf('<i>斜体</i>') >= 0);
+    check('非 Word 文件给出可读错误',
+      (function () {
+        try { DOC97.toHtml(new Uint8Array([1, 2, 3, 4]).buffer); return false; }
+        catch (e) { return /不是 Word 97-2003/.test(e.message); }
+      })());
+  }
 
   check('运行期无 JS 错误', !dom.__errors || dom.__errors.length === 0,
     (dom.__errors || []).join(' | ').slice(0, 200));
