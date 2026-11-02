@@ -1228,7 +1228,27 @@
       <button type="button" class="icon-btn" data-close="maskBatchUser">✕</button>
     </div>
     <div class="modal-body">
-      <p class="hint" style="margin:0 0 12px;">仅勾选「应用」的配置项会写入所选用户，其余保持各账号原值不变。<br>区域展示名称、账号类型与密码为每账号独立信息，不参与批量编辑。</p>
+      <p class="hint" style="margin:0 0 12px;">仅勾选「应用」的配置项会写入所选用户，其余保持各账号原值不变。<br>区域展示名称支持 <b>{username}</b> 占位符；账号类型切换会按各账号现状逐一处理（已是目标类型的跳过）。</p>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bNameOn"> 应用区域展示名称</label>
+        <input type="text" id="bName" autocomplete="off" placeholder="如「{username}（河北片区）」">
+        <div class="hint">支持 {username} 占位符，逐账号替换为该账号的登录名后写入。</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bSourceOn"> 应用账号类型 / 认证服务器</label>
+        <select id="bSourceType">
+          <option value="local">本地用户 — 口令保存在本站</option>
+          <option value="remote">远程用户 — 口令由认证服务器校验</option>
+        </select>
+        <div id="bSourceExtra" style="margin-top:8px;display:none;">
+          <select id="bServer" style="display:none;"></select>
+          <div class="pwd-wrap" id="bSourcePwdWrap" style="display:none;">
+            <input type="password" id="bSourcePwd" autocomplete="new-password" placeholder="切回本地的统一初始密码（至少 6 位）">
+            <button type="button" class="pwd-eye" data-eye="bSourcePwd" aria-pressed="false" aria-label="显示密码" title="显示密码"><svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg><svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/><path d="m4 20 16-16"/></svg></button>
+          </div>
+          <div class="hint" id="bSourceHint"></div>
+        </div>
+      </div>
       <div class="field">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bRoleOn"> 应用角色</label>
         <select id="bRole">
@@ -4255,7 +4275,7 @@
 
   /* ---------------- Modal / toast ---------------- */
   function openModal(id) {
-    if (id === 'maskPwd' || id === 'maskUser') resetPwdEyes(document.getElementById(id));
+    if (id === 'maskPwd' || id === 'maskUser' || id === 'maskBatchUser') resetPwdEyes(document.getElementById(id));
     document.getElementById(id).classList.add('on');
   }
   function closeModal(id) {
@@ -5706,7 +5726,7 @@
     var selfIn = targets.some(function (u) { return u.id === AUTH.user.id; });
     document.getElementById('batchUserTitle').textContent =
       '批量编辑用户（已选 ' + targets.length + ' 个' + (selfIn ? '，含当前登录账号' : '') + '）';
-    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn'].forEach(function (id) {
+    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn'].forEach(function (id) {
       document.getElementById(id).checked = false;
     });
     document.getElementById('bRole').value = 'user';
@@ -5714,21 +5734,51 @@
     document.getElementById('bStatus').value = 'active';
     document.getElementById('bSessionMins').value = '';
     document.getElementById('bNote').value = '';
+    document.getElementById('bName').value = '';
+    /* 账号类型 / 认证服务器下拉（与新建用户弹窗同一套数据源） */
+    document.getElementById('bSourceType').value = 'local';
+    document.getElementById('bSourcePwd').value = '';
+    var bsel = document.getElementById('bServer');
+    var blist = serversList();
+    bsel.innerHTML = blist.length
+      ? blist.map(function (s) {
+          return '<option value="' + esc(s.id) + '">' + esc(s.name) + ' · ' + esc(AUTH_LABELS[s.type] || s.type) +
+            ' · ' + esc(s.host + ':' + s.port) + (s.enabled ? '' : '（已停用）') + '</option>';
+        }).join('')
+      : '<option value="">（暂无认证服务器）</option>';
+    syncBatchSourceFields();
     openModal('maskBatchUser');
+  }
+  /* 批量弹窗「账号类型」联动：远程→显示服务器下拉；本地→显示统一初始密码 */
+  function syncBatchSourceFields() {
+    var remote = document.getElementById('bSourceType').value === 'remote';
+    var on = document.getElementById('bSourceOn').checked;
+    document.getElementById('bSourceExtra').style.display = on ? 'block' : 'none';
+    document.getElementById('bServer').style.display = remote ? 'block' : 'none';
+    document.getElementById('bSourcePwdWrap').style.display = remote ? 'none' : 'block';
+    var hint = document.getElementById('bSourceHint');
+    if (remote) {
+      var s = serverById(document.getElementById('bServer').value);
+      hint.textContent = s
+        ? ('所选远程账号的口令将改由「' + s.name + '」校验，本站不再保存其密码；已是该类型的账号跳过。')
+        : '还没有可用的认证服务器，请先到「认证服务器」页新增。';
+    } else {
+      hint.textContent = '仅对远程账号生效：改回本地需统一初始密码；已是本地账号的跳过。';
+    }
   }
   function usersBatchApply() {
     var targets = userList().filter(function (u) { return USERS_SEL[u.id]; });
     if (!targets.length) { closeModal('maskBatchUser'); return; }
-    /* 只收集勾选了「应用」的字段 */
-    var patch = {};
+    /* 统一写入的公共字段（每账号相同的值） */
+    var basePatch = {};
     if (document.getElementById('bRoleOn').checked)
-      patch.role = document.getElementById('bRole').value === 'admin' ? 'admin' : 'user';
+      basePatch.role = document.getElementById('bRole').value === 'admin' ? 'admin' : 'user';
     if (document.getElementById('bPermOn').checked)
-      patch.perm = document.getElementById('bPerm').value === 'ro' ? 'ro' : 'rw';
+      basePatch.perm = document.getElementById('bPerm').value === 'ro' ? 'ro' : 'rw';
     if (document.getElementById('bStatusOn').checked)
-      patch.status = document.getElementById('bStatus').value === 'disabled' ? 'disabled' : 'active';
+      basePatch.status = document.getElementById('bStatus').value === 'disabled' ? 'disabled' : 'active';
     if (document.getElementById('bNoteOn').checked)
-      patch.note = document.getElementById('bNote').value.trim();
+      basePatch.note = document.getElementById('bNote').value.trim();
     if (document.getElementById('bMinsOn').checked) {
       var minsRaw = document.getElementById('bSessionMins').value.trim();
       var mins = Number(minsRaw);
@@ -5736,15 +5786,56 @@
       if (!isFinite(mins) || Math.round(mins) !== mins || mins < 5 || mins > 43200) {
         toast('登录超时需为 5–43200 之间的整数分钟（留空默认 30）'); return;
       }
-      patch.sessionMins = mins;
+      basePatch.sessionMins = mins;
     }
-    if (!Object.keys(patch).length) { toast('请至少勾选一个要应用的配置项'); return; }
+    /* 区域展示名称：支持 {username} 占位符，逐账号展开 */
+    var nameTpl = null;
+    if (document.getElementById('bNameOn').checked) {
+      nameTpl = document.getElementById('bName').value;
+      if (!nameTpl.trim()) { toast('区域展示名称不能为空（可用 {username} 占位符区分账号）'); return; }
+    }
+    /* 账号类型：远程→选服务器；本地→需统一初始密码（仅对远程账号生效） */
+    var srcOn = document.getElementById('bSourceOn').checked;
+    var srcType = '', srcSid = '', srcPwd = '';
+    if (srcOn) {
+      srcType = document.getElementById('bSourceType').value;
+      if (srcType === 'remote') {
+        srcSid = document.getElementById('bServer').value;
+        if (!srcSid || !serverById(srcSid)) {
+          toast('请选择认证服务器（没有的话先到「认证服务器」页新增）'); return;
+        }
+      } else {
+        srcPwd = String(document.getElementById('bSourcePwd').value || '');
+        if (srcPwd.length < 6) { toast('切回本地账号需要统一初始密码（至少 6 位）'); return; }
+      }
+    }
+    if (!Object.keys(basePatch).length && nameTpl == null && !srcOn) {
+      toast('请至少勾选一个要应用的配置项'); return;
+    }
     closeModal('maskBatchUser');
 
     var me = AUTH.user;
     var okN = 0, skip = [];
     var chain = Promise.resolve();
     targets.forEach(function (u) {
+      /* 每账号独立构造请求体：名称模板展开 / 账号类型按现状裁剪 */
+      var patch = Object.keys(basePatch).length ? Object.assign({}, basePatch) : {};
+      if (nameTpl != null) {
+        var nm = nameTpl.split('{username}').join(u.username).trim();
+        if (!nm) { skip.push(u.name + '（区域展示名称展开后为空）'); return; }
+        patch.name = nm;
+      }
+      if (srcOn) {
+        var wasRemote = (u.source || 'local') !== 'local';
+        if (srcType === 'remote') {
+          if (wasRemote && u.serverId === srcSid) { skip.push(u.name + '（已由该认证服务器校验）'); return; }
+          patch.serverId = srcSid;
+        } else {
+          if (!wasRemote) { skip.push(u.name + '（已是本地账号）'); return; }
+          patch.serverId = '';
+          patch.password = srcPwd;
+        }
+      }
       /* 前端预检与服务端同口径：保住最后一个启用的超管；不能停用当前登录账号 */
       var lastAdmin = u.role === 'admin' && u.status === 'active' && countAdmins(u.id) === 0 &&
         ((patch.role && patch.role !== 'admin') || (patch.status && patch.status !== 'active'));
@@ -6252,6 +6343,9 @@
     document.getElementById('btnUsersBatchEdit').addEventListener('click', openBatchUserModal);
     document.getElementById('btnSaveBatchUsers').addEventListener('click', usersBatchApply);
     document.getElementById('usersTableWrap').addEventListener('change', usersSelChange);
+    document.getElementById('bSourceOn').addEventListener('change', syncBatchSourceFields);
+    document.getElementById('bSourceType').addEventListener('change', syncBatchSourceFields);
+    document.getElementById('bServer').addEventListener('change', syncBatchSourceFields);
 
     /* 认证服务器页 */
     document.getElementById('btnAuthServers').addEventListener('click', openServersPage);

@@ -788,6 +788,92 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 15. 批量编辑：区域展示名称模板 + 账号类型切换 ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '管理员', role: 'admin', password: 'admin888' }),
+      mkUser({ username: 'bb', name: '陈二', password: 'bb88888' }),
+      Object.assign(mkUser({ username: 'rr', name: '远程户', password: 'rr88888' }),
+        { source: 'radius', serverId: 'srv1' })
+    ] };
+    const dom = makeDom({
+      fixture: fx, sessionUser: 'admin', data: { admin: mkDB(1, 'A-') }, errors,
+      servers: [{ id: 'srv1', name: '主RADIUS', type: 'radius', host: '10.0.0.2', port: 1812, cfg: { secret: 's3cret' } }]
+    });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    await tick(40);
+    const rowsNow3 = () => [...d.querySelectorAll('#usersTableWrap tbody tr')];
+    const rowOf3 = un => rowsNow3().filter(r => {
+      const c = r.querySelector('.uname-cell');
+      if (!c) return false;
+      const m = c.querySelector('div > div > div');
+      return m && m.textContent.replace('当前登录', '').trim() === un;
+    })[0];
+    const chk3 = (un, on) => { const cb = rowOf3(un).querySelector('input[data-uchk]'); cb.checked = !!on; fire(w, cb, 'change'); };
+
+    /* 名称模板：{username} 逐账号展开 */
+    chk3('bb', true); chk3('rr', true);
+    click(w, id('btnUsersBatchEdit'));
+    id('bNameOn').checked = true; id('bName').value = '{username}（华北）';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const bbN = usersOf(w).filter(u => u.username === 'bb')[0];
+    const rrN = usersOf(w).filter(u => u.username === 'rr')[0];
+    check('名称模板逐账号展开（bb）', bbN.name === 'bb（华北）', bbN.name);
+    check('名称模板逐账号展开（rr）', rrN.name === 'rr（华北）', rrN.name);
+    check('模板展开成功提示', id('toast').textContent.indexOf('2 个账号') >= 0, id('toast').textContent);
+
+    /* 账号类型 → 本地：远程账号 rr 切回，本地账号 bb 跳过 */
+    chk3('bb', true); chk3('rr', true);
+    click(w, id('btnUsersBatchEdit'));
+    id('bSourceOn').checked = true;
+    fire(w, id('bSourceOn'), 'change');
+    check('应用账号类型后出现附加区', id('bSourceExtra').style.display === 'block');
+    check('默认本地类型显示统一初始密码框', id('bSourcePwdWrap').style.display === 'block' &&
+      id('bServer').style.display === 'none');
+    click(w, id('btnSaveBatchUsers'));
+    check('切回本地密码缺失被拦截', id('toast').textContent.indexOf('初始密码') >= 0 &&
+      id('maskBatchUser').classList.contains('on'), id('toast').textContent);
+    id('bSourcePwd').value = 'batch66';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const bbL = usersOf(w).filter(u => u.username === 'bb')[0];
+    const rrL = usersOf(w).filter(u => u.username === 'rr')[0];
+    check('远程账号已切回本地', rrL.source === 'local' && rrL.serverId === '', rrL.source + '/' + rrL.serverId);
+    check('本地账号被跳过（已是本地）', id('toast').textContent.indexOf('已是本地账号') >= 0, id('toast').textContent);
+    check('跳过账号配置未变', bbL.source === 'local');
+
+    /* 账号类型 → 远程：bb 绑定 srv1；对已在该服务器的账号重复应用 → 跳过 */
+    chk3('bb', true);
+    click(w, id('btnUsersBatchEdit'));
+    id('bSourceOn').checked = true;
+    id('bSourceType').value = 'remote';
+    fire(w, id('bSourceType'), 'change');
+    check('远程类型显示认证服务器下拉', id('bServer').style.display === 'block' &&
+      id('bSourcePwdWrap').style.display === 'none');
+    check('服务器下拉含夹具服务器', id('bServer').textContent.indexOf('主RADIUS') >= 0,
+      id('bServer').textContent);
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const bbR = usersOf(w).filter(u => u.username === 'bb')[0];
+    check('本地账号已切为远程认证', bbR.source === 'radius' && bbR.serverId === 'srv1',
+      bbR.source + '/' + bbR.serverId);
+    /* 已在该服务器上的账号重复应用 → 跳过 */
+    chk3('bb', true);
+    click(w, id('btnUsersBatchEdit'));
+    id('bSourceOn').checked = true;
+    id('bSourceType').value = 'remote';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    check('已是该认证服务器的账号被跳过', id('toast').textContent.indexOf('已由该认证服务器校验') >= 0 &&
+      id('toast').textContent.indexOf('未更新任何账号') >= 0, id('toast').textContent);
+    w.close();
+  }
+
   /* ================= 汇总 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));

@@ -328,8 +328,8 @@ async function main() {
     const srcVer = (/PROV_SRC = 'assets\/provinces\.js\?v=([^']+)'/.exec(dash) || [])[1];
     const preVer = (/rel="preload" as="script" href="assets\/provinces\.js\?v=([^"]+)"/.exec(dash) || [])[1];
     check('预取地址与 PROV_SRC 版本号一致', !!srcVer && srcVer === preVer, srcVer + ' / ' + preVer);
-    /* 2026-11-02 用户批量编辑（勾选列 + 弹窗），上限同步放宽 */
-    check('看板体积已降到 322 KB 以内', Buffer.byteLength(dash, 'utf8') < 322 * 1024,
+    /* 2026-11-02 批量编辑补齐名称模板 / 账号类型切换，上限同步放宽 */
+    check('看板体积已降到 330 KB 以内', Buffer.byteLength(dash, 'utf8') < 330 * 1024,
       Math.round(Buffer.byteLength(dash, 'utf8') / 1024) + ' KB');
   });
 
