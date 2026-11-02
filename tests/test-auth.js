@@ -583,7 +583,7 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
       const m = mainOf(r);
       return m ? m.textContent.replace('当前登录', '').trim() : '';
     };
-    const nameCellOf = r => r.querySelectorAll('td')[1];             /* 第 2 列 = 区域展示名称 */
+    const nameCellOf = r => r.querySelectorAll('td')[2];             /* 第 3 列 = 区域展示名称（首列为勾选框） */
     const rowsNow = () => [...d.querySelectorAll('#usersTableWrap tbody tr')];
 
     const firstCell = cellOf(rowsNow()[0]);
@@ -699,6 +699,92 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     check('复制配置时超时预填为来源用户值', String(id('uSessionMins').value) === '45',
       id('uSessionMins').value);
     click(w, d.querySelector('#maskUser [data-close="maskUser"]'));
+    w.close();
+  }
+
+  /* ================= 14. 用户批量编辑 ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '管理员', role: 'admin', password: 'admin888' }),
+      mkUser({ username: 'bb', name: '陈二', password: 'bb88888', note: '旧备注' }),
+      mkUser({ username: 'cc01', name: '张三', password: 'cc88888', note: '另一备注' })
+    ] };
+    const dom = makeDom({ fixture: fx, sessionUser: 'admin', data: { admin: mkDB(1, 'A-') }, errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    await tick(40);
+    const rowsNow2 = () => [...d.querySelectorAll('#usersTableWrap tbody tr')];
+    const rowOf = un => rowsNow2().filter(r => {
+      const c = r.querySelector('.uname-cell');
+      if (!c) return false;
+      const m = c.querySelector('div > div > div');
+      return m && m.textContent.replace('当前登录', '').trim() === un;
+    })[0];
+    const batchBtn = () => d.getElementById('btnUsersBatchEdit');
+
+    check('未勾选时批量编辑按钮隐藏', batchBtn().style.display === 'none', batchBtn().style.display);
+    /* jsdom 合成 change 不会翻转勾选态，须先设 checked 再触发（与真实点击等价） */
+    const chk = (un, on) => { const cb = rowOf(un).querySelector('input[data-uchk]'); cb.checked = !!on; fire(w, cb, 'change'); };
+    /* 勾选 bb + cc01 */
+    chk('bb', true); chk('cc01', true);
+    check('勾选 2 个后按钮出现并计数', batchBtn().style.display !== 'none' &&
+      batchBtn().textContent.indexOf('2') >= 0, batchBtn().textContent);
+    const selAll = d.getElementById('usersSelAll');
+    check('部分勾选时全选框为半选态', selAll.indeterminate === true && selAll.checked === false);
+    selAll.checked = true; fire(w, selAll, 'change');
+    check('全选后计数 = 全部账号', batchBtn().textContent.indexOf('3') >= 0, batchBtn().textContent);
+    check('全选后全选框为勾选态', selAll.checked === true && selAll.indeterminate === false);
+    /* 只保留 bb + cc01（取消 admin） */
+    chk('admin', false);
+    check('取消一个后回到半选态', selAll.indeterminate === true);
+
+    /* 打开批量编辑弹窗：默认全部「应用」未勾选 */
+    click(w, batchBtn());
+    check('批量编辑弹窗打开', id('maskBatchUser').classList.contains('on'));
+    check('标题含已选数量', id('batchUserTitle').textContent.indexOf('2') >= 0,
+      id('batchUserTitle').textContent);
+    check('应用开关默认全不勾选',
+      !id('bRoleOn').checked && !id('bPermOn').checked && !id('bStatusOn').checked &&
+      !id('bMinsOn').checked && !id('bNoteOn').checked);
+    click(w, id('btnSaveBatchUsers'));
+    check('未勾选任何字段被拦截', id('toast').textContent.indexOf('至少勾选') >= 0 &&
+      id('maskBatchUser').classList.contains('on'), id('toast').textContent);
+
+    /* 应用：perm=ro + 超时 60，其余字段不动 */
+    id('bPermOn').checked = true; id('bPerm').value = 'ro';
+    id('bMinsOn').checked = true; id('bSessionMins').value = '60';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const bb2 = usersOf(w).filter(u => u.username === 'bb')[0];
+    const cc2 = usersOf(w).filter(u => u.username === 'cc01')[0];
+    const ad2 = usersOf(w).filter(u => u.username === 'admin')[0];
+    check('批量应用后 bb/cc01 权限变为只读', bb2.perm === 'ro' && cc2.perm === 'ro',
+      bb2.perm + '/' + cc2.perm);
+    check('批量应用后 bb/cc01 超时变为 60 分钟',
+      Number(bb2.sessionMins) === 60 && Number(cc2.sessionMins) === 60,
+      JSON.stringify(bb2.sessionMins) + '/' + JSON.stringify(cc2.sessionMins));
+    check('未勾选的字段（角色/备注）保持原值',
+      bb2.role === 'user' && bb2.note === '旧备注' && cc2.note === '另一备注',
+      bb2.note + '/' + cc2.note);
+    check('admin 未被波及（未勾选）', ad2.perm !== 'ro');
+    check('成功提示已更新 2 个账号', id('toast').textContent.indexOf('2 个账号') >= 0,
+      id('toast').textContent);
+    check('应用后勾选清空、按钮隐藏', batchBtn().style.display === 'none');
+
+    /* 最后一管理员保护：仅勾选 admin 且应用降级 → 跳过 */
+    chk('admin', true);
+    click(w, batchBtn());
+    id('bRoleOn').checked = true; id('bRole').value = 'user';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    check('最后一个超管降级被跳过并提示', id('toast').textContent.indexOf('超级管理员') >= 0,
+      id('toast').textContent);
+    check('admin 角色未变', usersOf(w).filter(u => u.username === 'admin')[0].role === 'admin');
+    check('跳过后无成功计数提示「未更新任何账号」', id('toast').textContent.indexOf('未更新任何账号') >= 0,
+      id('toast').textContent);
     w.close();
   }
 

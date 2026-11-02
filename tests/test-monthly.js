@@ -41,6 +41,13 @@ const dom = new JSDOM(html, {
   url: 'http://127.0.0.1:8899/inspection-dashboard.html',
   pretendToBeVisual: true,
   beforeParse(window) {
+    /* 固定时钟到 2026-10-12（Q4 仅 10 月已到）：套件对「今天」敏感，不固定会随真实日期腐烂 */
+    const FIXED = new Date('2026-10-12T10:00:00+08:00').getTime();
+    const RealDate = window.Date;
+    window.Date = class extends RealDate {
+      constructor(...args) { super(...(args.length ? args : [FIXED])); }
+      static now() { return FIXED; }
+    };
     /* V2：以普通用户 demo 身份登录，台账与偏好都按账号隔离 */
     window.localStorage.setItem('inspection_board_users_v1', JSON.stringify(USERS));
     /* 台账已迁移到服务端：令牌只存 sessionStorage（2026-10-26 起不再「记住登录」），并注入内存版服务端 */

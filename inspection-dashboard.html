@@ -1045,6 +1045,7 @@
     <div class="spacer"></div>
     <button type="button" class="btn" id="btnAuthServers">认证服务器</button>
     <button type="button" class="btn" id="btnDataLogs">数据日志</button>
+    <button type="button" class="btn" id="btnUsersBatchEdit" style="display:none;">批量编辑（0）</button>
     <button type="button" class="btn primary" id="btnNewUser">+ 新建用户</button>
   </div>
   <div class="page-body">
@@ -1215,6 +1216,54 @@
     <div class="modal-foot">
       <button type="button" class="btn" data-close="maskUser">取消</button>
       <button type="button" class="btn primary" id="btnSaveUser">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 用户批量编辑（超管） ==================== -->
+<div class="mask high" id="maskBatchUser">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-head">
+      <h3 id="batchUserTitle">批量编辑用户</h3>
+      <button type="button" class="icon-btn" data-close="maskBatchUser">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint" style="margin:0 0 12px;">仅勾选「应用」的配置项会写入所选用户，其余保持各账号原值不变。<br>区域展示名称、账号类型与密码为每账号独立信息，不参与批量编辑。</p>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bRoleOn"> 应用角色</label>
+        <select id="bRole">
+          <option value="user">普通用户 — 仅能查看与维护自己的台账</option>
+          <option value="admin">超级管理员 — 可查看全部用户数据并管理账号</option>
+        </select>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bPermOn"> 应用数据权限</label>
+        <select id="bPerm">
+          <option value="rw">读写 — 可新增 / 修改 / 删除台账内容</option>
+          <option value="ro">只读 — 只能查看与导出，不能修改</option>
+        </select>
+        <div class="hint">超级管理员固定为读写权限；普通用户才可设为只读。</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bStatusOn"> 应用启用状态</label>
+        <select id="bStatus">
+          <option value="active">启用</option>
+          <option value="disabled">停用</option>
+        </select>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bMinsOn"> 应用登录超时（分钟）</label>
+        <input type="number" id="bSessionMins" min="5" max="43200" step="1" placeholder="5–43200，如 30">
+        <div class="hint">无操作超过该时长后需重新登录；使用中自动续期。</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bNoteOn"> 应用备注（覆盖原有备注）</label>
+        <input type="text" id="bNote" autocomplete="off" placeholder="留空表示清空所选用户的备注">
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" data-close="maskBatchUser">取消</button>
+      <button type="button" class="btn primary" id="btnSaveBatchUsers">批量保存</button>
     </div>
   </div>
 </div>
@@ -5064,8 +5113,9 @@
     document.getElementById('serversView').classList.remove('on');
     CUSTS_OPEN = false;
     CUSTS_SEL = {};
+    USERS_SEL = {};
     document.getElementById('custsView').classList.remove('on');
-    ['maskCust', 'maskDetail', 'maskRegion', 'maskImport', 'maskConfirm', 'maskRemind', 'maskUser', 'maskPwd', 'maskServer'].forEach(function (id) {
+    ['maskCust', 'maskDetail', 'maskRegion', 'maskImport', 'maskConfirm', 'maskRemind', 'maskUser', 'maskBatchUser', 'maskPwd', 'maskServer'].forEach(function (id) {
       var el = document.getElementById(id); if (el) el.classList.remove('on');
     });
     clearMapLayers();
@@ -5612,6 +5662,119 @@
       }, '确认删除');
   }
 
+  /* ---------- 用户批量编辑（超管）：勾选 → 弹窗选字段 → 逐个 PATCH ---------- */
+  var USERS_SEL = {};                           /* id -> true，用户列表勾选（批量编辑） */
+  function usersSelChange(e) {
+    var el = e.target;
+    if (!el || !el.matches || !el.matches('input[type="checkbox"]')) return;
+    if (el.id === 'usersSelAll') {
+      if (el.checked) {
+        userList().forEach(function (u) { USERS_SEL[u.id] = true; });
+      } else {
+        USERS_SEL = {};
+      }
+      /* 同步行内复选框（不整页重绘，避免滚动位置丢失） */
+      Array.prototype.forEach.call(
+        document.querySelectorAll('#usersTableWrap input[data-uchk]'),
+        function (cb) { cb.checked = !!USERS_SEL[cb.getAttribute('data-uchk')]; }
+      );
+    } else {
+      var id2 = el.getAttribute('data-uchk');
+      if (!id2) return;
+      if (el.checked) USERS_SEL[id2] = true; else delete USERS_SEL[id2];
+    }
+    usersSyncBatchBtn();
+  }
+  function usersSyncBatchBtn() {
+    var n = Object.keys(USERS_SEL).length;
+    var btn = document.getElementById('btnUsersBatchEdit');
+    if (btn) {
+      btn.style.display = n ? '' : 'none';
+      btn.textContent = '批量编辑（' + n + '）';
+    }
+    var all = document.getElementById('usersSelAll');
+    if (all) {
+      var us = userList();
+      var sel = us.filter(function (u) { return USERS_SEL[u.id]; }).length;
+      all.checked = us.length > 0 && sel === us.length;
+      all.indeterminate = sel > 0 && sel < us.length;
+    }
+  }
+  function openBatchUserModal() {
+    var targets = userList().filter(function (u) { return USERS_SEL[u.id]; });
+    if (!targets.length) { toast('请先勾选要编辑的用户'); return; }
+    var selfIn = targets.some(function (u) { return u.id === AUTH.user.id; });
+    document.getElementById('batchUserTitle').textContent =
+      '批量编辑用户（已选 ' + targets.length + ' 个' + (selfIn ? '，含当前登录账号' : '') + '）';
+    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn'].forEach(function (id) {
+      document.getElementById(id).checked = false;
+    });
+    document.getElementById('bRole').value = 'user';
+    document.getElementById('bPerm').value = 'rw';
+    document.getElementById('bStatus').value = 'active';
+    document.getElementById('bSessionMins').value = '';
+    document.getElementById('bNote').value = '';
+    openModal('maskBatchUser');
+  }
+  function usersBatchApply() {
+    var targets = userList().filter(function (u) { return USERS_SEL[u.id]; });
+    if (!targets.length) { closeModal('maskBatchUser'); return; }
+    /* 只收集勾选了「应用」的字段 */
+    var patch = {};
+    if (document.getElementById('bRoleOn').checked)
+      patch.role = document.getElementById('bRole').value === 'admin' ? 'admin' : 'user';
+    if (document.getElementById('bPermOn').checked)
+      patch.perm = document.getElementById('bPerm').value === 'ro' ? 'ro' : 'rw';
+    if (document.getElementById('bStatusOn').checked)
+      patch.status = document.getElementById('bStatus').value === 'disabled' ? 'disabled' : 'active';
+    if (document.getElementById('bNoteOn').checked)
+      patch.note = document.getElementById('bNote').value.trim();
+    if (document.getElementById('bMinsOn').checked) {
+      var minsRaw = document.getElementById('bSessionMins').value.trim();
+      var mins = Number(minsRaw);
+      if (minsRaw === '') mins = 30;
+      if (!isFinite(mins) || Math.round(mins) !== mins || mins < 5 || mins > 43200) {
+        toast('登录超时需为 5–43200 之间的整数分钟（留空默认 30）'); return;
+      }
+      patch.sessionMins = mins;
+    }
+    if (!Object.keys(patch).length) { toast('请至少勾选一个要应用的配置项'); return; }
+    closeModal('maskBatchUser');
+
+    var me = AUTH.user;
+    var okN = 0, skip = [];
+    var chain = Promise.resolve();
+    targets.forEach(function (u) {
+      /* 前端预检与服务端同口径：保住最后一个启用的超管；不能停用当前登录账号 */
+      var lastAdmin = u.role === 'admin' && u.status === 'active' && countAdmins(u.id) === 0 &&
+        ((patch.role && patch.role !== 'admin') || (patch.status && patch.status !== 'active'));
+      if (lastAdmin) { skip.push(u.name + '（需保留至少一个启用的超级管理员）'); return; }
+      if (u.id === me.id && patch.status === 'disabled') { skip.push(u.name + '（不能停用当前登录账号）'); return; }
+      chain = chain.then(function () {
+        return api('/users/' + encodeURIComponent(u.username), { method: 'PATCH', body: patch })
+          .then(function (r) {
+            if (r.ok) okN++; else skip.push(u.name + '（' + (r.error || '保存失败') + '）');
+          });
+      });
+    });
+    chain.then(function () {
+      USERS_SEL = {};
+      var touchedSelf = targets.some(function (u) { return u.id === me.id; }) && okN > 0;
+      refreshUsersThen(true).then(function () {
+        usersSyncBatchBtn();
+        if (touchedSelf) {
+          var meNow = findUser(me.username);
+          if (meNow) { AUTH.user = meNow; renderUserChip(); }
+          if (!isAdmin()) applyScope(AUTH.user.username);
+          renderScopeSelect();
+        }
+        if (okN && skip.length) toast('已更新 ' + okN + ' 个账号；跳过 ' + skip.length + ' 个：' + skip.join('、'));
+        else if (okN) toast('已批量更新 ' + okN + ' 个账号');
+        else toast('未更新任何账号：' + skip.join('、'));
+      });
+    });
+  }
+
   /* ---------- 账号来源 / 权限的展示文案 ---------- */
   function sourceText(u) {
     if (!u || (u.source || 'local') === 'local') return '本地';
@@ -5677,8 +5840,16 @@
 
     if (!users.length) {
       document.getElementById('usersTableWrap').innerHTML = '<div class="empty">暂无账号</div>';
+      USERS_SEL = {};
+      usersSyncBatchBtn();
       return;
     }
+    /* 清掉已不存在（被删除）的勾选，避免批量编辑误伤 */
+    (function () {
+      var valid = {};
+      users.forEach(function (u) { valid[u.id] = true; });
+      Object.keys(USERS_SEL).forEach(function (id2) { if (!valid[id2]) delete USERS_SEL[id2]; });
+    })();
     var sorted = users.slice().sort(cmpUser);
     var rows = sorted.map(function (u) {
       var s = userDataCount(u.username);
@@ -5692,6 +5863,7 @@
       /* 区域展示名称已独立成列；副行仅保留备注 / 共享信息 */
       var subParts = ((u.note ? esc(u.note) : '') + shareNote).replace(/^ · /, '');
       return '<tr data-uid="' + esc(u.id) + '">' +
+        '<td class="chk"><input type="checkbox" data-uchk="' + esc(u.id) + '"' + (USERS_SEL[u.id] ? ' checked' : '') + '></td>' +
         '<td><div class="uname-cell">' +
           '<span class="uavatar' + (u.role === 'admin' ? ' admin' : '') + '">' + esc(initialOf(u.username)) + '</span>' +
           '<div><div style="font-weight:600;">' + esc(u.username) +
@@ -5726,6 +5898,7 @@
     }).join('');
     document.getElementById('usersTableWrap').innerHTML =
       '<table class="utable"><thead><tr>' +
+      '<th class="chk"><input type="checkbox" id="usersSelAll" title="全选本页用户"></th>' +
       USER_COLS.map(function (c) {
         var on = usersSort.key === c.k;
         return '<th class="sortable" data-ukey="' + c.k + '" title="点击按此列排序">' + esc(c.t) +
@@ -5733,6 +5906,7 @@
       }).join('') +
       '<th>操作</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>';
+    usersSyncBatchBtn();
   }
 
   var editingUserId = null;
@@ -6075,6 +6249,9 @@
 
     document.getElementById('btnUsersBack').addEventListener('click', closeUsersPage);
     document.getElementById('btnNewUser').addEventListener('click', function () { openUserModal(null); });
+    document.getElementById('btnUsersBatchEdit').addEventListener('click', openBatchUserModal);
+    document.getElementById('btnSaveBatchUsers').addEventListener('click', usersBatchApply);
+    document.getElementById('usersTableWrap').addEventListener('change', usersSelChange);
 
     /* 认证服务器页 */
     document.getElementById('btnAuthServers').addEventListener('click', openServersPage);
