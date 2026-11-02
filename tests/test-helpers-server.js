@@ -103,24 +103,14 @@ function installApiStub(window, opts) {
     const u = findUser(username);
     return (u && u.shareFrom) ? u.shareFrom : username;
   };
-  /* 敏感字段打码（与两版真实服务端同口径）：hide_sensitive 账号下发即打码 */
-  const maskPhone = (p) => {
-    p = String(p == null ? '' : p).trim();
-    if (!p) return '';
-    if (p.length < 7) return '****';
-    return p.slice(0, 3) + '****' + p.slice(-4);
-  };
-  const maskAddr = (a) => {
-    a = String(a == null ? '' : a).trim();
-    if (!a) return '';
-    const m = a.match(/^([\s\S]{0,14}?[区县市旗])/);
-    return (m ? m[1] : a.slice(0, 8)) + '****';
-  };
+  /* 敏感字段全隐（与两版真实服务端同口径）：hide_sensitive 账号的联系人/电话下发即 ****；地址照常 */
   const maskLedger = (d) => ({
     regions: (d && d.regions) || [],
     visits: (d && d.visits) || [],
-    customers: ((d && d.customers) || []).map(c =>
-      (!c || (c.addr == null && c.phone == null)) ? c : Object.assign({}, c, { addr: maskAddr(c.addr), phone: maskPhone(c.phone) }))
+    customers: ((d && d.customers) || []).map(c => !c ? c : Object.assign({}, c, {
+      contact: c.contact ? '****' : '',
+      phone: c.phone ? '****' : ''
+    }))
   });
 
   const bundle = (u) => {
@@ -287,12 +277,20 @@ function installApiStub(window, opts) {
       if (auth.role !== 'admin' && scope !== auth.username) return bad('无权写入该账号的台账', 403);
       const owner = dataOwner(scope);
       const newData = body.data || { regions: [], customers: [], visits: [] };
-      /* 敏感字段隐藏的账号：已存在客户的 addr/phone 回填库内原值（防打码串写回） */
+      /* 敏感字段隐藏的账号：已存在客户的 contact/phone 回填库内原值（防 **** 写回） */
       if (auth.hideSensitive) {
         const om = {};
         ((srv.ledgers[owner] && srv.ledgers[owner].customers) || []).forEach(c => { if (c && c.id) om[c.id] = c; });
-        newData.customers = (newData.customers || []).map(c =>
-          (c && c.id && om[c.id]) ? Object.assign({}, c, { addr: om[c.id].addr || '', phone: om[c.id].phone || '' }) : c);
+        const stripMask = v => /^\*{2,}$/.test(String(v == null ? '' : v).trim()) ? '' : v;
+        newData.customers = (newData.customers || []).map(c => {
+          if (!c) return c;
+          if (c.id && om[c.id]) {
+            return Object.assign({}, c, {
+              contact: om[c.id].contact || '', phone: om[c.id].phone || ''
+            });
+          }
+          return Object.assign({}, c, { contact: stripMask(c.contact), phone: stripMask(c.phone) });
+        });
       }
       const oldData = srv.ledgers[owner] || null;
       srv.ledgers[owner] = newData;

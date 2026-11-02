@@ -334,7 +334,7 @@ const seedRegions = [
   check('确认框提示含客户名称', id3('toast').textContent.indexOf('新客户甲') >= 0, id3('toast').textContent);
   w3.close();
 
-  /* ================= 四、敏感字段打码：hide_sensitive 账号（服务端下发即打码）================= */
+  /* ================= 四、敏感字段（联系人/电话）：hide_sensitive 账号（服务端下发即全隐）================= */
   const dom4 = makeDom({
     errors,
     sessionUser: 'sens',
@@ -356,28 +356,27 @@ const seedRegions = [
   click4(id4('btnCusts'));
   const tbl4 = () => id4('custsTableWrap').textContent;
   check('[敏感] 不渲染任何眼睛图标（无明文可展开）', !id4('custsTableWrap').querySelector('.sens-eye'), String(id4('custsTableWrap').querySelectorAll('.sens-eye').length));
-  check('[敏感] 电话列打码为 031****4567', tbl4().indexOf('031****4567') >= 0, tbl4());
-  check('[敏感] 地址列打码为 河北省衡水市****', tbl4().indexOf('河北省衡水市****') >= 0);
-  check('[敏感] 完整地址不出现在页面任何位置', tbl4().indexOf('人民东路') < 0);
-  check('[敏感] 完整电话不出现在页面任何位置', tbl4().indexOf('0318-1234567') < 0);
+  check('[敏感] 联系人全隐为 ****（无张主管）', tbl4().indexOf('张主管') < 0 && tbl4().indexOf('****') >= 0, tbl4());
+  check('[敏感] 电话全隐（无 0318-1234567，也无首尾保留）', tbl4().indexOf('0318-1234567') < 0 && tbl4().indexOf('031****') < 0, tbl4());
+  check('[敏感] 详细地址照常完整展示', tbl4().indexOf('人民东路528号') >= 0, tbl4());
 
-  /* 编辑弹窗：敏感字段不回填明文 */
+  /* 编辑弹窗：地址正常回填；联系人 / 电话留空（服务端保持原值） */
   const editBtn4 = id4('custsTableWrap').querySelector('button[data-cact="edit"][data-id="c02"]');
   click4(editBtn4);
   check('[敏感] 编辑弹窗打开', id4('maskCust').classList.contains('on'));
-  check('[敏感] 地址输入框不回填（留空占位）', id4('fAddr').value === '' && /已隐藏/.test(id4('fAddr').placeholder), id4('fAddr').placeholder);
-  check('[敏感] 电话输入框不回填', id4('fPhone').value === '' && /已隐藏/.test(id4('fPhone').placeholder));
-  /* 保存其他字段 → 服务端回填原值，敏感数据不被打码串/空值覆盖 */
+  check('[敏感] 地址输入框正常回填', id4('fAddr').value === '河北省衡水市桃城区人民东路528号', id4('fAddr').value);
+  check('[敏感] 联系人 / 电话输入框不回填', id4('fContact').value === '' && id4('fPhone').value === '' && /已隐藏/.test(id4('fContact').placeholder));
+  /* 保存其他字段 → 服务端回填原值，敏感数据不被占位串/空值覆盖 */
   id4('fNote').value = '敏感账号改备注';
   click4(id4('btnSaveCust'));
   await new Promise(r => setTimeout(r, 1100));
   const srvC4 = (w4.__SRV__.ledgers.sens.customers || []).filter(c => c.id === 'c02')[0];
-  check('[敏感] 保存后库内地址仍为原值', srvC4 && srvC4.addr === '河北省衡水市桃城区人民东路528号', srvC4 && srvC4.addr);
+  check('[敏感] 保存后库内联系人仍为原值', srvC4 && srvC4.contact === '张主管', srvC4 && srvC4.contact);
   check('[敏感] 保存后库内电话仍为原值', srvC4 && srvC4.phone === '0318-1234567', srvC4 && srvC4.phone);
   check('[敏感] 备注修改正常写入', srvC4 && srvC4.note === '敏感账号改备注', srvC4 && srvC4.note);
   w4.close();
 
-  /* ================= 五、敏感字段打码：有权限账号（默认收缩，可展开）================= */
+  /* ================= 五、联系人/电话：有权限账号（默认全隐，眼睛逐条展开）================= */
   const dom5 = makeDom({
     errors,
     sessionUser: 'demo',
@@ -390,22 +389,23 @@ const seedRegions = [
   await tick(60);
   click5(id5('btnCusts'));
   const tbl5 = () => id5('custsTableWrap').textContent;
-  check('[权限] 默认打码显示电话', tbl5().indexOf('031****4567') >= 0, tbl5());
-  check('[权限] 默认打码显示地址', tbl5().indexOf('河北省衡水市****') >= 0);
-  check('[权限] 默认不出现完整地址', tbl5().indexOf('人民东路') < 0);
+  check('[权限] 联系人默认全隐（无张主管）', tbl5().indexOf('张主管') < 0, tbl5());
+  check('[权限] 电话默认全隐（不保留首尾）', tbl5().indexOf('0318-1234567') < 0 && tbl5().indexOf('031****') < 0, tbl5());
+  check('[权限] 详细地址恒明文', tbl5().indexOf('人民东路528号') >= 0);
   check('[权限] 有敏感值的条目带眼睛图标', id5('custsTableWrap').querySelectorAll('.sens-eye').length >= 2, String(id5('custsTableWrap').querySelectorAll('.sens-eye').length));
-  /* 逐条展开：点某条只展开那条，其他保持打码 */
+  /* 逐条展开：点某条只展开那条，其他保持全隐 */
   const eyeP5 = id5('custsTableWrap').querySelector('button[data-sensk="c02:phone"]');
-  const eyeA5 = id5('custsTableWrap').querySelector('button[data-sensk="c02:addr"]');
-  check('[权限] 找到 c02 电话 / 地址眼睛', !!eyeP5 && !!eyeA5);
+  const eyeC5 = id5('custsTableWrap').querySelector('button[data-sensk="c02:contact"]');
+  check('[权限] 找到 c02 电话 / 联系人眼睛', !!eyeP5 && !!eyeC5);
+  check('[权限] 眼睛为 SVG 图标而非 emoji', !!eyeP5.querySelector('svg'));
   click5(eyeP5);
   check('[权限] 点电话眼睛后展开完整电话', tbl5().indexOf('0318-1234567') >= 0, tbl5());
-  check('[权限] 地址仍保持打码（逐条隔离）', tbl5().indexOf('人民东路') < 0);
-  check('[权限] 眼睛图标切换为收起态', id5('custsTableWrap').querySelector('button[data-sensk="c02:phone"]').textContent === '🙈');
-  click5(id5('custsTableWrap').querySelector('button[data-sensk="c02:addr"]'));
-  check('[权限] 再点地址眼睛展开完整地址', tbl5().indexOf('人民东路') >= 0);
+  check('[权限] 联系人仍保持全隐（逐条隔离）', tbl5().indexOf('张主管') < 0);
+  check('[权限] 眼睛切换为收起态（on）', id5('custsTableWrap').querySelector('button[data-sensk="c02:phone"]').classList.contains('on'));
+  click5(id5('custsTableWrap').querySelector('button[data-sensk="c02:contact"]'));
+  check('[权限] 再点联系人眼睛展开完整联系人', tbl5().indexOf('张主管') >= 0);
   click5(id5('custsTableWrap').querySelector('button[data-sensk="c02:phone"]'));
-  check('[权限] 收起电话后恢复打码、地址仍展开', tbl5().indexOf('031****4567') >= 0 && tbl5().indexOf('人民东路') >= 0);
+  check('[权限] 收起电话后恢复全隐、联系人仍展开', tbl5().indexOf('0318-1234567') < 0 && tbl5().indexOf('张主管') >= 0);
   w5.close();
 
   /* ================= 六、超管汇总去重：共享成员账号不再重复展示 ================= */
@@ -449,6 +449,10 @@ const seedRegions = [
   check('[去重] 归属账号标签仍为 alice / admin',
     id6('custsTableWrap').querySelectorAll('tbody .own').length === 3 &&
     /甲用户/.test(id6('custsTableWrap').textContent) && /超级管理员/.test(id6('custsTableWrap').textContent));
+  /* 数据范围下拉：只列数据归属账号（alice）与独立账号（admin），不再列借用共享数据的 bob */
+  const scopeVals6 = Array.prototype.map.call(id6('custsScope').options, o => o.value);
+  check('[去重] 数据范围含归属账号 alice', scopeVals6.indexOf('alice') >= 0, scopeVals6.join(','));
+  check('[去重] 数据范围不含借用共享数据的 bob', scopeVals6.indexOf('bob') < 0, scopeVals6.join(','));
   w6.close();
 
   /* ================= 输出 ================= */

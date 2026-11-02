@@ -204,8 +204,9 @@ r = await api('/auth/login', { method: 'POST', body: { username: 'sensw', passwo
 const swk = r.data.token;
 r = await api('/ledger', { method: 'GET' }, swk);
 const swC = r.data.ledgers.sensw.customers[0];
-check('受限户拿到的是打码地址', swC.addr === '河北省衡水市****', swC.addr);
-check('受限户拿到的是打码电话', swC.phone === '031****4567', swC.phone);
+check('受限户仍可见完整详细地址', swC.addr === '河北省衡水市桃城区人民东路528号', swC.addr);
+check('受限户拿到的是全隐联系人', swC.contact === '****', swC.contact);
+check('受限户拿到的是全隐电话', swC.phone === '****', swC.phone);
 
 /* 受限户把打码数据原样 PUT 回去 → 库内必须是原值 */
 r = await api('/ledger', { method: 'PUT', body: { scope: 'sensw', data: r.data.ledgers.sensw } }, swk);
@@ -213,6 +214,7 @@ check('受限户写台账成功', r.ok === true, JSON.stringify(r));
 r = await api('/ledger', { method: 'GET' }, tk);
 const admC = r.data.ledgers.sensw.customers[0];
 check('打码串未写回：库内地址仍为原值', admC.addr === '河北省衡水市桃城区人民东路528号', admC.addr);
+check('打码串未写回：库内联系人仍为原值', admC.contact === '张主管', admC.contact);
 check('打码串未写回：库内电话仍为原值', admC.phone === '0318-1234567', admC.phone);
 
 /* 取消隐藏 → 立即恢复明文 */

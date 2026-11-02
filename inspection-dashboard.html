@@ -556,9 +556,13 @@
   table.custs .op .btn{margin:0 6px 4px 0;}
   table.custs .own{display:inline-block;padding:1px 8px;border-radius:9px;background:var(--panel-2);border:1px solid var(--border);font-size:11px;color:var(--text-2);white-space:nowrap;}
   .custs-empty{padding:34px 16px;text-align:center;color:var(--text-3);font-size:12.5px;}
-  /* 敏感字段逐条眼睛：展开 / 收起明文（仅本会话） */
-  .sens-eye{border:none;background:none;cursor:pointer;font-size:12px;line-height:1;padding:0 1px 0 4px;vertical-align:middle;opacity:.5;}
-  .sens-eye:hover{opacity:1;}
+  /* 敏感字段逐条眼睛：点开显示明文 / 再点隐藏（仅本会话） */
+  .sens-eye{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-left:4px;
+    padding:0;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--text-3);
+    cursor:pointer;vertical-align:-4px;transition:background .15s,color .15s,border-color .15s;}
+  .sens-eye:hover{color:var(--text);background:var(--panel-2);border-color:var(--border);}
+  .sens-eye.on{color:var(--primary);background:var(--primary-soft);border-color:#CFDCFB;}
+  .sens-eye svg{display:block;}
   @media (max-width:980px){
     main{flex-direction:column-reverse;}
     aside{width:100%;flex:0 0 46vh;border-right:0;border-top:1px solid var(--border);}
@@ -820,8 +824,12 @@
     <div class="modal-body">
       <div class="readonly-box" style="margin-bottom:13px;">
         <div>
-          <div style="font-weight:600;color:var(--text);"><span id="dAddr">—</span><button type="button" class="sens-eye" id="dAddrEye" title="点击显示 / 隐藏详细地址明文" style="display:none;">👁</button></div>
-          <div class="hint"><span id="dCoord">—</span><button type="button" class="sens-eye" id="dPhoneEye" title="点击显示 / 隐藏电话明文" style="display:none;">👁</button></div>
+          <div style="font-weight:600;color:var(--text);" id="dAddr">—</div>
+          <div class="hint" style="margin-top:4px;">
+            <span>联系人 <span id="dContact">—</span></span><button type="button" class="sens-eye" id="dContactEye" title="点击查看" style="display:none;"></button>
+            <span style="margin-left:14px;">电话 <span id="dPhone">—</span></span><button type="button" class="sens-eye" id="dPhoneEye" title="点击查看" style="display:none;"></button>
+          </div>
+          <div class="hint" id="dCoord">—</div>
         </div>
         <span class="badge" id="dStatus">—</span>
       </div>
@@ -3726,17 +3734,24 @@
   }
 
   /* ---------------- 客户详情 ---------------- */
-  /* 详情弹窗地址 / 电话按逐条眼睛口径渲染 */
+  /* 详情弹窗：地址明文，联系人 / 电话按逐条眼睛口径 */
   function renderDetailSens(c) {
-    var addrEye = document.getElementById('dAddrEye'), phoneEye = document.getElementById('dPhoneEye');
+    var contactEye = document.getElementById('dContactEye');
+    var phoneEye = document.getElementById('dPhoneEye');
+    function eye(el, f) {
+      var on = !!SENS_SHOW[c.id + ':' + f];
+      el.style.display = (canSeeSensitive() && String(c[f] || '').trim()) ? '' : 'none';
+      el.className = 'sens-eye' + (on ? ' on' : '');
+      el.innerHTML = on ? EYE_OFF_SVG : EYE_SVG;
+      el.title = on ? '隐藏' : '点击查看';
+    }
     document.getElementById('dAddr').textContent = dispAddr(c) || '未填写详细地址';
+    document.getElementById('dContact').textContent = dispContact(c) || '—';
+    document.getElementById('dPhone').textContent = dispPhone(c) || '—';
     document.getElementById('dCoord').textContent =
-      '坐标系 GCJ-02：' + (typeof c.lng === 'number' ? c.lng.toFixed(6) + ', ' + c.lat.toFixed(6) : '未设置') +
-      (c.contact ? '　联系人：' + c.contact + (c.phone ? ' (' + dispPhone(c) + ')' : '') : '');
-    addrEye.style.display = (canSeeSensitive() && c.addr) ? '' : 'none';
-    phoneEye.style.display = (canSeeSensitive() && c.phone) ? '' : 'none';
-    addrEye.textContent = SENS_SHOW[c.id + ':addr'] ? '🙈' : '👁';
-    phoneEye.textContent = SENS_SHOW[c.id + ':phone'] ? '🙈' : '👁';
+      '坐标系 GCJ-02：' + (typeof c.lng === 'number' ? c.lng.toFixed(6) + ', ' + c.lat.toFixed(6) : '未设置');
+    eye(contactEye, 'contact');
+    eye(phoneEye, 'phone');
   }
   function toggleDetailSens(f) {
     var c = DB.customers.filter(function (x) { return x.id === state.selectedId; })[0];
@@ -3954,14 +3969,15 @@
     fillProvinceOptions(prov);
     fillCityOptions(prov, c ? c.city : '');
     document.getElementById('fName').value = c ? c.name : '';
-    /* 敏感字段无权限：不回填（服务端也不接受该账号改写已存在客户的地址/电话） */
+    /* 敏感字段（联系人 / 电话）无权限：不回填，服务端保存时回填库内原值；地址照常回填 */
     var noSens = !canSeeSensitive();
-    var fAddrEl = document.getElementById('fAddr'), fPhoneEl = document.getElementById('fPhone');
-    fAddrEl.value = noSens ? '' : (c ? (c.addr || '') : '');
-    fAddrEl.placeholder = noSens ? '已隐藏（保存时保持库内原值）' : '';
+    var fPhoneEl = document.getElementById('fPhone');
+    var fContactEl = document.getElementById('fContact');
+    document.getElementById('fAddr').value = c ? (c.addr || '') : '';
     fPhoneEl.value = noSens ? '' : (c ? (c.phone || '') : '');
     fPhoneEl.placeholder = noSens ? '已隐藏（保存时保持库内原值）' : '';
-    document.getElementById('fContact').value = c ? (c.contact || '') : '';
+    fContactEl.value = noSens ? '' : (c ? (c.contact || '') : '');
+    fContactEl.placeholder = noSens ? '已隐藏（保存时保持库内原值）' : '';
     document.getElementById('fNote').value = c ? (c.note || '') : '';
 
     if (c && isFinite(c.lng) && isFinite(c.lat)) {
@@ -5081,11 +5097,16 @@
     return { regions: regionList, customers: customers, visits: visits, merged: true };
   }
 
-  /* ---------- 数据范围 ---------- */
+  /* ---------- 数据范围 ----------
+     超管列表只保留「数据归属账号」：数据被共享出去的 owner + 独立使用的账号；
+     借用他人共享数据的成员账号（shareFrom 指向存在账号）不再单列——他们看到的
+     就是归属账号那一份数据，单列只会让同一份数据重复出现。 */
   function scopeOptions() {
     var opts = [];
     if (isAdmin()) opts.push({ v: SCOPE_ALL, t: '汇总 · 全部用户数据（只读）' });
     userList().forEach(function (u) {
+      var borrowed = u.shareFrom && findUser(u.shareFrom);
+      if (borrowed && u.username !== AUTH.user.username) return;
       if (u.username === AUTH.user.username) {
         opts.push({ v: u.username, t: '我的台账 · ' + u.name });
       } else if (isAdmin()) {
@@ -5623,42 +5644,33 @@
     });
   }
 
-  /* ---------- 敏感字段（详细地址 / 联系人电话）按用户打码 ----------
-     hide_sensitive=1 的账号：服务端直接下发打码数据，前端无明文可还原；
-     其他账号：默认打码显示，点条目后的眼睛图标逐条展开 / 收起（仅本次会话）。 */
-  var SENS_SHOW = {};                        /* '客户id:addr' / '客户id:phone' → 已展开明文 */
+  /* ---------- 敏感字段（客户联系人 / 电话）按用户隐藏 ----------
+     hide_sensitive=1 的账号：服务端下发即全隐（****），前端无明文、无眼睛；
+     其他账号：默认也显示为 ****，点该条的眼睛图标逐条展开明文（再点收起，仅本次会话）。
+     详细地址不属于敏感项，任何账号都明文展示。 */
+  var SENS_SHOW = {};                        /* '客户id:contact|phone' → 已展开明文 */
+  var SENS_HIDDEN = '****';
+  var EYE_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2.2 12S5.6 5.6 12 5.6 21.8 12 21.8 12 18.4 18.4 12 18.4 2.2 12 2.2 12z"/><circle cx="12" cy="12" r="2.7"/></svg>';
+  var EYE_OFF_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.9A9.6 9.6 0 0 1 12 5.6c6.4 0 9.8 6.4 9.8 6.4a17 17 0 0 1-3.3 3.9"/><path d="M6.4 7.6A16.6 16.6 0 0 0 2.2 12S5.6 18.4 12 18.4c1.2 0 2.3-.2 3.3-.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
   function canSeeSensitive() { return !(AUTH.user && AUTH.user.hideSensitive); }
   function sensShown(id, f) { return canSeeSensitive() && !!SENS_SHOW[id + ':' + f]; }
-  function maskPhone(p) {
-    p = String(p == null ? '' : p).trim();
-    if (!p) return '';
-    if (p.length < 7) return '****';
-    return p.slice(0, 3) + '****' + p.slice(-4);
-  }
-  function maskAddr(a) {
-    a = String(a == null ? '' : a).trim();
-    if (!a) return '';
-    var m = a.match(/^([\s\S]{0,14}?[区县市旗])/);
-    return (m ? m[1] : a.slice(0, 8)) + '****';
-  }
   function sensEye(id, f) {
     if (!canSeeSensitive()) return '';
-    return ' <button type="button" class="sens-eye" data-sensk="' + esc(id + ':' + f) +
-      '" title="点击显示 / 隐藏明文">' + (SENS_SHOW[id + ':' + f] ? '🙈' : '👁') + '</button>';
+    var on = !!SENS_SHOW[id + ':' + f];
+    return '<button type="button" class="sens-eye' + (on ? ' on' : '') + '" data-sensk="' + esc(id + ':' + f) +
+      '" title="' + (on ? '隐藏' : '点击查看') + '" aria-label="' + (on ? '隐藏' : '点击查看') + '">' +
+      (on ? EYE_OFF_SVG : EYE_SVG) + '</button>';
   }
-  /* 展示口径：无权限 → 服务端已打码，原样返回；有权限 → 该条已点眼睛展开才显示明文 */
-  function dispPhone(c) {
-    var p = String((c && c.phone) == null ? '' : c.phone).trim();
-    if (!p) return '';
-    if (!canSeeSensitive()) return p;
-    return SENS_SHOW[c.id + ':phone'] ? p : maskPhone(p);
+  /* 展示口径：详细地址不属敏感项，恒明文；联系人/电话无权限 → 服务端已全隐，有权限 → 点过眼睛才显示 */
+  function sensVal(id, f, v) {
+    var s = String(v == null ? '' : v).trim();
+    if (!s) return '';
+    if (!canSeeSensitive()) return s;
+    return SENS_SHOW[id + ':' + f] ? s : SENS_HIDDEN;
   }
-  function dispAddr(c) {
-    var a = String((c && c.addr) == null ? '' : c.addr).trim();
-    if (!a) return '';
-    if (!canSeeSensitive()) return a;
-    return SENS_SHOW[c.id + ':addr'] ? a : maskAddr(a);
-  }
+  function dispAddr(c) { return String((c && c.addr) == null ? '' : c.addr).trim(); }
+  function dispContact(c) { return sensVal(c && c.id, 'contact', c && c.contact); }
+  function dispPhone(c) { return sensVal(c && c.id, 'phone', c && c.phone); }
 
   /* 查询：名称 / 地址 / 联系人 / 电话 / 省市 / 区域 任一字段命中即保留 */
   function custsRows() {
@@ -5734,8 +5746,8 @@
         (merged ? '<td><span class="own">' + esc(c.ownerName || c.owner || '—') + '</span></td>' : '') +
         '<td>' + esc(rn) + '</td>' +
         '<td>' + esc(pc || '—') + '</td>' +
-        '<td class="addr">' + esc(dispAddr(c) || '—') + (c.addr ? sensEye(c.id, 'addr') : '') + '</td>' +
-        '<td>' + esc(c.contact || '—') + '</td>' +
+        '<td class="addr">' + esc(dispAddr(c) || '—') + '</td>' +
+        '<td>' + esc(dispContact(c) || '—') + (c.contact ? sensEye(c.id, 'contact') : '') + '</td>' +
         '<td class="dim">' + esc(dispPhone(c) || '—') + (c.phone ? sensEye(c.id, 'phone') : '') + '</td>' +
         '<td class="dim">' + custsCoordText(c) + '</td>' +
         '<td>' + esc(custsFreqLabel(c.freq)) + '</td>' +
@@ -6587,7 +6599,7 @@
     document.getElementById('custsTableWrap').addEventListener('click', custsRowAction);
     document.getElementById('custsTableWrap').addEventListener('change', custsSelChange);
     document.getElementById('btnCustsBatchDel').addEventListener('click', custsBatchDelete);
-    document.getElementById('dAddrEye').addEventListener('click', function () { toggleDetailSens('addr'); });
+    document.getElementById('dContactEye').addEventListener('click', function () { toggleDetailSens('contact'); });
     document.getElementById('dPhoneEye').addEventListener('click', function () { toggleDetailSens('phone'); });
     document.getElementById('btnSaveUser').addEventListener('click', saveUser);
     document.getElementById('btnSavePwd').addEventListener('click', savePwd);

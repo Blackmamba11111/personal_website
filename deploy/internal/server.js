@@ -577,30 +577,23 @@ function sanitizeLedger(d) {
   };
 }
 
-/* ---------- 敏感字段（客户详细地址 / 联系人电话）按用户隐藏 ----------
-   hide_sensitive=1 的账号：下发台账时把客户的 addr/phone 就地打码，
-   写入时对已存在的客户一律回填库内原值（防止把打码串写回破坏数据）。
+/* ---------- 敏感字段（客户联系人 / 电话）按用户隐藏 ----------
+   hide_sensitive=1 的账号：下发台账时把客户的 contact/phone 一律替换为 ****；
+   详细地址不属于敏感项，照常下发。
+   写入时对已存在的客户回填库内原值（防止把 **** 写回破坏数据）。
    打码在服务端完成，客户端（列表 / 详情 / CSV / 本地镜像）全程拿不到明文。 */
-function maskPhone(p) {
-  p = String(p == null ? '' : p).trim();
-  if (!p) return '';
-  if (p.length < 7) return '****';
-  return p.slice(0, 3) + '****' + p.slice(-4);
-}
-function maskAddr(a) {
-  a = String(a == null ? '' : a).trim();
-  if (!a) return '';
-  const m = a.match(/^([\s\S]{0,14}?[区县市旗])/);
-  return (m ? m[1] : a.slice(0, 8)) + '****';
-}
+const HIDDEN_TEXT = '****';
 function maskLedgerSensitive(d) {
   d = d || {};
   return {
     regions: d.regions || [],
     visits: d.visits || [],
     customers: (Array.isArray(d.customers) ? d.customers : []).map(function (c) {
-      if (!c || (c.addr == null && c.phone == null)) return c;
-      return Object.assign({}, c, { addr: maskAddr(c.addr), phone: maskPhone(c.phone) });
+      if (!c) return c;
+      return Object.assign({}, c, {
+        contact: c.contact ? HIDDEN_TEXT : '',
+        phone: c.phone ? HIDDEN_TEXT : ''
+      });
     })
   };
 }
@@ -1018,17 +1011,23 @@ async function handleApi(req, res, url) {
       if (!exists) return bad(res, '目标账号不存在', 404);
     }
     const newData = sanitizeLedger(body.data);
-    /* 敏感字段隐藏的账号：已存在客户的 addr/phone 一律回填库内原值，
-       防止前端把打码串（或清空值）写回破坏数据；新建客户的值照常入库 */
+    /* 敏感字段隐藏的账号：已存在客户的 contact/phone 回填库内原值，
+       防止前端把 **** 占位（或清空值）写回破坏数据；新建客户占位值不落库 */
     if (me.hideSensitive) {
       const oldD = readLedger(scope);
       const om = {};
       ((oldD && oldD.customers) || []).forEach(function (c) { if (c && c.id) om[c.id] = c; });
+      const stripMask = function (v) { return /^\*{2,}$/.test(String(v == null ? '' : v).trim()) ? '' : v; };
       newData.customers = (newData.customers || []).map(function (c) {
-        if (c && c.id && om[c.id]) {
-          return Object.assign({}, c, { addr: om[c.id].addr || '', phone: om[c.id].phone || '' });
+        if (!c) return c;
+        if (c.id && om[c.id]) {
+          return Object.assign({}, c, {
+            contact: om[c.id].contact || '', phone: om[c.id].phone || ''
+          });
         }
-        return c;
+        return Object.assign({}, c, {
+          contact: stripMask(c.contact), phone: stripMask(c.phone)
+        });
       });
     }
     writeLedger(scope, newData, me.username);
