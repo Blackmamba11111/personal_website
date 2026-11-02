@@ -355,7 +355,7 @@ const seedRegions = [
   await tick(60);
   click4(id4('btnCusts'));
   const tbl4 = () => id4('custsTableWrap').textContent;
-  check('[敏感] 「显示敏感信息」按钮不渲染（无明文可展开）', id4('btnSensReveal').style.display === 'none', id4('btnSensReveal').style.display);
+  check('[敏感] 不渲染任何眼睛图标（无明文可展开）', !id4('custsTableWrap').querySelector('.sens-eye'), String(id4('custsTableWrap').querySelectorAll('.sens-eye').length));
   check('[敏感] 电话列打码为 031****4567', tbl4().indexOf('031****4567') >= 0, tbl4());
   check('[敏感] 地址列打码为 河北省衡水市****', tbl4().indexOf('河北省衡水市****') >= 0);
   check('[敏感] 完整地址不出现在页面任何位置', tbl4().indexOf('人民东路') < 0);
@@ -393,14 +393,63 @@ const seedRegions = [
   check('[权限] 默认打码显示电话', tbl5().indexOf('031****4567') >= 0, tbl5());
   check('[权限] 默认打码显示地址', tbl5().indexOf('河北省衡水市****') >= 0);
   check('[权限] 默认不出现完整地址', tbl5().indexOf('人民东路') < 0);
-  check('[权限] 「显示敏感信息」按钮可见', id5('btnSensReveal').style.display !== 'none');
-  click5(id5('btnSensReveal'));
-  check('[权限] 点击后展开完整地址', tbl5().indexOf('人民东路') >= 0);
-  check('[权限] 点击后展开完整电话', tbl5().indexOf('0318-1234567') >= 0);
-  check('[权限] 按钮文案切换为「隐藏敏感信息」', id5('btnSensReveal').textContent === '隐藏敏感信息', id5('btnSensReveal').textContent);
-  click5(id5('btnSensReveal'));
-  check('[权限] 再点恢复打码', tbl5().indexOf('031****4567') >= 0 && tbl5().indexOf('人民东路') < 0);
+  check('[权限] 有敏感值的条目带眼睛图标', id5('custsTableWrap').querySelectorAll('.sens-eye').length >= 2, String(id5('custsTableWrap').querySelectorAll('.sens-eye').length));
+  /* 逐条展开：点某条只展开那条，其他保持打码 */
+  const eyeP5 = id5('custsTableWrap').querySelector('button[data-sensk="c02:phone"]');
+  const eyeA5 = id5('custsTableWrap').querySelector('button[data-sensk="c02:addr"]');
+  check('[权限] 找到 c02 电话 / 地址眼睛', !!eyeP5 && !!eyeA5);
+  click5(eyeP5);
+  check('[权限] 点电话眼睛后展开完整电话', tbl5().indexOf('0318-1234567') >= 0, tbl5());
+  check('[权限] 地址仍保持打码（逐条隔离）', tbl5().indexOf('人民东路') < 0);
+  check('[权限] 眼睛图标切换为收起态', id5('custsTableWrap').querySelector('button[data-sensk="c02:phone"]').textContent === '🙈');
+  click5(id5('custsTableWrap').querySelector('button[data-sensk="c02:addr"]'));
+  check('[权限] 再点地址眼睛展开完整地址', tbl5().indexOf('人民东路') >= 0);
+  click5(id5('custsTableWrap').querySelector('button[data-sensk="c02:phone"]'));
+  check('[权限] 收起电话后恢复打码、地址仍展开', tbl5().indexOf('031****4567') >= 0 && tbl5().indexOf('人民东路') >= 0);
   w5.close();
+
+  /* ================= 六、超管汇总去重：共享成员账号不再重复展示 ================= */
+  const dom6 = makeDom({
+    errors,
+    sessionUser: 'admin',
+    fixture: {
+      version: 1,
+      users: [
+        mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+        mkUser({ username: 'alice', name: '甲用户', role: 'user', password: 'alice888' }),
+        Object.assign(mkUser({ username: 'bob', name: '乙用户', role: 'user', password: 'bob888' }), { shareFrom: 'alice' })
+      ]
+    },
+    data: {
+      alice: { regions: [], customers: [
+        { id: 'x1', name: '甲客户一', regionId: '', province: '北京', city: '', addr: '北京市海淀区某某路1号', lng: 116.4, lat: 39.9, freq: 'y4', contact: '', phone: '010-60000001', note: '' },
+        { id: 'x2', name: '甲客户二', regionId: '', province: '北京', city: '', addr: '北京市海淀区某某路2号', lng: 116.4, lat: 39.9, freq: 'y4', contact: '', phone: '010-60000002', note: '' }
+      ], visits: [] },
+      bob: { regions: [], customers: [
+        { id: 'x1', name: '甲客户一', regionId: '', province: '北京', city: '', addr: '北京市海淀区某某路1号', lng: 116.4, lat: 39.9, freq: 'y4', contact: '', phone: '010-60000001', note: '' },
+        { id: 'x2', name: '甲客户二', regionId: '', province: '北京', city: '', addr: '北京市海淀区某某路2号', lng: 116.4, lat: 39.9, freq: 'y4', contact: '', phone: '010-60000002', note: '' }
+      ], visits: [] },
+      admin: { regions: [], customers: [
+        { id: 'a01', name: '超管自建客户', regionId: '', province: '北京', city: '', addr: '', lng: 116.4, lat: 39.9, freq: 'y4', contact: '', phone: '', note: '' }
+      ], visits: [] }
+    }
+  });
+  const w6 = dom6.window, d6 = w6.document;
+  const id6 = x => d6.getElementById(x);
+  const click6 = el => el && el.dispatchEvent(new w6.MouseEvent('click', { bubbles: true, cancelable: true }));
+  const rows6 = () => id6('custsTableWrap').querySelectorAll('table.custs tbody tr');
+  const cntName6 = (nm) => (id6('custsTableWrap').textContent.match(new RegExp(nm, 'g')) || []).length;
+
+  await tick(60);
+  click6(id6('btnCusts'));
+  /* alice 2 家（bob 借用 alice 数据，跳过）+ admin 1 家 = 3 行；bob 的 2 份镜像副本不计入 */
+  check('[去重] 汇总行数 = 3（不含共享成员重复数据）', rows6().length === 3, rows6().length + '');
+  check('[去重] 甲客户一仅出现一次', cntName6('甲客户一') === 1, cntName6('甲客户一') + '');
+  check('[去重] 甲客户二仅出现一次', cntName6('甲客户二') === 1, cntName6('甲客户二') + '');
+  check('[去重] 归属账号标签仍为 alice / admin',
+    id6('custsTableWrap').querySelectorAll('tbody .own').length === 3 &&
+    /甲用户/.test(id6('custsTableWrap').textContent) && /超级管理员/.test(id6('custsTableWrap').textContent));
+  w6.close();
 
   /* ================= 输出 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;

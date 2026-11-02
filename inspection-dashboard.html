@@ -556,6 +556,9 @@
   table.custs .op .btn{margin:0 6px 4px 0;}
   table.custs .own{display:inline-block;padding:1px 8px;border-radius:9px;background:var(--panel-2);border:1px solid var(--border);font-size:11px;color:var(--text-2);white-space:nowrap;}
   .custs-empty{padding:34px 16px;text-align:center;color:var(--text-3);font-size:12.5px;}
+  /* 敏感字段逐条眼睛：展开 / 收起明文（仅本会话） */
+  .sens-eye{border:none;background:none;cursor:pointer;font-size:12px;line-height:1;padding:0 1px 0 4px;vertical-align:middle;opacity:.5;}
+  .sens-eye:hover{opacity:1;}
   @media (max-width:980px){
     main{flex-direction:column-reverse;}
     aside{width:100%;flex:0 0 46vh;border-right:0;border-top:1px solid var(--border);}
@@ -817,8 +820,8 @@
     <div class="modal-body">
       <div class="readonly-box" style="margin-bottom:13px;">
         <div>
-          <div style="font-weight:600;color:var(--text);" id="dAddr">—</div>
-          <div class="hint" id="dCoord">—</div>
+          <div style="font-weight:600;color:var(--text);"><span id="dAddr">—</span><button type="button" class="sens-eye" id="dAddrEye" title="点击显示 / 隐藏详细地址明文" style="display:none;">👁</button></div>
+          <div class="hint"><span id="dCoord">—</span><button type="button" class="sens-eye" id="dPhoneEye" title="点击显示 / 隐藏电话明文" style="display:none;">👁</button></div>
         </div>
         <span class="badge" id="dStatus">—</span>
       </div>
@@ -1139,7 +1142,6 @@
         </div>
         <span class="hint" id="custsHint" style="display:inline-block;"></span>
         <div class="spacer"></div>
-        <button type="button" class="btn" id="btnSensReveal" title="详细地址与联系人电话默认打码显示，点击切换">显示敏感信息</button>
         <button type="button" class="btn" id="btnImport" title="粘贴 JSON / CSV 批量导入客户，支持导出备份与 CSV 模板">导入数据</button>
         <button type="button" class="btn" id="btnCustsBatchDel" style="display:none;color:var(--miss);border-color:#F5C9C9;">删除选中（0）</button>
       </div>
@@ -3724,6 +3726,25 @@
   }
 
   /* ---------------- 客户详情 ---------------- */
+  /* 详情弹窗地址 / 电话按逐条眼睛口径渲染 */
+  function renderDetailSens(c) {
+    var addrEye = document.getElementById('dAddrEye'), phoneEye = document.getElementById('dPhoneEye');
+    document.getElementById('dAddr').textContent = dispAddr(c) || '未填写详细地址';
+    document.getElementById('dCoord').textContent =
+      '坐标系 GCJ-02：' + (typeof c.lng === 'number' ? c.lng.toFixed(6) + ', ' + c.lat.toFixed(6) : '未设置') +
+      (c.contact ? '　联系人：' + c.contact + (c.phone ? ' (' + dispPhone(c) + ')' : '') : '');
+    addrEye.style.display = (canSeeSensitive() && c.addr) ? '' : 'none';
+    phoneEye.style.display = (canSeeSensitive() && c.phone) ? '' : 'none';
+    addrEye.textContent = SENS_SHOW[c.id + ':addr'] ? '🙈' : '👁';
+    phoneEye.textContent = SENS_SHOW[c.id + ':phone'] ? '🙈' : '👁';
+  }
+  function toggleDetailSens(f) {
+    var c = DB.customers.filter(function (x) { return x.id === state.selectedId; })[0];
+    if (!c) return;
+    var k = c.id + ':' + f;
+    if (SENS_SHOW[k]) delete SENS_SHOW[k]; else SENS_SHOW[k] = true;
+    renderDetailSens(c);
+  }
   function openDetail(id) {
     var c = DB.customers.filter(function (x) { return x.id === id; })[0];
     if (!c) return;
@@ -3736,10 +3757,7 @@
     document.getElementById('dName').textContent = c.name;
     document.getElementById('dSub').textContent =
       regionNameOf(c) + ' · ' + (c.province || '') + (c.city ? ' · ' + c.city : '');
-    document.getElementById('dAddr').textContent = dispAddr(c.addr) || '未填写详细地址';
-    document.getElementById('dCoord').textContent =
-      '坐标系 GCJ-02：' + (typeof c.lng === 'number' ? c.lng.toFixed(6) + ', ' + c.lat.toFixed(6) : '未设置') +
-      (c.contact ? '　联系人：' + c.contact + (c.phone ? ' (' + dispPhone(c.phone) + ')' : '') : '');
+    renderDetailSens(c);
     var badge = document.getElementById('dStatus');
     badge.className = 'badge ' + s.status;
     if (s.months) {
@@ -4180,12 +4198,12 @@
         (lack.length ? '待补 ' + lack.map(monthLabel).join('、')
                      : '已达标 ' + s.months.length + '/' + s.months.length + ' 个月');
       rows.push([
-        c.name, regionNameOf(c), c.province || '', c.city || '', dispAddr(c.addr) || '',
+        c.name, regionNameOf(c), c.province || '', c.city || '', c.addr || '',
         typeof c.lng === 'number' ? c.lng : '', typeof c.lat === 'number' ? c.lat : '',
         s.freq.label, s.freq.perMonth ? '按月（每月1次）' : '按季度',
         s.target, s.count, lackTxt,
         s.status === 'ok' ? '已巡检' : (s.status === 'part' ? '部分完成' : '未巡检'),
-        yCount, last ? last.date : '', last ? (last.note || '') : '', c.contact || '', dispPhone(c.phone) || '', c.note || ''
+        yCount, last ? last.date : '', last ? (last.note || '') : '', c.contact || '', c.phone || '', c.note || ''
       ].map(csvCell).join(','));
     });
     download('客户巡检报表_' + qk + '.csv', rows.join('\r\n'), 'text/csv');
@@ -5019,6 +5037,9 @@
     var regionList = [], rByKey = {};
     var customers = [], visits = [];
     userList().forEach(function (u) {
+      /* 共享成员（数据实际归属他人）跳过：同一份数据由归属账号呈现一次，
+         否则 owner 和每个成员各出一份，汇总视图整页重复。 */
+      if (u.shareFrom && findUser(u.shareFrom)) return;
       var d = readUserData(u.username) || { regions: [], customers: [], visits: [] };
       var cmap = {};
       var lmap = {};                                   /* 账号内区域 id → 合并区域 */
@@ -5604,9 +5625,10 @@
 
   /* ---------- 敏感字段（详细地址 / 联系人电话）按用户打码 ----------
      hide_sensitive=1 的账号：服务端直接下发打码数据，前端无明文可还原；
-     其他账号：默认打码显示（收缩），点击「显示敏感信息」临时展开（仅本次会话）。 */
-  var sensReveal = false;
+     其他账号：默认打码显示，点条目后的眼睛图标逐条展开 / 收起（仅本次会话）。 */
+  var SENS_SHOW = {};                        /* '客户id:addr' / '客户id:phone' → 已展开明文 */
   function canSeeSensitive() { return !(AUTH.user && AUTH.user.hideSensitive); }
+  function sensShown(id, f) { return canSeeSensitive() && !!SENS_SHOW[id + ':' + f]; }
   function maskPhone(p) {
     p = String(p == null ? '' : p).trim();
     if (!p) return '';
@@ -5619,18 +5641,23 @@
     var m = a.match(/^([\s\S]{0,14}?[区县市旗])/);
     return (m ? m[1] : a.slice(0, 8)) + '****';
   }
-  /* 展示口径：无权限 → 服务端已打码，原样返回；有权限 → 未展开时前端打码 */
-  function dispPhone(p) {
-    p = String(p == null ? '' : p).trim();
+  function sensEye(id, f) {
+    if (!canSeeSensitive()) return '';
+    return ' <button type="button" class="sens-eye" data-sensk="' + esc(id + ':' + f) +
+      '" title="点击显示 / 隐藏明文">' + (SENS_SHOW[id + ':' + f] ? '🙈' : '👁') + '</button>';
+  }
+  /* 展示口径：无权限 → 服务端已打码，原样返回；有权限 → 该条已点眼睛展开才显示明文 */
+  function dispPhone(c) {
+    var p = String((c && c.phone) == null ? '' : c.phone).trim();
     if (!p) return '';
     if (!canSeeSensitive()) return p;
-    return sensReveal ? p : maskPhone(p);
+    return SENS_SHOW[c.id + ':phone'] ? p : maskPhone(p);
   }
-  function dispAddr(a) {
-    a = String(a == null ? '' : a).trim();
+  function dispAddr(c) {
+    var a = String((c && c.addr) == null ? '' : c.addr).trim();
     if (!a) return '';
     if (!canSeeSensitive()) return a;
-    return sensReveal ? a : maskAddr(a);
+    return SENS_SHOW[c.id + ':addr'] ? a : maskAddr(a);
   }
 
   /* 查询：名称 / 地址 / 联系人 / 电话 / 省市 / 区域 任一字段命中即保留 */
@@ -5653,12 +5680,6 @@
 
   function renderCustsPage() {
     if (!AUTH.user) return;
-    /* 「显示敏感信息」按钮：无权限账号不可见（服务端已打码，无明文可展开） */
-    var rb = document.getElementById('btnSensReveal');
-    if (rb) {
-      rb.style.display = canSeeSensitive() ? '' : 'none';
-      rb.textContent = sensReveal ? '隐藏敏感信息' : '显示敏感信息';
-    }
     var merged = (AUTH.scope === SCOPE_ALL);
     var all = (DB.customers || []).length;
     /* 清掉已不存在（被删除 / 切换数据范围）的勾选，避免误删其他账号的数据 */
@@ -5713,9 +5734,9 @@
         (merged ? '<td><span class="own">' + esc(c.ownerName || c.owner || '—') + '</span></td>' : '') +
         '<td>' + esc(rn) + '</td>' +
         '<td>' + esc(pc || '—') + '</td>' +
-        '<td class="addr">' + esc(dispAddr(c.addr) || '—') + '</td>' +
+        '<td class="addr">' + esc(dispAddr(c) || '—') + (c.addr ? sensEye(c.id, 'addr') : '') + '</td>' +
         '<td>' + esc(c.contact || '—') + '</td>' +
-        '<td class="dim">' + esc(dispPhone(c.phone) || '—') + '</td>' +
+        '<td class="dim">' + esc(dispPhone(c) || '—') + (c.phone ? sensEye(c.id, 'phone') : '') + '</td>' +
         '<td class="dim">' + custsCoordText(c) + '</td>' +
         '<td>' + esc(custsFreqLabel(c.freq)) + '</td>' +
         '<td class="op">' +
@@ -5738,6 +5759,14 @@
       var k = th.getAttribute('data-ckey');
       if (custsSort.key === k) custsSort.dir = -custsSort.dir;
       else { custsSort.key = k; custsSort.dir = 1; }
+      renderCustsPage();
+      return;
+    }
+    /* 眼睛图标：逐条展开 / 收起敏感明文（仅本次会话） */
+    var eb = e.target.closest ? e.target.closest('button[data-sensk]') : null;
+    if (eb) {
+      var sk = eb.getAttribute('data-sensk');
+      if (SENS_SHOW[sk]) delete SENS_SHOW[sk]; else SENS_SHOW[sk] = true;
       renderCustsPage();
       return;
     }
@@ -6311,7 +6340,7 @@
           refreshUsersThen(true).then(function () {
             if (target.username === AUTH.user.username) {
               var me = findUser(AUTH.user.username);
-              if (me) { AUTH.user = me; sensReveal = false; renderUserChip(); }
+              if (me) { AUTH.user = me; SENS_SHOW = {}; renderUserChip(); }
               if (!isAdmin()) applyScope(AUTH.user.username);
               renderScopeSelect();
             }
@@ -6558,12 +6587,8 @@
     document.getElementById('custsTableWrap').addEventListener('click', custsRowAction);
     document.getElementById('custsTableWrap').addEventListener('change', custsSelChange);
     document.getElementById('btnCustsBatchDel').addEventListener('click', custsBatchDelete);
-    document.getElementById('btnSensReveal').addEventListener('click', function () {
-      sensReveal = !sensReveal;
-      this.textContent = sensReveal ? '隐藏敏感信息' : '显示敏感信息';
-      renderCustsPage();
-      toast(sensReveal ? '已展开敏感信息（仅本次会话有效）' : '已收缩敏感信息');
-    });
+    document.getElementById('dAddrEye').addEventListener('click', function () { toggleDetailSens('addr'); });
+    document.getElementById('dPhoneEye').addEventListener('click', function () { toggleDetailSens('phone'); });
     document.getElementById('btnSaveUser').addEventListener('click', saveUser);
     document.getElementById('btnSavePwd').addEventListener('click', savePwd);
 
@@ -6621,7 +6646,7 @@
   /* ---------------- 启动 ---------------- */
   function signIn(user, opts) {
     AUTH.user = user;
-    sensReveal = false;                      /* 换账号 / 重新登录后敏感信息恢复收缩态 */
+    SENS_SHOW = {};                          /* 换账号 / 重新登录后敏感明文全部恢复打码 */
     AUTH.scope = (user.role === 'admin') ? SCOPE_ALL : user.username;
     AUTH.attachMax = (opts && opts.attachMax) || 0;
     AUTH.servers = (opts && opts.servers) || AUTH.servers || [];
