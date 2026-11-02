@@ -190,5 +190,38 @@ r = await api('/ledger', { method: 'GET' }, mk);
 check('转移后成员数据仍在（归 member1）', r.ok && r.data.ledgers.member2 && r.data.ledgers.member2.customers[0].phone === '13800000000',
   JSON.stringify(r.data && r.data.ledgers && Object.keys(r.data.ledgers)));
 
+/* 9. 敏感字段（详细地址/联系人电话）按用户隐藏：服务端打码下发 + 写入回填原值 */
+r = await api('/users', { method: 'POST', body: { username: 'sensw', name: '受限户', password: 'Sens@123', hideSensitive: true } }, tk);
+check('创建带 hideSensitive 的用户', r.ok === true && r.data.user.hideSensitive === true, JSON.stringify(r.data && r.data.user));
+
+const sensData = { regions: [], customers: [
+  { id: 's1', name: '敏感客户', addr: '河北省衡水市桃城区人民东路528号', phone: '0318-1234567', contact: '张主管' }
+], visits: [] };
+r = await api('/ledger', { method: 'PUT', body: { scope: 'sensw', data: sensData } }, tk);
+check('超管为受限户写入台账', r.ok === true, JSON.stringify(r));
+
+r = await api('/auth/login', { method: 'POST', body: { username: 'sensw', password: 'Sens@123' } });
+const swk = r.data.token;
+r = await api('/ledger', { method: 'GET' }, swk);
+const swC = r.data.ledgers.sensw.customers[0];
+check('受限户拿到的是打码地址', swC.addr === '河北省衡水市****', swC.addr);
+check('受限户拿到的是打码电话', swC.phone === '031****4567', swC.phone);
+
+/* 受限户把打码数据原样 PUT 回去 → 库内必须是原值 */
+r = await api('/ledger', { method: 'PUT', body: { scope: 'sensw', data: r.data.ledgers.sensw } }, swk);
+check('受限户写台账成功', r.ok === true, JSON.stringify(r));
+r = await api('/ledger', { method: 'GET' }, tk);
+const admC = r.data.ledgers.sensw.customers[0];
+check('打码串未写回：库内地址仍为原值', admC.addr === '河北省衡水市桃城区人民东路528号', admC.addr);
+check('打码串未写回：库内电话仍为原值', admC.phone === '0318-1234567', admC.phone);
+
+/* 取消隐藏 → 立即恢复明文 */
+r = await api('/users/sensw', { method: 'PATCH', body: { hideSensitive: false } }, tk);
+check('PATCH 关闭隐藏敏感', r.ok === true && r.data.user.hideSensitive === false, JSON.stringify(r.data && r.data.user));
+r = await api('/auth/login', { method: 'POST', body: { username: 'sensw', password: 'Sens@123' } });
+r = await api('/ledger', { method: 'GET' }, r.data.token);
+check('关闭后受限户看到明文地址', r.data.ledgers.sensw.customers[0].addr === '河北省衡水市桃城区人民东路528号',
+  r.data.ledgers.sensw.customers[0].addr);
+
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);

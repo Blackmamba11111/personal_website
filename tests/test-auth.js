@@ -874,6 +874,55 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 16. 敏感字段可见性：单个编辑 + 批量编辑 + 列表标记 ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '管理员', role: 'admin', password: 'admin888' }),
+      Object.assign(mkUser({ username: 'hh', name: '隐藏户', password: 'hh88888' }), { hideSensitive: true }),
+      mkUser({ username: 'vv', name: '可见户', password: 'vv88888' })
+    ] };
+    const dom = makeDom({ fixture: fx, sessionUser: 'admin', data: { admin: mkDB(1, 'A-') }, errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    await tick(40);
+
+    /* 列表：隐藏敏感账号带标记 */
+    const rowH = [...d.querySelectorAll('#usersTableWrap tbody tr')]
+      .filter(r => r.textContent.indexOf('hh') >= 0)[0];
+    check('隐藏敏感账号在列表带「隐藏敏感」标记', !!rowH && rowH.textContent.indexOf('隐藏敏感') >= 0,
+      rowH && rowH.textContent.slice(0, 60));
+    const rowV = [...d.querySelectorAll('#usersTableWrap tbody tr')]
+      .filter(r => r.textContent.indexOf('vv') >= 0)[0];
+    check('普通账号无「隐藏敏感」标记', !!rowV && rowV.textContent.indexOf('隐藏敏感') < 0);
+
+    /* 单个编辑：回显开关，取消后保存 */
+    const editH = rowH.querySelector('button[data-ua="edit"]');
+    click(w, editH);
+    check('编辑弹窗回显隐藏敏感开关（勾选）', id('uHideSens').checked === true);
+    id('uHideSens').checked = false;
+    click(w, id('btnSaveUser'));
+    await tick(80);
+    check('取消勾选后账号敏感字段恢复可见',
+      usersOf(w).filter(u => u.username === 'hh')[0].hideSensitive === false);
+
+    /* 批量编辑：勾选「应用敏感字段可见性」= 隐藏 */
+    const rowV2 = [...d.querySelectorAll('#usersTableWrap tbody tr')]
+      .filter(r => r.textContent.indexOf('vv') >= 0)[0];
+    const cbV = rowV2.querySelector('input[data-uchk]');
+    cbV.checked = true; fire(w, cbV, 'change');
+    click(w, id('btnUsersBatchEdit'));
+    check('批量弹窗含「应用敏感字段可见性」开关', !!id('bHideSensOn') && !!id('bHideSens'));
+    id('bHideSensOn').checked = true; id('bHideSens').value = '1';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const vv2 = usersOf(w).filter(u => u.username === 'vv')[0];
+    check('批量应用后账号敏感字段变为隐藏', vv2.hideSensitive === true, JSON.stringify(vv2.hideSensitive));
+    w.close();
+  }
+
   /* ================= 汇总 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));

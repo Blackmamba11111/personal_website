@@ -38,7 +38,8 @@ function userView(u) {
     serverName: u.serverName || '',
     serverType: u.serverType || '',
     shareFrom: u.shareFrom || '',
-    sessionMins: Number(u.sessionMins) > 0 ? Number(u.sessionMins) : 30
+    sessionMins: Number(u.sessionMins) > 0 ? Number(u.sessionMins) : 30,
+    hideSensitive: !!u.hideSensitive
   };
 }
 
@@ -102,16 +103,37 @@ function installApiStub(window, opts) {
     const u = findUser(username);
     return (u && u.shareFrom) ? u.shareFrom : username;
   };
+  /* 敏感字段打码（与两版真实服务端同口径）：hide_sensitive 账号下发即打码 */
+  const maskPhone = (p) => {
+    p = String(p == null ? '' : p).trim();
+    if (!p) return '';
+    if (p.length < 7) return '****';
+    return p.slice(0, 3) + '****' + p.slice(-4);
+  };
+  const maskAddr = (a) => {
+    a = String(a == null ? '' : a).trim();
+    if (!a) return '';
+    const m = a.match(/^([\s\S]{0,14}?[区县市旗])/);
+    return (m ? m[1] : a.slice(0, 8)) + '****';
+  };
+  const maskLedger = (d) => ({
+    regions: (d && d.regions) || [],
+    visits: (d && d.visits) || [],
+    customers: ((d && d.customers) || []).map(c =>
+      (!c || (c.addr == null && c.phone == null)) ? c : Object.assign({}, c, { addr: maskAddr(c.addr), phone: maskPhone(c.phone) }))
+  });
+
   const bundle = (u) => {
     const isAdmin = u.role === 'admin';
+    const hideSens = !!u.hideSensitive;
     const ledgers = {};
     if (isAdmin) {
       srv.users.forEach(x => {
         const owner = dataOwner(x.username);
-        if (srv.ledgers[owner]) ledgers[x.username] = srv.ledgers[owner];
+        if (srv.ledgers[owner]) ledgers[x.username] = hideSens ? maskLedger(srv.ledgers[owner]) : srv.ledgers[owner];
       });
     } else if (srv.ledgers[dataOwner(u.username)]) {
-      ledgers[u.username] = srv.ledgers[dataOwner(u.username)];
+      ledgers[u.username] = hideSens ? maskLedger(srv.ledgers[dataOwner(u.username)]) : srv.ledgers[dataOwner(u.username)];
     }
     const view = viewOf(u);
     return {
@@ -264,8 +286,16 @@ function installApiStub(window, opts) {
       const scope = String(body.scope || '').toLowerCase();
       if (auth.role !== 'admin' && scope !== auth.username) return bad('无权写入该账号的台账', 403);
       const owner = dataOwner(scope);
+      const newData = body.data || { regions: [], customers: [], visits: [] };
+      /* 敏感字段隐藏的账号：已存在客户的 addr/phone 回填库内原值（防打码串写回） */
+      if (auth.hideSensitive) {
+        const om = {};
+        ((srv.ledgers[owner] && srv.ledgers[owner].customers) || []).forEach(c => { if (c && c.id) om[c.id] = c; });
+        newData.customers = (newData.customers || []).map(c =>
+          (c && c.id && om[c.id]) ? Object.assign({}, c, { addr: om[c.id].addr || '', phone: om[c.id].phone || '' }) : c);
+      }
       const oldData = srv.ledgers[owner] || null;
-      srv.ledgers[owner] = body.data || { regions: [], customers: [], visits: [] };
+      srv.ledgers[owner] = newData;
       pushLogs(owner, auth.username, oldData, srv.ledgers[owner]);
       ls.setItem(DATA_PREFIX + owner, JSON.stringify(srv.ledgers[owner]));
       return ok({ scope: scope });
@@ -363,7 +393,8 @@ function installApiStub(window, opts) {
         pwd: s ? '' : H.hashPwd(String(body.password || ''), salt),
         mustChange: !s, createdAt: '2026-01-01', lastLogin: '',
         sessionMins: isFinite(Number(body.sessionMins)) && Number(body.sessionMins) > 0
-          ? Math.min(43200, Math.max(5, Math.round(Number(body.sessionMins)))) : 30
+          ? Math.min(43200, Math.max(5, Math.round(Number(body.sessionMins)))) : 30,
+        hideSensitive: !!body.hideSensitive
       };
       srv.users.push(nu);
       if (!shareFrom && body.data) srv.ledgers[un] = body.data;
@@ -382,6 +413,7 @@ function installApiStub(window, opts) {
         if (body.status != null) t.status = body.status === 'disabled' ? 'disabled' : 'active';
         if (body.note != null) t.note = body.note;
         if (body.perm != null) t.perm = body.perm === 'ro' ? 'ro' : 'rw';
+        if (body.hideSensitive !== undefined) t.hideSensitive = !!body.hideSensitive;
         /* 登录超时（分钟）：与 Worker 版 normSessionMins 同口径（5–43200，非法回退 30） */
         if (body.sessionMins !== undefined) {
           const n = Math.round(Number(body.sessionMins));

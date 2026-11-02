@@ -3,7 +3,7 @@
  * 覆盖：入口/列表/表头字段（不含巡检数据）/搜索/新增/编辑/删除/只读守卫
  *       以及超管「数据范围」切换后的列表联动。
  * ==========================================================================*/
-const { makeDom, dataKey, SCOPE_ALL, tick, html } = require('./test-helpers-server');
+const { makeDom, dataKey, SCOPE_ALL, tick, html, mkUser } = require('./test-helpers-server');
 
 const errors = [];
 const results = [];
@@ -333,6 +333,74 @@ const seedRegions = [
     id3('maskCust').classList.contains('on') && store3().customers.length === 3, id3('toast').textContent);
   check('确认框提示含客户名称', id3('toast').textContent.indexOf('新客户甲') >= 0, id3('toast').textContent);
   w3.close();
+
+  /* ================= 四、敏感字段打码：hide_sensitive 账号（服务端下发即打码）================= */
+  const dom4 = makeDom({
+    errors,
+    sessionUser: 'sens',
+    fixture: {
+      version: 1,
+      users: [
+        mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+        Object.assign(mkUser({ username: 'sens', name: '受限用户', role: 'user', password: 'sens888' }), { hideSensitive: true }),
+        mkUser({ username: 'demo', name: '演示用户', role: 'user', password: 'demo888' })
+      ]
+    },
+    data: { sens: { regions: seedRegions, customers: seedCustomers, visits: [] } }
+  });
+  const w4 = dom4.window, d4 = w4.document;
+  const id4 = x => d4.getElementById(x);
+  const click4 = el => el && el.dispatchEvent(new w4.MouseEvent('click', { bubbles: true, cancelable: true }));
+
+  await tick(60);
+  click4(id4('btnCusts'));
+  const tbl4 = () => id4('custsTableWrap').textContent;
+  check('[敏感] 「显示敏感信息」按钮不渲染（无明文可展开）', id4('btnSensReveal').style.display === 'none', id4('btnSensReveal').style.display);
+  check('[敏感] 电话列打码为 031****4567', tbl4().indexOf('031****4567') >= 0, tbl4());
+  check('[敏感] 地址列打码为 河北省衡水市****', tbl4().indexOf('河北省衡水市****') >= 0);
+  check('[敏感] 完整地址不出现在页面任何位置', tbl4().indexOf('人民东路') < 0);
+  check('[敏感] 完整电话不出现在页面任何位置', tbl4().indexOf('0318-1234567') < 0);
+
+  /* 编辑弹窗：敏感字段不回填明文 */
+  const editBtn4 = id4('custsTableWrap').querySelector('button[data-cact="edit"][data-id="c02"]');
+  click4(editBtn4);
+  check('[敏感] 编辑弹窗打开', id4('maskCust').classList.contains('on'));
+  check('[敏感] 地址输入框不回填（留空占位）', id4('fAddr').value === '' && /已隐藏/.test(id4('fAddr').placeholder), id4('fAddr').placeholder);
+  check('[敏感] 电话输入框不回填', id4('fPhone').value === '' && /已隐藏/.test(id4('fPhone').placeholder));
+  /* 保存其他字段 → 服务端回填原值，敏感数据不被打码串/空值覆盖 */
+  id4('fNote').value = '敏感账号改备注';
+  click4(id4('btnSaveCust'));
+  await new Promise(r => setTimeout(r, 1100));
+  const srvC4 = (w4.__SRV__.ledgers.sens.customers || []).filter(c => c.id === 'c02')[0];
+  check('[敏感] 保存后库内地址仍为原值', srvC4 && srvC4.addr === '河北省衡水市桃城区人民东路528号', srvC4 && srvC4.addr);
+  check('[敏感] 保存后库内电话仍为原值', srvC4 && srvC4.phone === '0318-1234567', srvC4 && srvC4.phone);
+  check('[敏感] 备注修改正常写入', srvC4 && srvC4.note === '敏感账号改备注', srvC4 && srvC4.note);
+  w4.close();
+
+  /* ================= 五、敏感字段打码：有权限账号（默认收缩，可展开）================= */
+  const dom5 = makeDom({
+    errors,
+    sessionUser: 'demo',
+    data: { demo: { regions: seedRegions, customers: seedCustomers, visits: [] } }
+  });
+  const w5 = dom5.window, d5 = w5.document;
+  const id5 = x => d5.getElementById(x);
+  const click5 = el => el && el.dispatchEvent(new w5.MouseEvent('click', { bubbles: true, cancelable: true }));
+
+  await tick(60);
+  click5(id5('btnCusts'));
+  const tbl5 = () => id5('custsTableWrap').textContent;
+  check('[权限] 默认打码显示电话', tbl5().indexOf('031****4567') >= 0, tbl5());
+  check('[权限] 默认打码显示地址', tbl5().indexOf('河北省衡水市****') >= 0);
+  check('[权限] 默认不出现完整地址', tbl5().indexOf('人民东路') < 0);
+  check('[权限] 「显示敏感信息」按钮可见', id5('btnSensReveal').style.display !== 'none');
+  click5(id5('btnSensReveal'));
+  check('[权限] 点击后展开完整地址', tbl5().indexOf('人民东路') >= 0);
+  check('[权限] 点击后展开完整电话', tbl5().indexOf('0318-1234567') >= 0);
+  check('[权限] 按钮文案切换为「隐藏敏感信息」', id5('btnSensReveal').textContent === '隐藏敏感信息', id5('btnSensReveal').textContent);
+  click5(id5('btnSensReveal'));
+  check('[权限] 再点恢复打码', tbl5().indexOf('031****4567') >= 0 && tbl5().indexOf('人民东路') < 0);
+  w5.close();
 
   /* ================= 输出 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;

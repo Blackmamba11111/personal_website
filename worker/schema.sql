@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS users (
   -- 共享数据集：指向数据归属者的用户名（空 = 自己拥有），一层引用
   share_from  TEXT NOT NULL DEFAULT '',
   -- 登录超时（分钟）：会话滑动过期，默认 30，范围 5~43200
-  session_mins INTEGER NOT NULL DEFAULT 30
+  session_mins INTEGER NOT NULL DEFAULT 30,
+  -- 敏感字段（客户详细地址/联系人电话）对该账号隐藏：1 = 隐藏（服务端打码下发）
+  hide_sensitive INTEGER NOT NULL DEFAULT 0
 );
 
 -- 远程认证服务器（RADIUS / TACACS+ / LDAP）

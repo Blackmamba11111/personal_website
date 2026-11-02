@@ -91,12 +91,13 @@ function mapUser(row, srvMap) {
     serverName: srv ? srv.name : (sid ? '（认证服务器已删除）' : ''),
     serverType: srv ? srv.type : (sid ? '' : source),
     shareFrom: row.share_from || '',
-    sessionMins: normSessionMins(row.session_mins)
+    sessionMins: normSessionMins(row.session_mins),
+    hideSensitive: !!row.hide_sensitive
   };
 }
 function normName(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
 function validUsername(u) { return /^[A-Za-z0-9_.-]{3,32}$/.test(u); }
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive';
 
 /* 登录超时（分钟）：按用户配置，默认 30，范围 5 ~ 43200（30 天）。
    会话为滑动过期：每次通过鉴权的请求都会把过期时间顺延到 now + session_mins。 */
@@ -116,7 +117,8 @@ async function ensureSchema(env) {
     "ALTER TABLE users ADD COLUMN perm TEXT NOT NULL DEFAULT 'rw'",
     "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE users ADD COLUMN share_from TEXT NOT NULL DEFAULT ''",
-    'ALTER TABLE users ADD COLUMN session_mins INTEGER NOT NULL DEFAULT 30'
+    'ALTER TABLE users ADD COLUMN session_mins INTEGER NOT NULL DEFAULT 30',
+    'ALTER TABLE users ADD COLUMN hide_sensitive INTEGER NOT NULL DEFAULT 0'
   ];
   for (const sql of cols) {
     try { await env.DB.prepare(sql).run(); } catch (e) { /* 列已存在 */ }
@@ -313,7 +315,7 @@ async function currentUser(env, request) {
   const token = m[1].trim();
   const row = await env.DB.prepare(
     'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login, ' +
-    'u.source, u.perm, u.server_id, u.session_mins ' +
+    'u.source, u.perm, u.server_id, u.session_mins, u.hide_sensitive ' +
     'FROM sessions s JOIN users u ON u.username = s.username WHERE s.token = ?'
   ).bind(token).first();
   if (!row) return null;
@@ -449,6 +451,34 @@ function sanitizeLedger(d) {
   };
 }
 
+/* ---------- 敏感字段（客户详细地址 / 联系人电话）按用户隐藏 ----------
+   hide_sensitive=1 的账号：GET /api/ledger 时把客户的 addr/phone 就地打码，
+   PUT 时对已存在的客户一律回填库内原值（防止把打码串写回破坏数据）。
+   打码在服务端完成，客户端（列表 / 详情 / CSV / localStorage 镜像）全程拿不到明文。 */
+function maskPhone(p) {
+  p = String(p == null ? '' : p).trim();
+  if (!p) return '';
+  if (p.length < 7) return '****';
+  return p.slice(0, 3) + '****' + p.slice(-4);
+}
+function maskAddr(a) {
+  a = String(a == null ? '' : a).trim();
+  if (!a) return '';
+  const m = a.match(/^([\s\S]{0,14}?[区县市旗])/);
+  return (m ? m[1] : a.slice(0, 8)) + '****';
+}
+function maskLedgerSensitive(d) {
+  d = d || {};
+  return {
+    regions: d.regions || [],
+    visits: d.visits || [],
+    customers: (Array.isArray(d.customers) ? d.customers : []).map(function (c) {
+      if (!c || (c.addr == null && c.phone == null)) return c;
+      return Object.assign({}, c, { addr: maskAddr(c.addr), phone: maskPhone(c.phone) });
+    })
+  };
+}
+
 /* 登录/刷新共用：组装用户可见的数据快照 */
 async function bundleFor(env, u) {
   const isAdmin = u.role === 'admin';
@@ -463,14 +493,15 @@ async function bundleFor(env, u) {
     users = [mapUser(u, srvMap)];
   }
   const ledgers = {};
+  const hideSens = !!u.hideSensitive;
   if (isAdmin) {
     for (const row of users) {
       const d = await readLedger(env, row.username);   /* 共享成员解析到 owner 的数据 */
-      if (d) ledgers[row.username] = d;
+      if (d) ledgers[row.username] = hideSens ? maskLedgerSensitive(d) : d;
     }
   } else {
     const d = await readLedger(env, u.username);
-    if (d) ledgers[u.username] = d;
+    if (d) ledgers[u.username] = hideSens ? maskLedgerSensitive(d) : d;
   }
   for (const x of users) {
     x.sharedWith = await shareMembers(env, x.username);
@@ -810,7 +841,21 @@ async function route(request, env) {
       const exists = await env.DB.prepare('SELECT 1 AS x FROM users WHERE username = ?').bind(scope).first();
       if (!exists) return bad('目标账号不存在', 404);
     }
-    await writeLedger(env, scope, sanitizeLedger(body.data), me.username);
+    const newData = sanitizeLedger(body.data);
+    /* 敏感字段隐藏的账号：已存在客户的 addr/phone 一律回填库内原值，
+       防止前端把打码串（或清空值）写回破坏数据；新建客户的值照常入库 */
+    if (me.hideSensitive) {
+      const oldD = await readLedger(env, scope);
+      const om = {};
+      ((oldD && oldD.customers) || []).forEach(function (c) { if (c && c.id) om[c.id] = c; });
+      newData.customers = (newData.customers || []).map(function (c) {
+        if (c && c.id && om[c.id]) {
+          return Object.assign({}, c, { addr: om[c.id].addr || '', phone: om[c.id].phone || '' });
+        }
+        return c;
+      });
+    }
+    await writeLedger(env, scope, newData, me.username);
     return ok({ scope: scope, updatedAt: nowIso() });
   }
 
@@ -937,9 +982,9 @@ async function route(request, env) {
       return bad('远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，请不要在本地设置密码');
     }
     await env.DB.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins)).run();
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0).run();
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) await writeLedger(env, username, sanitizeLedger(body.data), me.username);
     return ok({ user: mapUser(await env.DB.prepare(
@@ -989,8 +1034,8 @@ async function route(request, env) {
         return bad('远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
-      await env.DB.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ? WHERE username = ?')
-        .bind(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), target).run();
+      await env.DB.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ? WHERE username = ?')
+        .bind(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), target).run();
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad('密码至少 6 位');

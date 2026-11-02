@@ -157,7 +157,8 @@ try {
     ['perm', "ALTER TABLE users ADD COLUMN perm TEXT NOT NULL DEFAULT 'rw'"],
     ['server_id', "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''"],
     ['share_from', "ALTER TABLE users ADD COLUMN share_from TEXT NOT NULL DEFAULT ''"],
-    ['session_mins', 'ALTER TABLE users ADD COLUMN session_mins INTEGER NOT NULL DEFAULT 30']
+    ['session_mins', 'ALTER TABLE users ADD COLUMN session_mins INTEGER NOT NULL DEFAULT 30'],
+    ['hide_sensitive', 'ALTER TABLE users ADD COLUMN hide_sensitive INTEGER NOT NULL DEFAULT 0']
   ];
   add.forEach(function (pair) {
     if (ucols.indexOf(pair[0]) < 0) {
@@ -208,7 +209,8 @@ function mapUser(row, srvMap) {
     serverName: srv ? srv.name : (sid ? '（认证服务器已删除）' : ''),
     serverType: srv ? srv.type : (sid ? '' : source),
     shareFrom: row.share_from || '',
-    sessionMins: normSessionMins(row.session_mins)
+    sessionMins: normSessionMins(row.session_mins),
+    hideSensitive: !!row.hide_sensitive
   };
 }
 
@@ -424,9 +426,9 @@ function ensureServerInput(body, base) {
 /* ---------------- 数据访问 ---------------- */
 const stmtSessionJoin =
   'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login, ' +
-  'u.source, u.perm, u.server_id, u.session_mins ' +
+  'u.source, u.perm, u.server_id, u.session_mins, u.hide_sensitive ' +
   'FROM sessions s JOIN users u ON u.username = s.username WHERE s.token = ?';
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive';
 
 /* 登录超时（分钟）：按用户配置，默认 30，范围 5 ~ 43200（30 天）。
    会话为滑动过期：每次通过鉴权的请求都会把过期时间顺延到 now + session_mins。 */
@@ -574,6 +576,34 @@ function sanitizeLedger(d) {
     visits: Array.isArray(d.visits) ? d.visits : []
   };
 }
+
+/* ---------- 敏感字段（客户详细地址 / 联系人电话）按用户隐藏 ----------
+   hide_sensitive=1 的账号：下发台账时把客户的 addr/phone 就地打码，
+   写入时对已存在的客户一律回填库内原值（防止把打码串写回破坏数据）。
+   打码在服务端完成，客户端（列表 / 详情 / CSV / 本地镜像）全程拿不到明文。 */
+function maskPhone(p) {
+  p = String(p == null ? '' : p).trim();
+  if (!p) return '';
+  if (p.length < 7) return '****';
+  return p.slice(0, 3) + '****' + p.slice(-4);
+}
+function maskAddr(a) {
+  a = String(a == null ? '' : a).trim();
+  if (!a) return '';
+  const m = a.match(/^([\s\S]{0,14}?[区县市旗])/);
+  return (m ? m[1] : a.slice(0, 8)) + '****';
+}
+function maskLedgerSensitive(d) {
+  d = d || {};
+  return {
+    regions: d.regions || [],
+    visits: d.visits || [],
+    customers: (Array.isArray(d.customers) ? d.customers : []).map(function (c) {
+      if (!c || (c.addr == null && c.phone == null)) return c;
+      return Object.assign({}, c, { addr: maskAddr(c.addr), phone: maskPhone(c.phone) });
+    })
+  };
+}
 function bundleFor(u) {
   const isAdmin = u.role === 'admin';
   const srvMap = serversMap();
@@ -586,14 +616,15 @@ function bundleFor(u) {
   }
   users.forEach(function (x) { x.sharedWith = shareMembers(x.username).map(function (m) { return m.username; }); });
   const ledgers = {};
+  const hideSens = !!u.hideSensitive;
   if (isAdmin) {
     db.prepare('SELECT ' + USER_COLS + ' FROM users').all().forEach(function (r) {
       const d = readLedger(r.username);          /* 共享成员解析到 owner 的数据 */
-      if (d) ledgers[r.username] = d;
+      if (d) ledgers[r.username] = hideSens ? maskLedgerSensitive(d) : d;
     });
   } else {
     const d = readLedger(u.username);
-    if (d) ledgers[u.username] = d;
+    if (d) ledgers[u.username] = hideSens ? maskLedgerSensitive(d) : d;
   }
   return {
     user: mapUser(u, srvMap), users: users, ledgers: ledgers, admin: isAdmin,
@@ -986,7 +1017,21 @@ async function handleApi(req, res, url) {
       const exists = db.prepare('SELECT 1 AS x FROM users WHERE username = ?').get(scope);
       if (!exists) return bad(res, '目标账号不存在', 404);
     }
-    writeLedger(scope, sanitizeLedger(body.data), me.username);
+    const newData = sanitizeLedger(body.data);
+    /* 敏感字段隐藏的账号：已存在客户的 addr/phone 一律回填库内原值，
+       防止前端把打码串（或清空值）写回破坏数据；新建客户的值照常入库 */
+    if (me.hideSensitive) {
+      const oldD = readLedger(scope);
+      const om = {};
+      ((oldD && oldD.customers) || []).forEach(function (c) { if (c && c.id) om[c.id] = c; });
+      newData.customers = (newData.customers || []).map(function (c) {
+        if (c && c.id && om[c.id]) {
+          return Object.assign({}, c, { addr: om[c.id].addr || '', phone: om[c.id].phone || '' });
+        }
+        return c;
+      });
+    }
+    writeLedger(scope, newData, me.username);
     return ok(res, { scope: scope, updatedAt: nowIso() });
   }
 
@@ -1130,9 +1175,9 @@ async function handleApi(req, res, url) {
     }
 
     db.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins));
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0);
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
     return ok(res, {
@@ -1182,8 +1227,8 @@ async function handleApi(req, res, url) {
         return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
-      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ? WHERE username = ?')
-        .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), target);
+      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ? WHERE username = ?')
+        .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), target);
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad(res, '密码至少 6 位');

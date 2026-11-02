@@ -1139,6 +1139,7 @@
         </div>
         <span class="hint" id="custsHint" style="display:inline-block;"></span>
         <div class="spacer"></div>
+        <button type="button" class="btn" id="btnSensReveal" title="详细地址与联系人电话默认打码显示，点击切换">显示敏感信息</button>
         <button type="button" class="btn" id="btnImport" title="粘贴 JSON / CSV 批量导入客户，支持导出备份与 CSV 模板">导入数据</button>
         <button type="button" class="btn" id="btnCustsBatchDel" style="display:none;color:var(--miss);border-color:#F5C9C9;">删除选中（0）</button>
       </div>
@@ -1198,6 +1199,10 @@
         <label for="uSessionMins">登录超时（分钟）</label>
         <input type="number" id="uSessionMins" min="5" max="43200" step="1" placeholder="默认 30 分钟">
         <div class="hint">无操作超过该时长后需重新登录；使用中自动续期。范围 5–43200（最长 30 天），留空或填错按 30 处理。</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uHideSens"> 隐藏敏感字段（详细地址 / 联系人电话）</label>
+        <div class="hint">开启后该账号看到的客户详细地址与联系人电话一律打码显示：服务端直接下发打码数据，列表、详情、地图弹窗、导出均拿不到明文，也无法展开查看。</div>
       </div>
       <div class="field" id="uPwdField">
         <label for="uPwd">初始密码 <span class="req">*</span></label>
@@ -1292,6 +1297,14 @@
       <div class="field">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bNoteOn"> 应用备注（覆盖原有备注）</label>
         <input type="text" id="bNote" autocomplete="off" placeholder="留空表示清空所选用户的备注">
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bHideSensOn"> 应用敏感字段可见性</label>
+        <select id="bHideSens">
+          <option value="0">可见 — 正常显示客户详细地址与联系人电话</option>
+          <option value="1">隐藏 — 打码显示（服务端下发打码数据，无法展开）</option>
+        </select>
+        <div class="hint">敏感字段指客户详细地址与联系人电话；隐藏后列表 / 详情 / 导出全部打码。</div>
       </div>
     </div>
     <div class="modal-foot">
@@ -3723,10 +3736,10 @@
     document.getElementById('dName').textContent = c.name;
     document.getElementById('dSub').textContent =
       regionNameOf(c) + ' · ' + (c.province || '') + (c.city ? ' · ' + c.city : '');
-    document.getElementById('dAddr').textContent = c.addr || '未填写详细地址';
+    document.getElementById('dAddr').textContent = dispAddr(c.addr) || '未填写详细地址';
     document.getElementById('dCoord').textContent =
       '坐标系 GCJ-02：' + (typeof c.lng === 'number' ? c.lng.toFixed(6) + ', ' + c.lat.toFixed(6) : '未设置') +
-      (c.contact ? '　联系人：' + c.contact + (c.phone ? ' (' + c.phone + ')' : '') : '');
+      (c.contact ? '　联系人：' + c.contact + (c.phone ? ' (' + dispPhone(c.phone) + ')' : '') : '');
     var badge = document.getElementById('dStatus');
     badge.className = 'badge ' + s.status;
     if (s.months) {
@@ -3923,9 +3936,14 @@
     fillProvinceOptions(prov);
     fillCityOptions(prov, c ? c.city : '');
     document.getElementById('fName').value = c ? c.name : '';
-    document.getElementById('fAddr').value = c ? (c.addr || '') : '';
+    /* 敏感字段无权限：不回填（服务端也不接受该账号改写已存在客户的地址/电话） */
+    var noSens = !canSeeSensitive();
+    var fAddrEl = document.getElementById('fAddr'), fPhoneEl = document.getElementById('fPhone');
+    fAddrEl.value = noSens ? '' : (c ? (c.addr || '') : '');
+    fAddrEl.placeholder = noSens ? '已隐藏（保存时保持库内原值）' : '';
+    fPhoneEl.value = noSens ? '' : (c ? (c.phone || '') : '');
+    fPhoneEl.placeholder = noSens ? '已隐藏（保存时保持库内原值）' : '';
     document.getElementById('fContact').value = c ? (c.contact || '') : '';
-    document.getElementById('fPhone').value = c ? (c.phone || '') : '';
     document.getElementById('fNote').value = c ? (c.note || '') : '';
 
     if (c && isFinite(c.lng) && isFinite(c.lat)) {
@@ -4162,12 +4180,12 @@
         (lack.length ? '待补 ' + lack.map(monthLabel).join('、')
                      : '已达标 ' + s.months.length + '/' + s.months.length + ' 个月');
       rows.push([
-        c.name, regionNameOf(c), c.province || '', c.city || '', c.addr || '',
+        c.name, regionNameOf(c), c.province || '', c.city || '', dispAddr(c.addr) || '',
         typeof c.lng === 'number' ? c.lng : '', typeof c.lat === 'number' ? c.lat : '',
         s.freq.label, s.freq.perMonth ? '按月（每月1次）' : '按季度',
         s.target, s.count, lackTxt,
         s.status === 'ok' ? '已巡检' : (s.status === 'part' ? '部分完成' : '未巡检'),
-        yCount, last ? last.date : '', last ? (last.note || '') : '', c.contact || '', c.phone || '', c.note || ''
+        yCount, last ? last.date : '', last ? (last.note || '') : '', c.contact || '', dispPhone(c.phone) || '', c.note || ''
       ].map(csvCell).join(','));
     });
     download('客户巡检报表_' + qk + '.csv', rows.join('\r\n'), 'text/csv');
@@ -5584,6 +5602,37 @@
     });
   }
 
+  /* ---------- 敏感字段（详细地址 / 联系人电话）按用户打码 ----------
+     hide_sensitive=1 的账号：服务端直接下发打码数据，前端无明文可还原；
+     其他账号：默认打码显示（收缩），点击「显示敏感信息」临时展开（仅本次会话）。 */
+  var sensReveal = false;
+  function canSeeSensitive() { return !(AUTH.user && AUTH.user.hideSensitive); }
+  function maskPhone(p) {
+    p = String(p == null ? '' : p).trim();
+    if (!p) return '';
+    if (p.length < 7) return '****';
+    return p.slice(0, 3) + '****' + p.slice(-4);
+  }
+  function maskAddr(a) {
+    a = String(a == null ? '' : a).trim();
+    if (!a) return '';
+    var m = a.match(/^([\s\S]{0,14}?[区县市旗])/);
+    return (m ? m[1] : a.slice(0, 8)) + '****';
+  }
+  /* 展示口径：无权限 → 服务端已打码，原样返回；有权限 → 未展开时前端打码 */
+  function dispPhone(p) {
+    p = String(p == null ? '' : p).trim();
+    if (!p) return '';
+    if (!canSeeSensitive()) return p;
+    return sensReveal ? p : maskPhone(p);
+  }
+  function dispAddr(a) {
+    a = String(a == null ? '' : a).trim();
+    if (!a) return '';
+    if (!canSeeSensitive()) return a;
+    return sensReveal ? a : maskAddr(a);
+  }
+
   /* 查询：名称 / 地址 / 联系人 / 电话 / 省市 / 区域 任一字段命中即保留 */
   function custsRows() {
     var kwEl = document.getElementById('custsSearch');
@@ -5604,6 +5653,12 @@
 
   function renderCustsPage() {
     if (!AUTH.user) return;
+    /* 「显示敏感信息」按钮：无权限账号不可见（服务端已打码，无明文可展开） */
+    var rb = document.getElementById('btnSensReveal');
+    if (rb) {
+      rb.style.display = canSeeSensitive() ? '' : 'none';
+      rb.textContent = sensReveal ? '隐藏敏感信息' : '显示敏感信息';
+    }
     var merged = (AUTH.scope === SCOPE_ALL);
     var all = (DB.customers || []).length;
     /* 清掉已不存在（被删除 / 切换数据范围）的勾选，避免误删其他账号的数据 */
@@ -5658,9 +5713,9 @@
         (merged ? '<td><span class="own">' + esc(c.ownerName || c.owner || '—') + '</span></td>' : '') +
         '<td>' + esc(rn) + '</td>' +
         '<td>' + esc(pc || '—') + '</td>' +
-        '<td class="addr">' + esc(c.addr || '—') + '</td>' +
+        '<td class="addr">' + esc(dispAddr(c.addr) || '—') + '</td>' +
         '<td>' + esc(c.contact || '—') + '</td>' +
-        '<td class="dim">' + esc(c.phone || '—') + '</td>' +
+        '<td class="dim">' + esc(dispPhone(c.phone) || '—') + '</td>' +
         '<td class="dim">' + custsCoordText(c) + '</td>' +
         '<td>' + esc(custsFreqLabel(c.freq)) + '</td>' +
         '<td class="op">' +
@@ -5810,7 +5865,7 @@
     var selfIn = targets.some(function (u) { return u.id === AUTH.user.id; });
     document.getElementById('batchUserTitle').textContent =
       '批量编辑用户（已选 ' + targets.length + ' 个' + (selfIn ? '，含当前登录账号' : '') + '）';
-    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn'].forEach(function (id) {
+    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn', 'bHideSensOn'].forEach(function (id) {
       document.getElementById(id).checked = false;
     });
     document.getElementById('bRole').value = 'user';
@@ -5819,6 +5874,7 @@
     document.getElementById('bSessionMins').value = '';
     document.getElementById('bNote').value = '';
     document.getElementById('bName').value = '';
+    document.getElementById('bHideSens').value = '0';
     /* 账号类型 / 认证服务器下拉（与新建用户弹窗同一套数据源） */
     document.getElementById('bSourceType').value = 'local';
     document.getElementById('bSourcePwd').value = '';
@@ -5863,6 +5919,8 @@
       basePatch.status = document.getElementById('bStatus').value === 'disabled' ? 'disabled' : 'active';
     if (document.getElementById('bNoteOn').checked)
       basePatch.note = document.getElementById('bNote').value.trim();
+    if (document.getElementById('bHideSensOn').checked)
+      basePatch.hideSensitive = document.getElementById('bHideSens').value === '1';
     if (document.getElementById('bMinsOn').checked) {
       var minsRaw = document.getElementById('bSessionMins').value.trim();
       var mins = Number(minsRaw);
@@ -6047,7 +6105,7 @@
         '</div></td>' +
         '<td>' + esc(u.name) + '</td>' +
         '<td>' + seqTag(u) + '</td>' +
-        '<td>' + permTag(u) + '</td>' +
+        '<td>' + permTag(u) + (u.hideSensitive ? ' <span class="tag ro" title="客户详细地址 / 联系人电话对该账号打码显示">隐藏敏感</span>' : '') + '</td>' +
         '<td><span class="tag ' + (u.role === 'admin' ? 'admin' : 'user') + '">' + roleText(u) + '</span></td>' +
         '<td><span class="tag ' + (u.status === 'active' ? 'active' : 'disabled') + '">' +
           (u.status === 'active' ? '启用中' : '已停用') + '</span></td>' +
@@ -6123,6 +6181,7 @@
     document.getElementById('uRole').value = u ? u.role : 'user';
     document.getElementById('uPerm').value = u ? (u.perm === 'ro' ? 'ro' : 'rw') : 'rw';
     document.getElementById('uSessionMins').value = u ? (u.sessionMins || 30) : 30;
+    document.getElementById('uHideSens').checked = u ? !!u.hideSensitive : false;
     document.getElementById('uNote').value = u ? (u.note || '') : '';
     document.getElementById('uPwd').value = '';
 
@@ -6154,6 +6213,7 @@
         document.getElementById('uRole').value = cloneFrom.role === 'admin' ? 'admin' : 'user';
         document.getElementById('uPerm').value = cloneFrom.perm === 'ro' ? 'ro' : 'rw';
         document.getElementById('uSessionMins').value = cloneFrom.sessionMins || 30;
+        document.getElementById('uHideSens').checked = !!cloneFrom.hideSensitive;
         document.getElementById('uNote').value = cloneFrom.note || '';
         var cRemote = (cloneFrom.source || 'local') !== 'local';
         document.getElementById('uSourceType').value = cRemote ? 'remote' : 'local';
@@ -6236,7 +6296,8 @@
         toast('至少需要保留一个超级管理员，无法降级'); return;
       }
       var wasRemote = (target.source || 'local') !== 'local';
-      var patch = { name: name, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins };
+      var patch = { name: name, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins,
+        hideSensitive: document.getElementById('uHideSens').checked };
       /* 远程 → 本地：必须补一个本地初始密码，否则该账号无法再登录 */
       if (wasRemote && !remote) {
         var np = String(document.getElementById('uPwd').value || '');
@@ -6250,7 +6311,7 @@
           refreshUsersThen(true).then(function () {
             if (target.username === AUTH.user.username) {
               var me = findUser(AUTH.user.username);
-              if (me) { AUTH.user = me; renderUserChip(); }
+              if (me) { AUTH.user = me; sensReveal = false; renderUserChip(); }
               if (!isAdmin()) applyScope(AUTH.user.username);
               renderScopeSelect();
             }
@@ -6285,7 +6346,8 @@
     initDataP.then(function (initData) {
       if (!initData) return;
       var payload = {
-        username: username, name: name, role: role, note: note, perm: perm, sessionMins: mins
+        username: username, name: name, role: role, note: note, perm: perm, sessionMins: mins,
+        hideSensitive: document.getElementById('uHideSens').checked
       };
       if (initData.shareFrom) payload.shareFrom = initData.shareFrom;
       else payload.data = initData;
@@ -6496,6 +6558,12 @@
     document.getElementById('custsTableWrap').addEventListener('click', custsRowAction);
     document.getElementById('custsTableWrap').addEventListener('change', custsSelChange);
     document.getElementById('btnCustsBatchDel').addEventListener('click', custsBatchDelete);
+    document.getElementById('btnSensReveal').addEventListener('click', function () {
+      sensReveal = !sensReveal;
+      this.textContent = sensReveal ? '隐藏敏感信息' : '显示敏感信息';
+      renderCustsPage();
+      toast(sensReveal ? '已展开敏感信息（仅本次会话有效）' : '已收缩敏感信息');
+    });
     document.getElementById('btnSaveUser').addEventListener('click', saveUser);
     document.getElementById('btnSavePwd').addEventListener('click', savePwd);
 
@@ -6553,6 +6621,7 @@
   /* ---------------- 启动 ---------------- */
   function signIn(user, opts) {
     AUTH.user = user;
+    sensReveal = false;                      /* 换账号 / 重新登录后敏感信息恢复收缩态 */
     AUTH.scope = (user.role === 'admin') ? SCOPE_ALL : user.username;
     AUTH.attachMax = (opts && opts.attachMax) || 0;
     AUTH.servers = (opts && opts.servers) || AUTH.servers || [];
