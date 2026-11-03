@@ -172,6 +172,23 @@
   .m-caption{font-size:11.5px;color:var(--text-3);margin-bottom:6px;}
   .empty{padding:36px 16px;text-align:center;color:var(--text-3);font-size:12.5px;}
 
+  /* ---------- 巡检分组（客户内部分组，可选） ---------- */
+  .unit-row{display:grid;grid-template-columns:1.15fr .9fr 1.3fr 26px;gap:6px;margin-top:6px;align-items:center;}
+  .unit-row input{padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12.5px;
+                  background:#fff;color:var(--text);min-width:0;}
+  .unit-row input:focus{outline:none;border-color:#93B4F0;}
+  .unit-del{width:26px;height:26px;border:none;border-radius:6px;background:transparent;color:var(--text-3);
+            font-size:13px;cursor:pointer;line-height:1;}
+  .unit-del:hover{background:var(--miss-soft);color:#B91C1C;}
+  .unit-checks{display:flex;flex-wrap:wrap;gap:6px 10px;}
+  .unit-checks label{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--text);
+                     border:1px solid var(--border);border-radius:8px;padding:5px 10px;cursor:pointer;background:#fff;}
+  .unit-checks label:has(input:checked){border-color:#93B4F0;background:#EEF4FE;}
+  .unit-checks input{margin:0;accent-color:#2563EB;}
+  .unit-tag{background:#EEF4FE;border:1px solid #C7DBF8;color:#1D4ED8;}
+  .u-cap{font-size:11.5px;color:var(--text-3);margin-bottom:6px;line-height:1.5;}
+  .u-cap b{color:var(--text);}
+
   /* ---------- Map ---------- */
   .map-wrap{flex:1;position:relative;min-width:0;background:#E8ECF3;overflow:hidden;z-index:10;}
   #map{position:absolute;inset:0;z-index:0;}
@@ -790,6 +807,13 @@
         <div class="hint" style="margin-top:6px;">选择「一年 12 次」即按月考核：每个自然月需巡检 1 次，季度内 3 个月各 1 次；同一个月内多次巡检只计 1 个月达标。</div>
       </div>
 
+      <div class="field">
+        <label>巡检分组（可选）</label>
+        <div class="hint" style="display:inline;font-weight:400;margin-left:6px;">同一客户内多个项目组 / 机房 / 设备组分别采购、分别维护时在此分行登记；登记巡检时可按组勾选，全部组都有巡检记录才算该客户达标。不需要分组的客户留空即可。</div>
+        <div id="unitRows"></div>
+        <button type="button" class="btn sm" id="btnAddUnit" style="margin-top:8px;">＋ 添加分组</button>
+      </div>
+
       <div class="grid2">
         <div class="field">
           <label>联系人</label>
@@ -845,6 +869,16 @@
 
       <div id="dMonths" style="display:none;margin-bottom:13px;"></div>
 
+      <div class="readonly-box" id="dUnits" style="display:none;margin-bottom:13px;">
+        <div class="m-caption" id="dUnitsCaption"></div>
+        <div class="scroll-x" style="width:100%;">
+          <table class="mini" id="dUnitsTable">
+            <thead><tr><th>分组</th><th>负责人</th><th>本季度状态</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="field">
         <label>登记本次巡检</label>
         <div class="grid2">
@@ -867,6 +901,10 @@
             <option value="issue">巡检结果：异常</option>
             <option value="other">巡检结果：其他（未巡检）</option>
           </select>
+        </div>
+        <div class="field" id="dVisitUnitsWrap" style="display:none;margin-top:8px;">
+          <label>巡检对象 <span class="hint" style="display:inline;font-weight:400;">（勾选本次巡到的分组；默认全选，只巡了部分分组就只勾对应分组，其余组另行登记）</span></label>
+          <div class="unit-checks" id="dVisitUnits"></div>
         </div>
         <textarea id="dVisitNote" placeholder="巡检备注：本次巡检内容、发现问题、处理结果等" style="margin-top:8px;"></textarea>
 
@@ -1666,6 +1704,37 @@
     other: { label: '其他（未巡检）', cls: 'res-other', uncounted: true }
   };
   function isCountedVisit(v) { return !(v && v.result === 'other'); }
+
+  /* ---------------- 巡检分组（客户内部分组，可选，叫法自由） ----------------
+     客户档案 units: [{id,name,owner,note}]，仅部分客户启用；未建分组的客户走原逻辑。
+     visit.unitIds: 本次巡检覆盖的分组 id 数组；空数组/缺省 = 整体巡检（视为覆盖全部分组）。
+     完成度：当前考核窗口内逐分组判定，全部分组都有有效巡检（result≠other）才算客户达标。 */
+  function unitsOf(c) {
+    return (c && Array.isArray(c.units))
+      ? c.units.filter(function (u) { return u && u.id && String(u.name || '').trim(); })
+      : [];
+  }
+  function unitIdsOf(v) {
+    var a = v && v.unitIds;
+    return Array.isArray(a) ? a.filter(function (x) { return x; }) : [];
+  }
+  /* 一条巡检记录是否覆盖某分组：unitIds 命中，或整体巡检（未勾选分组）覆盖全部 */
+  function visitCoversUnit(v, uidStr) {
+    var ids = unitIdsOf(v);
+    return !ids.length || ids.indexOf(uidStr) >= 0;
+  }
+  /* 一组巡检记录覆盖到的分位数：返回 [已覆盖数, 分组总数] */
+  function coveredUnitsCount(units, vs) {
+    var done = units.filter(function (u) {
+      return vs.some(function (v) { return visitCoversUnit(v, u.id); });
+    }).length;
+    return [done, units.length];
+  }
+  function unitNameOf(c, uidStr) {
+    var u = unitsOf(c).filter(function (x) { return x.id === uidStr; })[0];
+    return u ? String(u.name).trim() : '';
+  }
+
   function visitModeLabel(v) { return (v && VISIT_MODES[v.mode]) || ''; }
   function visitResultOf(v) {
     return VISIT_RESULTS[v && v.result] || { label: '', cls: '' };
@@ -1870,13 +1939,30 @@
   }
   function statusOf(c, qk) {
     var f = FREQ[c.freq] || FREQ.y4;
+    var units = unitsOf(c);
     var cnt = visitsInQuarter(c.id, qk).length;
-    var st, mc = null, need = 0, done = 0;
-    if (f.perMonth) {
+    var st, mc = null, need = 0, done = 0, uDone = 0, uTotal = 0;
+    if (units.length) {
+      /* 分组客户：按「分组是否在考核窗口内全部覆盖」判定（未选分组的整体巡检视为覆盖全部） */
+      var cov = coveredUnitsCount(units, visitsInQuarter(c.id, qk));
+      uDone = cov[0]; uTotal = cov[1];
+      if (f.perMonth) {
+        mc = monthCoverage(c, qk);
+        var el = mc.filter(function (x) { return x.elapsed; });
+        need = el.length;
+        done = el.filter(function (x) { return x.done; }).length;
+        if (!need) st = cnt ? 'ok' : 'miss';
+        else if (done === 0) st = 'miss';
+        else if (done >= need) st = 'ok';
+        else st = 'part';
+      } else {
+        st = uDone === 0 ? 'miss' : (uDone >= uTotal ? 'ok' : 'part');
+      }
+    } else if (f.perMonth) {
       mc = monthCoverage(c, qk);
-      var el = mc.filter(function (x) { return x.elapsed; });
-      need = el.length;
-      done = el.filter(function (x) { return x.done; }).length;
+      var el2 = mc.filter(function (x) { return x.elapsed; });
+      need = el2.length;
+      done = el2.filter(function (x) { return x.done; }).length;
       if (!need) st = cnt ? 'ok' : 'miss';
       else if (done === 0) st = 'miss';
       else if (done >= need) st = 'ok';
@@ -1886,7 +1972,8 @@
     }
     return {
       count: cnt, target: f.perQuarter, status: st, freq: f,
-      months: mc, monthNeed: need, monthDone: done
+      months: mc, monthNeed: need, monthDone: done,
+      units: units.length ? { total: uTotal, done: uDone } : null
     };
   }
   function quarterParts(qk) { var p = qk.split('Q'); return { y: +p[0], q: +p[1] }; }
@@ -1905,15 +1992,21 @@
       return p.y < cy || (p.y === cy && m <= cm);
     });
   }
-  /* 逐月巡检覆盖情况：done=当月已巡检，elapsed=该月是否已到 */
+  /* 逐月巡检覆盖情况：done=当月已达标，elapsed=该月是否已到
+     分组客户：当月全部分组都被覆盖才算该月达标（每月对每组各巡 1 次） */
   function monthCoverage(c, qk) {
-    var p = quarterParts(qk), el = elapsedMonthsOf(qk), vs = visitsInQuarter(c.id, qk);
+    var p = quarterParts(qk), el = elapsedMonthsOf(qk), vs = visitsInQuarter(c.id, qk), units = unitsOf(c);
     return monthsOfQuarter(qk).map(function (m) {
-      var n = vs.filter(function (v) {
+      var mv = vs.filter(function (v) {
         var d = parseDate(v.date);
         return d && d.getFullYear() === p.y && d.getMonth() + 1 === m;
-      }).length;
-      return { month: m, count: n, done: n >= 1, elapsed: el.indexOf(m) >= 0 };
+      });
+      var cov = coveredUnitsCount(units, mv);
+      return {
+        month: m, count: mv.length,
+        done: units.length ? cov[0] >= cov[1] : mv.length >= 1,
+        elapsed: el.indexOf(m) >= 0
+      };
     });
   }
   /* 待补月份（已到但未巡检），返回月份数字数组 */
@@ -2078,6 +2171,12 @@
       if (s.status === 'ok') return '月度达标 ' + s.monthDone + '/' + s.monthNeed;
       if (s.status === 'part') return '缺 ' + (s.monthNeed - s.monthDone) + ' 个月';
       return '未巡检 0/' + s.monthNeed + ' 月';
+    }
+    if (s.units) {
+      /* 分组客户：n/m 为分组覆盖数 */
+      if (s.status === 'ok') return '全部完成 ' + s.units.done + '/' + s.units.total + ' 组';
+      if (s.status === 'part') return '部分 ' + s.units.done + '/' + s.units.total + ' 组';
+      return '未巡检 0/' + s.units.total + ' 组';
     }
     if (s.status === 'ok') return '已巡检 ' + s.count + '/' + s.target;
     if (s.status === 'part') return '部分 ' + s.count + '/' + s.target;
@@ -3420,7 +3519,7 @@
   /* ---------------- 巡检附件（上传 / 预览 / 删除） ----------------
      流程：选文件 → 本地队列（图片给缩略图）→ 保存巡检记录时逐个 POST /api/attach
      → 拿到 {id,url} 后随巡检记录一起落到台账。附件本身独立存储，不进台账 JSON。 */
-  var ATTACH_MAX_FALLBACK = 20 * 1024 * 1024;
+  var ATTACH_MAX_FALLBACK = 100 * 1024 * 1024;
   var pendingAtts = [];
   var ATT_SEQ = 0;
 
@@ -3779,6 +3878,10 @@
       badge.textContent = s.status === 'ok'
         ? '本季度月度达标'
         : (s.status === 'part' ? '本季度缺 ' + (s.monthNeed - s.monthDone) + ' 个月' : '本季度未巡检');
+    } else if (s.units) {
+      badge.textContent = s.status === 'ok'
+        ? '本季度全部分组已巡检'
+        : (s.status === 'part' ? '本季度部分分组已巡检 ' + s.units.done + '/' + s.units.total : '本季度未巡检');
     } else {
       badge.textContent = s.status === 'ok' ? '本季度已巡检' : (s.status === 'part' ? '本季度部分完成' : '本季度未巡检');
     }
@@ -3814,15 +3917,40 @@
       mBox.innerHTML = '';
     }
 
+    /* 巡检分组：逐组列出负责人与本季度覆盖状态（未建分组的客户不显示） */
+    var uBox = document.getElementById('dUnits');
+    var units = unitsOf(c);
+    if (units.length) {
+      var uvs = visitsInQuarter(id, qk);
+      uBox.style.display = 'block';
+      document.getElementById('dUnitsCaption').innerHTML =
+        '巡检分组 <b>' + units.length + '</b> 个：当前季度每个分组都有有效巡检记录，该客户才算达标。';
+      document.querySelector('#dUnitsTable tbody').innerHTML = units.map(function (u) {
+        var done = uvs.some(function (v) { return visitCoversUnit(v, u.id); });
+        return '<tr><td>' + esc(u.name) + '</td><td>' + esc(u.owner || '—') + '</td><td>' +
+          (done ? '<span class="vtag res-ok">已巡检</span>' : '<span class="vtag res-issue">未巡检</span>') +
+          '</td></tr>';
+      }).join('');
+    } else {
+      uBox.style.display = 'none';
+      document.querySelector('#dUnitsTable tbody').innerHTML = '';
+    }
+
     var tl = visitsOf(id), html = '';
     if (!tl.length) html = '<div class="hint" style="padding:4px 0;">暂无巡检记录</div>';
     tl.forEach(function (v) {
       var res = visitResultOf(v), mode = visitModeLabel(v);
+      var vids = unitIdsOf(v), uTag = '';
+      if (units.length && vids.length) {
+        var unames = vids.map(function (x) { return unitNameOf(c, x); }).filter(Boolean);
+        if (unames.length) uTag = '<span class="vtag mode unit-tag">' + esc(unames.join('、')) + '</span>';
+      }
       html += '<div class="tl-item' + (quarterOfVisit(v) === qk ? ' cur' : '') + '">' +
         '<div class="tl-date">' + fmtDate(v.date) +
         '<span class="q">' + quarterOfVisit(v).replace('Q', ' 年 Q') + '</span>' +
         (v.by ? '<span class="q">· ' + esc(v.by) + '</span>' : '') +
         (mode ? '<span class="vtag mode">' + mode + '</span>' : '') +
+        uTag +
         (res.label ? '<span class="vtag ' + res.cls + '">' + res.label + '</span>' : '') +
         '<button type="button" class="tl-del" data-vid="' + v.id + '">删除</button></div>' +
         (v.note ? '<div class="tl-note">' + esc(v.note) + '</div>' : '') +
@@ -3856,6 +3984,19 @@
     document.getElementById('dVisitNote').value = '';
     document.getElementById('dVisitMode').value = 'onsite';
     document.getElementById('dVisitResult').value = 'ok';
+    /* 巡检对象：客户建了分组才出现，默认全选（一次巡完常见），只巡部分就取消勾选 */
+    var uw = document.getElementById('dVisitUnitsWrap'), ub = document.getElementById('dVisitUnits');
+    if (units.length) {
+      uw.style.display = 'block';
+      ub.innerHTML = units.map(function (u) {
+        return '<label><input type="checkbox" value="' + esc(u.id) + '" checked>' + esc(u.name) +
+          (u.owner ? '<i style="font-style:normal;color:var(--text-3);font-size:11px;">' + esc(u.owner) + '</i>' : '') +
+          '</label>';
+      }).join('');
+    } else {
+      uw.style.display = 'none';
+      ub.innerHTML = '';
+    }
     clearPendingAtts();
     document.getElementById('attachTip').textContent =
       '附件：图片 / 文件，可多选、可直接粘贴或拖入；可在线浏览图片、PDF、Excel、Word（单个上限 ' + fmtSize(attachLimit()) + '）';
@@ -3864,6 +4005,11 @@
       if (!date) { toast('请选择巡检日期'); return; }
       var by = document.getElementById('dVisitBy').value.trim();
       if (!by) { toast('请填写巡检人'); document.getElementById('dVisitBy').focus(); return; }
+      /* 本次巡到的分组：部分勾选存所选 id；全选存空数组 = 整体巡检 */
+      var selIds = units.length
+        ? Array.prototype.map.call(document.querySelectorAll('#dVisitUnits input:checked'), function (cb) { return cb.value; })
+        : [];
+      if (units.length && !selIds.length) { toast('请至少勾选一个本次巡检的分组'); return; }
       var btn = this;
       if (btn.disabled) return;
       var commit = function (atts) {
@@ -3873,6 +4019,7 @@
           note: document.getElementById('dVisitNote').value.trim(),
           mode: document.getElementById('dVisitMode').value,
           result: document.getElementById('dVisitResult').value,
+          unitIds: (units.length && selIds.length === units.length) ? [] : selIds,
           atts: atts
         });
         clearPendingAtts();
@@ -3990,6 +4137,15 @@
       document.getElementById('fLat').value = f0 ? f0[2].toFixed(6) : (pp ? pp.center[1].toFixed(6) : '');
     }
     setFreq(c ? c.freq : 'y4');
+    CUST_UNITS = (c && Array.isArray(c.units)) ? c.units.map(function (u) { return Object.assign({}, u); }) : [];
+    renderUnitRows();
+    document.getElementById('btnAddUnit').onclick = function () {
+      syncUnitInputs();
+      CUST_UNITS.push({ id: '', name: '', owner: '', note: '' });
+      renderUnitRows();
+      var rows2 = document.querySelectorAll('#unitRows .unit-row .u-name');
+      if (rows2.length) rows2[rows2.length - 1].focus();
+    };
     clearCandidates();
     placeHint('');
 
@@ -4024,6 +4180,57 @@
     return on ? on.getAttribute('data-freq') : 'y4';
   }
 
+  /* ---------------- 巡检分组编辑（客户表单内，可选） ----------------
+     CUST_UNITS 为编辑草稿：已存分组保留原 id（巡检记录 unitIds 引用它），
+     新增行落库时才分配 id。分组名称自由命名（项目组 / 机房 / 设备组均可），
+     仅存在该客户名下，不做全局统一。 */
+  var CUST_UNITS = [];
+  function renderUnitRows() {
+    var box = document.getElementById('unitRows');
+    if (!box) return;
+    box.innerHTML = CUST_UNITS.map(function (u, i) {
+      return '<div class="unit-row" data-ui="' + i + '">' +
+        '<input type="text" class="u-name" placeholder="分组名称（必填）" value="' + esc(u.name || '') + '">' +
+        '<input type="text" class="u-owner" placeholder="负责人（选填）" value="' + esc(u.owner || '') + '">' +
+        '<input type="text" class="u-note" placeholder="备注（选填）" value="' + esc(u.note || '') + '">' +
+        '<button type="button" class="unit-del" title="删除该分组" aria-label="删除该分组">✕</button></div>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('.unit-del'), function (b) {
+      b.onclick = function () {
+        CUST_UNITS.splice(Number(b.parentNode.getAttribute('data-ui')), 1);
+        renderUnitRows();
+      };
+    });
+  }
+  /* 读取行内输入到草稿（保存前调用；名称为空的行按「该行未填」处理） */
+  function syncUnitInputs() {
+    var box = document.getElementById('unitRows');
+    if (!box) return;
+    Array.prototype.forEach.call(box.querySelectorAll('.unit-row'), function (row) {
+      var i = Number(row.getAttribute('data-ui'));
+      if (!CUST_UNITS[i]) return;
+      CUST_UNITS[i].name = row.querySelector('.u-name').value.trim();
+      CUST_UNITS[i].owner = row.querySelector('.u-owner').value.trim();
+      CUST_UNITS[i].note = row.querySelector('.u-note').value.trim();
+    });
+  }
+  /* 保存前整理：去掉未填名称的行、补 id、查重名；返回 null 表示校验未过（已 toast） */
+  function collectUnitsForm() {
+    syncUnitInputs();
+    var rows = CUST_UNITS.filter(function (u) { return u.name || u.owner || u.note; });
+    for (var i = 0; i < rows.length; i++) {
+      if (!rows[i].name) { toast('第 ' + (i + 1) + ' 个分组的名称不能为空'); return null; }
+    }
+    var units = [], seen = {};
+    rows.forEach(function (u) {
+      var nm = u.name;
+      if (seen[nm.toLowerCase()]) return;          /* 重名行静默去重，保留首个 */
+      seen[nm.toLowerCase()] = true;
+      units.push({ id: u.id || uid('u'), name: nm, owner: u.owner || '', note: u.note || '' });
+    });
+    return units;
+  }
+
   function collectForm() {
     return {
       id: editingId,
@@ -4049,6 +4256,9 @@
     if (custNameExists(d.name, d.id)) { toast('客户「' + d.name + '」已存在'); return; }
     if (!isFinite(d.lng) || !isFinite(d.lat)) { toast('请填写或拾取经纬度坐标'); return; }
     if (d.lng < 73 || d.lng > 136 || d.lat < 3 || d.lat > 54) { toast('坐标超出中国境内合理范围，请检查'); return; }
+    var units = collectUnitsForm();
+    if (units === null) return;
+    d.units = units;                             /* 不建分组的客户存空数组，判定时走原逻辑 */
     if (d.id) {
       DB.customers = DB.customers.map(function (c) { return c.id === d.id ? Object.assign({}, c, d) : c; });
       toast('客户资料已更新');
@@ -4093,7 +4303,9 @@
         var lack = missingMonths(s);
         var tagTxt = s.months
           ? (lack.length ? '缺 ' + lack.length + ' 个月' : '月度达标')
-          : (s.status === 'miss' ? '未巡检 0/' + s.target : s.count + '/' + s.target + ' 次');
+          : (s.units
+              ? (s.units.done + '/' + s.units.total + ' 组')
+              : (s.status === 'miss' ? '未巡检 0/' + s.target : s.count + '/' + s.target + ' 次'));
         html += '<div class="r-row" data-id="' + c.id + '">' +
           '<span class="r-dot ' + (s.status === 'miss' ? 'miss' : 'part') + '"></span>' +
           '<div class="r-main"><div class="r-name">' + esc(c.name) + '</div>' +
@@ -4218,7 +4430,8 @@
         typeof c.lng === 'number' ? c.lng : '', typeof c.lat === 'number' ? c.lat : '',
         s.freq.label, s.freq.perMonth ? '按月（每月1次）' : '按季度',
         s.target, s.count, lackTxt,
-        s.status === 'ok' ? '已巡检' : (s.status === 'part' ? '部分完成' : '未巡检'),
+        (s.status === 'ok' ? '已巡检' : (s.status === 'part' ? '部分完成' : '未巡检')) +
+          (s.units ? '（分组 ' + s.units.done + '/' + s.units.total + '）' : ''),
         yCount, last ? last.date : '', last ? (last.note || '') : '', c.contact || '', c.phone || '', c.note || ''
       ].map(csvCell).join(','));
     });
@@ -4234,7 +4447,8 @@
       rows.push([x.c.name, regionNameOf(x.c), x.c.province || '', x.c.city || '', x.s.freq.label,
         x.s.freq.perMonth ? '按月（每月1次）' : '按季度', x.s.count, x.s.target,
         lack.length ? '待补 ' + lack.map(monthLabel).join('、') : '',
-        x.s.status === 'miss' ? '未巡检' : '部分完成',
+        (x.s.status === 'miss' ? '未巡检' : '部分完成') +
+          (x.s.units ? '（分组 ' + x.s.units.done + '/' + x.s.units.total + '）' : ''),
         last ? last.date : '无记录', x.c.note || ''].map(csvCell).join(','));
     });
     download('巡检待办清单_' + qk + '.csv', rows.join('\r\n'), 'text/csv');

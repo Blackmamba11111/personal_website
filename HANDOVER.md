@@ -211,7 +211,7 @@
 | `auth_servers` | id(PK, `srv`+10 位 hex), name, type, host, port, enabled, cfg(JSON), created_at, updated_at | 远程认证服务器；`cfg.secret` 只写不回显 |
 | `ledgers` | username(PK), data(JSON TEXT), updated_at, updated_by | 一人一份台账，`data` 为整份 JSON |
 | `sessions` | token(PK), username, created_at, expires_at | Bearer 令牌，30 天 |
-| `attachments` | id(PK, 24 位随机 hex), name, mime, size, owner, created_at, ext(内网版), data(Cloudflare 版) | 巡检附件；Cloudflare 版把文件 base64 存 `data`（D1 单行上限 2MB → 单文件 1MB）；内网版只存元数据，文件落 `DATA_DIR/uploads/<id><ext>`。**`ext` 存的是按文件头嗅探出的真实扩展名，不能用文件名后缀推断**——前端会把图片统一重编码成 JPEG（文件名仍是 `.png`），只按名字找文件会 404 |
+| `attachments` | id(PK, 24 位随机 hex), name, mime, size, owner, created_at, ext(内网版), data(Cloudflare 版) | 巡检附件；Cloudflare 版把文件 base64 存 `data`（D1 单行上限 2MB → 单文件 1MB）；内网版只存元数据，文件落 `DATA_DIR/uploads/<id><ext>`，单文件上限 100MB（2026-11-03 起，`MAX_BODY=200MB` 承接 base64 膨胀）。**`ext` 存的是按文件头嗅探出的真实扩展名，不能用文件名后缀推断**——前端会把图片统一重编码成 JPEG（文件名仍是 `.png`），只按名字找文件会 404 |
 
 ### 5.2 台账 JSON 结构（`ledgers.data`）
 
@@ -228,7 +228,10 @@
       "lng": 116.31286, "lat": 39.97654,         // GCJ-02，与腾讯地图一致
       "freq": "y12",                             // quarter | y4 | y12
       "contact": "王经理", "phone": "", "note": "核心机房，需提前报备",
-      "hasCoords": true
+      "hasCoords": true,
+      "units": [                                 // 可选：巡检分组（客户内部分组，叫法自由，未建分组=走整体口径）
+        { "id": "u01", "name": "核心网络组", "owner": "张三", "note": "" }
+      ]
     }
   ],
   "visits": [                                    // 巡检记录（明细，不预设上限）
@@ -236,6 +239,7 @@
       "by": "潘超", "note": "机房环境温湿度正常，核心交换机无异常告警",
       "mode": "onsite",                          // onsite 现场 | remote 远程（旧数据缺省为未填）
       "result": "ok",                            // ok 正常 | issue 异常 | other 其他（未巡检）
+      "unitIds": ["u01"],                        // 可选：本次巡到的分组 id；空数组/缺省 = 整体巡检（视为覆盖全部分组）
       "atts": [                                  // 附件引用（文件本身不进 JSON）
         { "id": "9f2c…", "name": "机房照片.jpg", "mime": "image/jpeg",
           "size": 182344, "url": "/api/attach/9f2c…" }
@@ -243,6 +247,12 @@
   ]
 }
 ```
+
+**巡检分组完成度口径（2026-11-03 新增）**：客户建了 `units` 后，完成度按考核窗口（季度）逐分组判定——每
+个分组窗口内至少有一条有效巡检（result≠other 且 unitIds 命中或整体巡检）才算该组完成；**全部分组完成客户
+才算达标**。看板徽标/客户列表/提醒列表/CSV 导出均为三态：已完成、部分完成 n/m 组、未巡检 0/m 组。
+y12（按月考核）× 分组：当月**全部分组**都被覆盖才算该月达标。删除分组后客户的 visits 里残留 unitIds 不影响
+判定（按现存 units 归集）。
 
 ### 5.3 浏览器存储键（均为镜像，非权威）
 
@@ -381,18 +391,20 @@ npm run test:board       # 单跑某一套
 | --- | --- | --- |
 | `test-board.js` | 57 | 季度切换、达标判定、客户/巡检增删改、导出、城市候选 |
 | `test-board-edge.js` | 9 | 空数据、极端频率、无坐标客户 |
-| `test-monthly.js` | 41 | 逐月覆盖、当月未到、同月多次只算一次 |
-| `test-auth.js` | 81 | 登录门禁、停用账号、角色边界、汇总只读、数据隔离 |
-| `test-map.js` | 27 | 带洞结构、标记数量、切换与登出时图层重建 |
-| `test-custs.js` | 75 | 客户管理页字段（含「不含巡检数据」反证）、搜索、CRUD、层叠守卫 |
-| `test-home.js` | 95 | 首页结构/动效/降级、部署产物、省界拆分与版本号一致性 |
+| `test-monthly.js` | 44 | 逐月覆盖、当月未到、同月多次只算一次 |
+| `test-auth.js` | 176 | 登录门禁、停用账号、角色边界、汇总只读、数据隔离、远程登录不弹改密 |
+| `test-map.js` | 44 | 带洞结构、标记数量、切换与登出时图层重建、AMap 门面增量同步 |
+| `test-custs.js` | 125 | 客户管理页字段、搜索、CRUD、层叠守卫、敏感字段逐条展开 |
+| `test-units.js` | 39 | 巡检分组：三态判定、整体巡检、y12×分组、表单编辑、详情勾选 |
+| `test-home.js` | 98 | 首页结构/动效/降级、部署产物、省界拆分与版本号一致性 |
 | `test-photo-api.js` | 13 | 照片接口（两版等价） |
-| `test-visits.js` | 39 | 巡检方式/结果/附件/巡检人必填 |
+| `test-visits.js` | 62 | 巡检方式/结果/附件/巡检人必填 |
 | `test-attach.js` | 30 | 附件上传下载、扩展名持久化 |
 | `test-remote-auth.js` | 53 | 本地/远程用户界面、只读拦截、认证服务器增删改测 |
-| `test-protocols.mjs` | 22 | RADIUS/TACACS+/LDAP 真实报文（本地起假服务器，Node 直跑） |
-| `test-worker-api.mjs` | 29 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支 |
-| **合计** | **571** | 约 20 秒跑完 |
+| `test-protocols.mjs` | 27 | RADIUS/TACACS+/LDAP 真实报文（本地起假服务器，Node 直跑） |
+| `test-worker-api.mjs` | 57 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支 |
+| `test-session.mjs` | 20 | 会话滑动过期 |
+| **合计** | **854** | 约 25 秒跑完 |
 
 > `test-protocols.mjs` / `test-worker-api.mjs` 是 `.mjs`（ESM），因为它们直接 import
 > `worker/auth-protocols.mjs` 与 `worker/index.js`。`test-worker-api.mjs` 用 Node 内置

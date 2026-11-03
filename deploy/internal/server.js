@@ -35,7 +35,7 @@ const PORT = parseInt(process.env.PORT || '8443', 10);
 const APP_DIR = path.resolve(process.env.APP_DIR || '/app');
 const DATA_DIR = path.resolve(process.env.DATA_DIR || '/data');
 const HASH_ROUNDS = 400;
-const MAX_BODY = 32 * 1024 * 1024; // 台账 JSON 可能较大
+const MAX_BODY = 200 * 1024 * 1024; // 台账 JSON 较大；附件走 base64 JSON（100MB 文件 ≈ 133MB base64）
 /* 腾讯地图 WebService Key（地点检索代理用）：页面已公开该 Key，此处仅作服务端默认值；
    可用环境变量 TMAP_KEY 覆盖。浏览器直连 apis.map.qq.com 会被 CORS 拦截，必须走本代理。 */
 const DEFAULT_TMAP_KEY = '5BDBZ-G6VEQ-SAM5O-BQSZP-FCV6T-DHFMA';
@@ -719,7 +719,7 @@ function sendPhoto(req, res, p) {
 /* 附件按「不可猜的随机 id」存放并对外只读：<img src> / <iframe src> 无法携带
    Authorization 头，所以读取接口不校验登录；id 为 24 位随机十六进制（96 bit），
    不泄露即不可枚举。只有上传/删除需要登录。 */
-const ATTACH_MAX = 20 * 1024 * 1024;
+const ATTACH_MAX = 100 * 1024 * 1024;
 const ATTACH_MIME = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif',
   '.pdf': 'application/pdf',
