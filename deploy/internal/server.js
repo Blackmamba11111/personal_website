@@ -854,6 +854,13 @@ async function handleApi(req, res, url) {
     if (u.status !== 'active') return bad(res, '该账号已停用，请联系超级管理员。', 403);
 
     const token = newToken();
+    /* 远程账号（RADIUS/TACACS+/LDAP）的口令由认证服务器掌管，本系统不存在
+       「首登改密」。历史遗留的 must_change=1 在登录时自动校正，否则登录后
+       会弹出改密弹窗且该账号永远无法完成。 */
+    if (source !== 'local' && u.must_change) {
+      try { db.prepare('UPDATE users SET must_change = 0 WHERE username = ?').run(u.username); } catch (e) {}
+      u.must_change = 0;
+    }
     const mins = normSessionMins(u.session_mins);
     const exp = new Date(Date.now() + mins * 60000).toISOString();
     db.prepare('INSERT INTO sessions (token, username, created_at, expires_at) VALUES (?, ?, ?, ?)')
@@ -1244,7 +1251,8 @@ async function handleApi(req, res, url) {
         /* 换了认证来源后旧会话的权限语义已变，强制重新登录 */
         db.prepare('DELETE FROM sessions WHERE username = ? AND username <> ?').run(target, me.username);
         if (source !== 'local') {
-          db.prepare('UPDATE users SET salt = ?, hash = ? WHERE username = ?').run('', '', target);
+          /* 改为远程认证后本系统无法改密，遗留的强制改密标记一并清掉 */
+          db.prepare('UPDATE users SET salt = ?, hash = ?, must_change = 0 WHERE username = ?').run('', '', target);
         }
       }
       return ok(res, {

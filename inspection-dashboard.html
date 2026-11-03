@@ -6703,8 +6703,9 @@
     } else {
       maybeAutoRemind();
     }
-    /* 口令为初始值或刚被重置 → 强制先改密（站点对公网开放，默认口令不可长期保留） */
-    if (user.mustChange) startForcePwdGate();
+    /* 口令为初始值或刚被重置 → 强制先改密（站点对公网开放，默认口令不可长期保留）。
+       远程账号（RADIUS/TACACS+/LDAP）口令由认证服务器掌管，本系统无法改密，不进门禁。 */
+    if (user.mustChange && (user.source || 'local') === 'local') startForcePwdGate();
   }
 
   /* ---------- 强制改密门禁 ---------- */

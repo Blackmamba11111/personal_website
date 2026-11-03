@@ -219,6 +219,9 @@ function installApiStub(window, opts) {
         if (String(body.password || '') !== REMOTE_PASSWORD) return bad('用户名或密码不正确。', 401);
       }
       if ((u.status || 'active') !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
+      /* 与两版真实服务端同口径：远程账号口令由认证服务器掌管，登录成功即校正
+         历史遗留的 mustChange=true（否则登录后弹改密弹窗且永远无法完成） */
+      if (src !== 'local' && u.mustChange) u.mustChange = false;
       me = u.username;
       window.sessionStorage.setItem(TOKEN_KEY, TOKEN);
       return ok(bundle(u));
@@ -424,6 +427,8 @@ function installApiStub(window, opts) {
           t.serverId = sid;
           t.source = s ? s.type : 'local';
           if (!s) t.pwd = '';
+          /* 改为远程认证后本系统无法改密，遗留的强制改密标记一并清除（与真实服务端同口径） */
+          if (s) t.mustChange = false;
         }
         if (body.password) {
           if ((t.source || 'local') !== 'local') return bad('远程账号不能在本地重置密码');

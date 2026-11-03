@@ -923,6 +923,34 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 15. 远程账号登录：不弹强制改密 ================= */
+  {
+    /* 历史脏数据：账号先按本地创建（mustChange=true）后被改为 LDAP 认证 */
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+      Object.assign(mkUser({ username: 'ldapuser', name: 'LDAP用户', password: 'x' }), {
+        source: 'ldap', serverId: 'srvL1', pwd: '', mustChange: true
+      })
+    ] };
+    const dom = makeDom({
+      fixture: fx, sessionUser: null, errors,
+      servers: [{ id: 'srvL1', name: '主LDAP', type: 'ldap', host: '10.0.0.3', port: 389, cfg: { secret: 's' } }]
+    });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    id('loginUser').value = 'ldapuser';
+    id('loginPwd').value = 'remote-ok';            /* 桩的远程口令 */
+    click(w, id('btnLogin'));
+    await tick(160);
+    check('[远程] LDAP 账号登录成功', !id('authView').classList.contains('on'));
+    check('[远程] 登录后不弹强制改密弹窗', !id('maskPwd').classList.contains('on'));
+    check('[远程] 强制改密横幅不显示', (id('forcePwdTip') || {}).style === undefined || id('forcePwdTip').style.display !== 'block');
+    await tick(60);
+    check('[远程] 会话内用户为 LDAP 来源', (d.body.textContent.match(/LDAP用户/) || []).length > 0);
+    w.close();
+  }
+
   /* ================= 汇总 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));
