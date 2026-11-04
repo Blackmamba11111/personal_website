@@ -393,7 +393,7 @@ npm run test:board       # 单跑某一套
 | `test-board.js` | 57 | 季度切换、达标判定、客户/巡检增删改、导出、城市候选 |
 | `test-board-edge.js` | 9 | 空数据、极端频率、无坐标客户 |
 | `test-monthly.js` | 44 | 逐月覆盖、当月未到、同月多次只算一次 |
-| `test-auth.js` | 176 | 登录门禁、停用账号、角色边界、汇总只读、数据隔离、远程登录不弹改密 |
+| `test-auth.js` | 177 | 登录门禁、停用账号、角色边界、汇总只读、数据隔离、远程登录不弹改密、账号区显示登录名 |
 | `test-map.js` | 44 | 带洞结构、标记数量、切换与登出时图层重建、AMap 门面增量同步 |
 | `test-custs.js` | 125 | 客户管理页字段、搜索、CRUD、层叠守卫、敏感字段逐条展开 |
 | `test-units.js` | 39 | 巡检分组：三态判定、整体巡检、y12×分组、表单编辑、详情勾选 |
@@ -406,7 +406,7 @@ npm run test:board       # 单跑某一套
 | `test-protocols.mjs` | 27 | RADIUS/TACACS+/LDAP 真实报文（本地起假服务器，Node 直跑） |
 | `test-worker-api.mjs` | 57 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支 |
 | `test-session.mjs` | 20 | 会话滑动过期 |
-| **合计** | **885** | 约 30 秒跑完 |
+| **合计** | **886** | 约 30 秒跑完 |
 
 > `test-protocols.mjs` / `test-worker-api.mjs` 是 `.mjs`（ESM），因为它们直接 import
 > `worker/auth-protocols.mjs` 与 `worker/index.js`。`test-worker-api.mjs` 用 Node 内置

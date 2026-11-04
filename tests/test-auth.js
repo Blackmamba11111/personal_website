@@ -70,6 +70,7 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
       !!w.sessionStorage.getItem('inspection_board_token_v1')
       && !w.localStorage.getItem('inspection_board_token_v1'));
     check('普通用户账号标识正确', id('userRoleText').textContent === '普通用户', id('userRoleText').textContent);
+    check('账号区显示登录名而非姓名', id('userNameText').textContent === 'demo', id('userNameText').textContent);
     w.close();
   }
 

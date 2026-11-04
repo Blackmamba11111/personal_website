@@ -5490,7 +5490,8 @@
     var av = document.getElementById('userAvatar');
     av.textContent = initialOf(u.name);
     av.className = 'uavatar' + (u.role === 'admin' ? ' admin' : '');
-    document.getElementById('userNameText').textContent = u.name;
+    /* 账号区只显示登录名（不显示「姓名」——该字段可能被填成区域/部门等文字） */
+    document.getElementById('userNameText').textContent = u.username || u.name;
     document.getElementById('userRoleText').textContent = isReadonly() ? '汇总' : (isRoUser() ? '只读' : roleText(u));
     document.getElementById('umName').textContent = u.name + '（' + u.username + '）';
     var cnt = userDataCount(u.username);
