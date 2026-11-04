@@ -146,7 +146,7 @@ setTimeout(() => {
   // ---------- 导出报表含月度列 ----------
   click(id('btnExport'));
   const csv = id('exBox').value;
-  check('报表表头含「本季度达标月份」', /本季度达标月份/.test(csv));
+  check('报表表头含「本窗口达标月份」', /本窗口达标月份/.test(csv));
   check('报表表头含「考核口径」', /考核口径/.test(csv));
   check('报表中按月客户口径标注正确', /按月（每月1次）/.test(csv));
   check('报表中待补月份已写出', /待补 8月、9月/.test(csv), (csv.split('\n').find(l => /月度-D/.test(l)) || '').trim());
@@ -157,7 +157,8 @@ setTimeout(() => {
   check('频率选项说明「按月考核」', /按月考核/.test(freqHtml), freqHtml.replace(/\s+/g, ' ').trim());
   check('频率选项说明「每月 1 次」', /每月 1 次/.test(freqHtml));
   check('频率选项说明「季度 3 次」', /季度 3 次/.test(freqHtml));
-  check('频率选项已去重（仅 2 项）', id('freqOpts').querySelectorAll('.freq-opt').length === 2,
+  /* 2026-11-04 起新增「一年 2 次」，选项共 3 个（半年 / 季度 / 按月） */
+  check('频率选项共 3 项（半年 / 季度 / 按月）', id('freqOpts').querySelectorAll('.freq-opt').length === 3,
     id('freqOpts').querySelectorAll('.freq-opt').length + ' 项');
   check('「每季度 1 次」按钮已移除', !id('freqOpts').querySelector('[data-freq="quarter"]'));
   check('旧值 quarter 数据归一为 y4（卡片显示一年4次）', card('c6').textContent.indexOf('一年4次') >= 0,

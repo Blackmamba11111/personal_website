@@ -597,12 +597,6 @@
       <div>
         <div class="alogo">巡</div>
         <h1>客户巡检管理看板</h1>
-        <p>面向多单位、多责任人的巡检计划与执行台账。每个账号拥有独立的客户与巡检数据，相互隔离。</p>
-        <ul>
-          <li>按季度查看巡检覆盖情况与达标口径</li>
-          <li>地图定位客户分布，支持省份 / 自定义区域圈定</li>
-          <li>独立台账 · 数据隔离 · 支持导出备份</li>
-        </ul>
       </div>
       <div class="tip">
         底图：高德地图（GCJ-02）。行政区划轮廓取自公开数据并已简化，仅供内部参考，
@@ -803,10 +797,11 @@
       <div class="field">
         <label>巡检频率要求 <span class="req">*</span></label>
         <div class="freq-opts" id="freqOpts">
+          <button type="button" class="freq-opt" data-freq="y2"><b>一年 2 次</b><span>按半年考核 · 每半年 1 次</span></button>
           <button type="button" class="freq-opt on" data-freq="y4"><b>一年 4 次</b><span>按季度考核 · 每季度 1 次</span></button>
-          <button type="button" class="freq-opt" data-freq="y12"><b>一年 12 次</b><span>按月考核 · 每月 1 次 · 季度 3 次</span></button>
+          <button type="button" class="freq-opt" data-freq="y12" style="grid-column:span 2"><b>一年 12 次</b><span>按月考核 · 每月 1 次 · 季度 3 次</span></button>
         </div>
-        <div class="hint" style="margin-top:6px;">选择「一年 12 次」即按月考核：每个自然月需巡检 1 次，季度内 3 个月各 1 次；同一个月内多次巡检只计 1 个月达标。</div>
+        <div class="hint" style="margin-top:6px;">「一年 2 次」按半年考核：上半年（1–6 月）、下半年（7–12 月）各 1 次，切到哪个季度就看它所属的半年；「一年 12 次」按月考核：每个自然月需巡检 1 次，同一个月内多次巡检只计 1 个月达标。</div>
       </div>
 
       <div class="field">
@@ -1689,9 +1684,12 @@
   /* ---------------- 频率定义 ----------------
      perMonth > 0 表示按月考核：该季度内每个「已开始」的月份都需至少巡检 1 次，
      季度目标 = perQuarter 次（一年12次 → 每月 1 次 → 季度 3 次）。
-     按月考核时，状态不看总次数而看「月覆盖数」，即同一月内巡检 3 次仍只算 1 个月达标。 */
+     按月考核时，状态不看总次数而看「月覆盖数」，即同一月内巡检 3 次仍只算 1 个月达标。
+     half = true 表示按半年考核（一年2次）：上半年 1-6 月 / 下半年 7-12 月各 1 次，
+     统计窗口由当前所选季度决定（Q1/Q2 → 上半年，Q3/Q4 → 下半年）。 */
   var FREQ = {
     /* 旧值 quarter（每季度1次）与 y4 口径完全相同，加载时统一归一为 y4（见 migrate） */
+    y2:      { label: '一年2次',   perQuarter: 1, perYear: 2,  perMonth: 0, half: true, desc: '全年 2 次，按半年考核（每半年 1 次）' },
     y4:      { label: '一年4次',   perQuarter: 1, perYear: 4,  perMonth: 0, desc: '全年 4 次，每季度 1 次' },
     y12:     { label: '一年12次',  perQuarter: 3, perYear: 12, perMonth: 1, desc: '全年 12 次，按月考核，每月 1 次（季度 3 次）' }
   };
@@ -1933,6 +1931,26 @@
   function visitsInQuarter(cid, qk) {
     return visitsOf(cid).filter(function (v) { return quarterOfVisit(v) === qk && isCountedVisit(v); });
   }
+  /* ---------------- 半年窗口（一年 2 次口径） ----------------
+     上半年 1–6 月、下半年 7–12 月；由当前所选季度决定看哪个半年。 */
+  function halfNoOfQk(qk) { return quarterParts(qk).q <= 2 ? 1 : 2; }
+  function halfKeyOf(qk) { return quarterParts(qk).y + 'H' + halfNoOfQk(qk); }
+  function halfLabel(qk) {
+    return quarterParts(qk).y + ' 年' + (halfNoOfQk(qk) === 1 ? '上半年' : '下半年');
+  }
+  function visitsInHalf(cid, qk) {
+    var p = quarterParts(qk), hn = halfNoOfQk(qk);
+    return visitsOf(cid).filter(function (v) {
+      var d = parseDate(v.date);
+      if (!d || !isCountedVisit(v)) return false;
+      return d.getFullYear() === p.y && (d.getMonth() < 6 ? 1 : 2) === hn;
+    });
+  }
+  /* 考核窗口内的有效巡检：一年2次 → 半年，其余 → 当前季度 */
+  function windowVisits(c, qk) {
+    var f = FREQ[c.freq] || FREQ.y4;
+    return f.half ? visitsInHalf(c.id, qk) : visitsInQuarter(c.id, qk);
+  }
   function visitsInYear(cid, year) {
     return visitsOf(cid).filter(function (v) {
       var d = parseDate(v.date);
@@ -1942,11 +1960,13 @@
   function statusOf(c, qk) {
     var f = FREQ[c.freq] || FREQ.y4;
     var units = unitsOf(c);
-    var cnt = visitsInQuarter(c.id, qk).length;
+    var cnt = visitsInQuarter(c.id, qk).length;          /* 本季度次数（与原口径一致，用于「本季度次数」展示） */
+    var win = windowVisits(c, qk);
+    var winCount = win.length;                           /* 考核窗口内次数：一年2次时为半年次数 */
     var st, mc = null, need = 0, done = 0, uDone = 0, uTotal = 0;
     if (units.length) {
       /* 分组客户：按「分组是否在考核窗口内全部覆盖」判定（未选分组的整体巡检视为覆盖全部） */
-      var cov = coveredUnitsCount(units, visitsInQuarter(c.id, qk));
+      var cov = coveredUnitsCount(units, win);
       uDone = cov[0]; uTotal = cov[1];
       if (f.perMonth) {
         mc = monthCoverage(c, qk);
@@ -1970,10 +1990,11 @@
       else if (done >= need) st = 'ok';
       else st = 'part';
     } else {
-      st = cnt === 0 ? 'miss' : (cnt >= f.perQuarter ? 'ok' : 'part');
+      st = winCount === 0 ? 'miss' : (winCount >= f.perQuarter ? 'ok' : 'part');
     }
     return {
-      count: cnt, target: f.perQuarter, status: st, freq: f,
+      count: cnt, winCount: winCount, target: f.perQuarter, status: st, freq: f,
+      half: !!f.half, halfKey: f.half ? halfKeyOf(qk) : '', halfLabel: f.half ? halfLabel(qk) : '',
       months: mc, monthNeed: need, monthDone: done,
       units: units.length ? { total: uTotal, done: uDone } : null
     };
@@ -2176,9 +2197,19 @@
     }
     if (s.units) {
       /* 分组客户：n/m 为分组覆盖数 */
+      if (s.half) {
+        if (s.status === 'ok') return '本半年全部完成 ' + s.units.done + '/' + s.units.total + ' 组';
+        if (s.status === 'part') return '本半年部分 ' + s.units.done + '/' + s.units.total + ' 组';
+        return '本半年未巡检 0/' + s.units.total + ' 组';
+      }
       if (s.status === 'ok') return '全部完成 ' + s.units.done + '/' + s.units.total + ' 组';
       if (s.status === 'part') return '部分 ' + s.units.done + '/' + s.units.total + ' 组';
       return '未巡检 0/' + s.units.total + ' 组';
+    }
+    if (s.half) {
+      /* 一年2次：半年窗口内 1 次即达标，不按季度计数 */
+      if (s.status === 'ok') return '本半年已巡检 ' + s.winCount + '/1';
+      return '本半年未巡检 0/1';
     }
     if (s.status === 'ok') return '已巡检 ' + s.count + '/' + s.target;
     if (s.status === 'part') return '部分 ' + s.count + '/' + s.target;
@@ -3885,18 +3916,24 @@
       badge.textContent = s.status === 'ok'
         ? '本季度月度达标'
         : (s.status === 'part' ? '本季度缺 ' + (s.monthNeed - s.monthDone) + ' 个月' : '本季度未巡检');
+    } else if (s.half && s.units) {
+      badge.textContent = s.status === 'ok'
+        ? '本半年全部分组已巡检'
+        : (s.status === 'part' ? '本半年部分分组已巡检 ' + s.units.done + '/' + s.units.total : '本半年未巡检');
     } else if (s.units) {
       badge.textContent = s.status === 'ok'
         ? '本季度全部分组已巡检'
         : (s.status === 'part' ? '本季度部分分组已巡检 ' + s.units.done + '/' + s.units.total : '本季度未巡检');
+    } else if (s.half) {
+      badge.textContent = s.status === 'ok' ? '本半年已巡检' : '本半年未巡检';
     } else {
       badge.textContent = s.status === 'ok' ? '本季度已巡检' : (s.status === 'part' ? '本季度部分完成' : '本季度未巡检');
     }
 
     document.getElementById('dKpiRow').innerHTML =
-      '<td>' + qk.replace('Q', ' Q') + '</td>' +
-      '<td style="font-weight:600;">' + s.count + ' 次</td>' +
-      '<td>' + s.target + ' 次</td>' +
+      '<td>' + (s.half ? s.halfLabel : qk.replace('Q', ' Q')) + '</td>' +
+      '<td style="font-weight:600;">' + (s.half ? s.winCount : s.count) + ' 次</td>' +
+      '<td>' + (s.half ? '每半年 1 次' : s.target + ' 次') + '</td>' +
       '<td style="font-weight:600;">' + yVisits.length + ' 次</td>' +
       '<td>' + f.perYear + ' 次</td>';
 
@@ -3924,14 +3961,17 @@
       mBox.innerHTML = '';
     }
 
-    /* 巡检分组：逐组列出负责人与本季度覆盖状态（未建分组的客户不显示） */
+    /* 巡检分组：逐组列出负责人与考核窗口内的覆盖状态（未建分组的客户不显示） */
     var uBox = document.getElementById('dUnits');
     var units = unitsOf(c);
+    var winName = s.half ? '本半年' : '本季度';
+    var uTh = document.querySelector('#dUnitsTable thead th:nth-child(3)');
+    if (uTh) uTh.textContent = winName + '状态';
     if (units.length) {
-      var uvs = visitsInQuarter(id, qk);
+      var uvs = windowVisits(c, qk);
       uBox.style.display = 'block';
       document.getElementById('dUnitsCaption').innerHTML =
-        '巡检分组 <b>' + units.length + '</b> 个：当前季度每个分组都有有效巡检记录，该客户才算达标。';
+        '巡检分组 <b>' + units.length + '</b> 个：' + winName + '每个分组都有有效巡检记录，该客户才算达标。';
       document.querySelector('#dUnitsTable tbody').innerHTML = units.map(function (u) {
         var done = uvs.some(function (v) { return visitCoversUnit(v, u.id); });
         return '<tr><td>' + esc(u.name) + '</td><td>' + esc(u.owner || '—') + '</td><td>' +
@@ -4317,7 +4357,8 @@
           ? (lack.length ? '缺 ' + lack.length + ' 个月' : '月度达标')
           : (s.units
               ? (s.units.done + '/' + s.units.total + ' 组')
-              : (s.status === 'miss' ? '未巡检 0/' + s.target : s.count + '/' + s.target + ' 次'));
+              : (s.status === 'miss' ? '未巡检 0/' + s.target
+                  : (s.half ? s.winCount : s.count) + '/' + s.target + ' 次'));
         html += '<div class="r-row" data-id="' + c.id + '">' +
           '<span class="r-dot ' + (s.status === 'miss' ? 'miss' : 'part') + '"></span>' +
           '<div class="r-main"><div class="r-name">' + esc(c.name) + '</div>' +
@@ -4426,9 +4467,15 @@
     var s = String(v == null ? '' : v);
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
+  /* 考核口径文案：按月 / 按半年 / 按季度（CSV 与提示共用） */
+  function caliberText(f) {
+    if (f.perMonth) return '按月（每月1次）';
+    if (f.half) return '按半年（每半年1次）';
+    return '按季度';
+  }
   function exportReportCsv() {
     var qk = state.quarter;
-    var head = ['客户名称','所属区域','所在省份','城市','详细地址','经度','纬度','频率要求','考核口径','季度目标(次)','本季度已巡检(次)','本季度达标月份','本季度状态','本年度累计(次)','最近巡检日期','最近巡检备注','联系人','联系电话','客户备注'];
+    var head = ['客户名称','所属区域','所在省份','城市','详细地址','经度','纬度','频率要求','考核口径','考核窗口目标(次)','窗口内已巡检(次)','本窗口达标月份','本窗口状态','本年度累计(次)','最近巡检日期','最近巡检备注','联系人','联系电话','客户备注'];
     var p = quarterParts(qk);
     var rows = [head.join(',')];
     DB.customers.forEach(function (c) {
@@ -4441,8 +4488,8 @@
       rows.push([
         c.name, regionNameOf(c), c.province || '', c.city || '', c.addr || '',
         typeof c.lng === 'number' ? c.lng : '', typeof c.lat === 'number' ? c.lat : '',
-        s.freq.label, s.freq.perMonth ? '按月（每月1次）' : '按季度',
-        s.target, s.count, lackTxt,
+        s.freq.label, caliberText(s.freq),
+        s.target, s.half ? s.winCount : s.count, lackTxt,
         (s.status === 'ok' ? '已巡检' : (s.status === 'part' ? '部分完成' : '未巡检')) +
           (s.units ? '（分组 ' + s.units.done + '/' + s.units.total + '）' : ''),
         yCount, last ? last.date : '', last ? (last.note || '') : '', c.contact || '', c.phone || '', c.note || ''
@@ -4453,12 +4500,12 @@
   }
   function exportPendingCsv() {
     var qk = state.quarter, arr = reminderList(qk);
-    var rows = [['客户名称','所属区域','所在省份','城市','要求频率','考核口径','本季度已巡检','季度目标','待补月份','状态','最近巡检','备注'].join(',')];
+    var rows = [['客户名称','所属区域','所在省份','城市','要求频率','考核口径','窗口内已巡检','窗口目标','待补月份','状态','最近巡检','备注'].join(',')];
     arr.forEach(function (x) {
       var last = visitsOf(x.c.id)[0];
       var lack = missingMonths(x.s);
       rows.push([x.c.name, regionNameOf(x.c), x.c.province || '', x.c.city || '', x.s.freq.label,
-        x.s.freq.perMonth ? '按月（每月1次）' : '按季度', x.s.count, x.s.target,
+        caliberText(x.s.freq), x.s.half ? x.s.winCount : x.s.count, x.s.target,
         lack.length ? '待补 ' + lack.map(monthLabel).join('、') : '',
         (x.s.status === 'miss' ? '未巡检' : '部分完成') +
           (x.s.units ? '（分组 ' + x.s.units.done + '/' + x.s.units.total + '）' : ''),
