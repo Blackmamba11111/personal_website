@@ -537,6 +537,8 @@
      凡是「可能从内容页（用户管理 / 客户管理）内部打开」的弹窗，必须带 .high，
      否则会被 .page 的整屏不透明背景盖住：弹窗其实已打开，但看不见，退出页面后才露出来。 */
   .mask.high,.drawer-mask.high{z-index:320;}
+  /* 确认框可能被「误关拦截」从任意弹窗内唤起，必须压在 .high 弹窗之上（toast 之下） */
+  #maskConfirm{z-index:350;}
   .map-fail{
     position:absolute;inset:0;display:none;place-items:center;background:#EEF1F7;z-index:5;text-align:center;padding:24px;
   }
@@ -3316,6 +3318,7 @@
     var btn = document.getElementById('btnUseCand');
     if (btn) {
       btn.onclick = function () {
+        markDirty('maskCust');                     /* 坐标是程序化回填，不触发 input 事件 */
         document.getElementById('fLng').value = c.lng.toFixed(6);
         document.getElementById('fLat').value = c.lat.toFixed(6);
         var addrEl = document.getElementById('fAddr');
@@ -3681,6 +3684,7 @@
   }
 
   function removePendingAtt(key) {
+    markDirty('maskDetail');
     pendingAtts = pendingAtts.filter(function (a) { return a.key !== key; });
     renderPendingAtts();
   }
@@ -3747,7 +3751,10 @@
       }
     });
     renderPendingAtts();
-    if (added) toast('已加入 ' + added + ' 个附件，保存巡检记录时一并上传');
+    if (added) {
+      markDirty('maskDetail');                 /* 附件是选中即排队，未提交前关窗会丢 */
+      toast('已加入 ' + added + ' 个附件，保存巡检记录时一并上传');
+    }
   }
 
   /* 顺序上传；任一失败即中止并抛出（已成功的保留，重试时跳过） */
@@ -4140,6 +4147,7 @@
     CUST_UNITS = (c && Array.isArray(c.units)) ? c.units.map(function (u) { return Object.assign({}, u); }) : [];
     renderUnitRows();
     document.getElementById('btnAddUnit').onclick = function () {
+      markDirty('maskCust');
       syncUnitInputs();
       CUST_UNITS.push({ id: '', name: '', owner: '', note: '' });
       renderUnitRows();
@@ -4172,7 +4180,10 @@
   function setFreq(f) {
     Array.prototype.forEach.call(document.querySelectorAll('#freqOpts .freq-opt'), function (b) {
       b.classList.toggle('on', b.getAttribute('data-freq') === f);
-      b.onclick = function () { setFreq(b.getAttribute('data-freq')); };
+      b.onclick = function () {
+        markDirty('maskCust');                     /* 自定义按钮组不触发 input/change，手动记改动 */
+        setFreq(b.getAttribute('data-freq'));
+      };
     });
   }
   function getFreq() {
@@ -4197,6 +4208,7 @@
     }).join('');
     Array.prototype.forEach.call(box.querySelectorAll('.unit-del'), function (b) {
       b.onclick = function () {
+        markDirty('maskCust');
         CUST_UNITS.splice(Number(b.parentNode.getAttribute('data-ui')), 1);
         renderUnitRows();
       };
@@ -4402,10 +4414,11 @@
   }
 
   var confirmCb = null;
-  function askConfirm(title, msgHtml, onOk, okText) {
+  function askConfirm(title, msgHtml, onOk, okText, cancelText) {
     document.getElementById('cfTitle').textContent = title;
     document.getElementById('cfMsg').innerHTML = msgHtml;
     document.getElementById('cfOk').textContent = okText || '确认';
+    document.getElementById('cfCancel').textContent = cancelText || '取消';
     confirmCb = onOk;
     openModal('maskConfirm');
   }
@@ -4624,8 +4637,64 @@
   }
 
   /* ---------------- Modal / toast ---------------- */
+  /* 防误关：只读弹窗（预览 / 提醒 / 导出 / 确认）点遮罩直接关；
+     表单弹窗一旦被改动过，点遮罩或按 Esc 先问一句，避免误触丢掉已填内容。
+     遮罩点击要求「按下与抬起都在遮罩上」，在输入框里拖选文字、拖拽时松手到遮罩
+     不再被误判成一次点击（旧逻辑只看 e.target === m）。 */
+  var FORM_MASKS = ['maskCust', 'maskDetail', 'maskImport', 'maskRegion',
+    'maskUser', 'maskBatchUser', 'maskServer', 'maskPwd'];
+  var dirtyMasks = {};
+  var maskDown = {};
+  var maskDownAt = {};
+
+  function maskIdOf(el) {
+    while (el && el.nodeType === 1) {
+      if (el.id && el.classList && (el.classList.contains('mask') || el.classList.contains('drawer-mask'))) return el.id;
+      el = el.parentNode;
+    }
+    return '';
+  }
+  function markDirty(id) { if (id) dirtyMasks[id] = true; }
+  function isDirty(id) { return !!dirtyMasks[id]; }
+  function zIndexOf(m) {
+    try { return parseInt(window.getComputedStyle(m).zIndex, 10) || 0; } catch (e) { return 0; }
+  }
+  /* 最上层弹窗：maskConfirm 单独处理，不参与「关闭最上层」的竞争 */
+  function topMask() {
+    var list = Array.prototype.filter.call(document.querySelectorAll('.mask.on, .drawer-mask.on'), function (m) {
+      return m.id !== 'maskConfirm';
+    });
+    if (!list.length) return null;
+    var top = list[0], tz = zIndexOf(list[0]);
+    for (var i = 1; i < list.length; i++) {
+      var z = zIndexOf(list[i]);
+      if (z >= tz) { top = list[i]; tz = z; }   /* 同层级时取 DOM 靠后者（更晚渲染 = 更上层） */
+    }
+    return top;
+  }
+  /* 放弃改动确认：确认后执行真正的关闭；取消即「继续填写」，不做任何事 */
+  function askDiscard(id) {
+    var label = MASK_LABEL[id] || '这个窗口';
+    askConfirm('放弃填写的内容？',
+      label + '里还有没保存的改动，关闭后会一起丢失。',
+      function () { dirtyMasks[id] = false; closeModal(id); },
+      '放弃并关闭', '继续填写');
+  }
+  var MASK_LABEL = {
+    maskCust: '「新增 / 编辑客户」', maskDetail: '「客户详情」', maskImport: '「导入数据」',
+    maskRegion: '「区域设置」', maskUser: '「用户信息」', maskBatchUser: '「批量编辑用户」',
+    maskServer: '「认证服务器」', maskPwd: '「修改密码」'
+  };
+  function requestCloseMask(id) {
+    if (!id) return;
+    if (id === 'maskPwd' && PWD_FORCED) { toast('请先完成密码修改'); return; }
+    if (FORM_MASKS.indexOf(id) >= 0 && isDirty(id)) { askDiscard(id); return; }
+    closeModal(id);
+  }
+
   function openModal(id) {
     if (id === 'maskPwd' || id === 'maskUser' || id === 'maskBatchUser') resetPwdEyes(document.getElementById(id));
+    dirtyMasks[id] = false;
     document.getElementById(id).classList.add('on');
   }
   function closeModal(id) {
@@ -4635,6 +4704,8 @@
       return;
     }
     document.getElementById(id).classList.remove('on');
+    dirtyMasks[id] = false;
+    maskDown[id] = null;
     if (id === 'maskCust') clearCandidates();
   }
   var toastTimer = null;
@@ -4878,18 +4949,45 @@
       box.focus(); box.select();
       try { box.setSelectionRange(0, box.value.length); } catch (e) {}
     };
-    Array.prototype.forEach.call(document.querySelectorAll('.mask'), function (m) {
-      m.onclick = function (e) { if (e.target === m) m.classList.remove('on'); };
+    /* 遮罩点击：记录按下位置，只有「按下与抬起都在遮罩上」才算一次关闭意图 */
+    Array.prototype.forEach.call(document.querySelectorAll('.mask, .drawer-mask'), function (m) {
+      m.addEventListener('pointerdown', function (e) {
+        maskDown[m.id] = e.target;
+        maskDownAt[m.id] = Date.now();
+      }, true);
+      m.onclick = function (e) {
+        if (e.target !== m) return;
+        var down = maskDown[m.id], at = maskDownAt[m.id] || 0;
+        maskDown[m.id] = null;
+        /* 弹窗内按下、拖到遮罩上松手：不算点击遮罩（5 秒内的按下才算同一次手势） */
+        if (down && down !== m && Date.now() - at < 5000) return;
+        requestCloseMask(m.id);
+      };
     });
+    /* 任何一次真实输入都算「改动过」：程序化赋值不触发事件，因此打开时的回填不会误判 */
+    function onFormEdit(e) {
+      var id = maskIdOf(e.target);
+      if (id && FORM_MASKS.indexOf(id) >= 0) dirtyMasks[id] = true;
+    }
+    document.addEventListener('input', onFormEdit, true);
+    document.addEventListener('change', onFormEdit, true);
+
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
-        Array.prototype.forEach.call(document.querySelectorAll('.mask.on, .drawer-mask.on'), function (m) {
-          m.classList.remove('on');
-          if (m.id === 'maskCust') clearCandidates();
-        });
-        confirmCb = null;
-        picking.on = false;
-        document.getElementById('pickBanner').classList.remove('on');
+        /* 确认框优先：Esc 等同「继续填写 / 取消」 */
+        var cf = document.getElementById('maskConfirm');
+        if (cf.classList.contains('on')) {
+          confirmCb = null;
+          closeModal('maskConfirm');
+          return;
+        }
+        /* 只关最上层那一层，不再把多层弹窗一次性连坐关掉 */
+        var top = topMask();
+        if (top) requestCloseMask(top.id);
+        else if (picking.on) {
+          picking.on = false;
+          document.getElementById('pickBanner').classList.remove('on');
+        }
       }
       var tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
       var typing = tag === 'input' || tag === 'textarea' || tag === 'select';

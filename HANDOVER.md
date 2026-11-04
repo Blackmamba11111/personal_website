@@ -349,6 +349,7 @@ Cloudflare 版以 base64 存 D1 的 `home_photo` 单行（受 D1 单行 2MB 限�
 7. **地图 SDK 必须异步、带超时。** 同步加载时地图域名一慢就阻塞整页解析，登录框永不出现；现为 15 秒超时 + 失败提示。
 8. **腾讯地图 Key 依赖域名白名单。** 换域名要到腾讯位置服务控制台加白，否则底图空白；WebGL 被关闭也会空白，页面内有「检测显卡支持」自查按钮。
 9. **部署后不要立刻断言失败。** 边缘缓存 1–2 分钟，刚发布可能仍命中旧副本；无头浏览器验证大页面要轮询 `document.readyState === 'complete'`，固定 sleep 会误判。
+10. **弹窗防误关是全局约定，新增弹窗要登记。** 只读弹窗（预览 / 提醒 / 导出 / 确认）点遮罩直接关；表单弹窗一律加进 `FORM_MASKS`，一旦被改动过（`input`/`change` 或 `markDirty()` 手动标记），点遮罩或按 Esc 先弹「放弃填写的内容？」。遮罩点击要求「按下与抬起都在遮罩上」（`maskDown`），避免拖选文字误判。Esc 只关最上层（`topMask()` 按 z-index 取峰值）。`maskConfirm` 固定 `z-index:350`，否则会压在 `.high` 弹窗下面看不见。**用 JS 赋值改表单（坐标回填、按钮组、动态增删行）不会触发事件，必须手动 `markDirty(id)`**，否则拦截失效。
 
 ---
 
@@ -396,6 +397,7 @@ npm run test:board       # 单跑某一套
 | `test-map.js` | 44 | 带洞结构、标记数量、切换与登出时图层重建、AMap 门面增量同步 |
 | `test-custs.js` | 125 | 客户管理页字段、搜索、CRUD、层叠守卫、敏感字段逐条展开 |
 | `test-units.js` | 39 | 巡检分组：三态判定、整体巡检、y12×分组、表单编辑、详情勾选 |
+| `test-modal-guard.js` | 31 | 弹窗防误关：只读直接关、改动拦一句、Esc 只关最上层、拖选不误判 |
 | `test-home.js` | 98 | 首页结构/动效/降级、部署产物、省界拆分与版本号一致性 |
 | `test-photo-api.js` | 13 | 照片接口（两版等价） |
 | `test-visits.js` | 62 | 巡检方式/结果/附件/巡检人必填 |
@@ -404,7 +406,7 @@ npm run test:board       # 单跑某一套
 | `test-protocols.mjs` | 27 | RADIUS/TACACS+/LDAP 真实报文（本地起假服务器，Node 直跑） |
 | `test-worker-api.mjs` | 57 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支 |
 | `test-session.mjs` | 20 | 会话滑动过期 |
-| **合计** | **854** | 约 25 秒跑完 |
+| **合计** | **885** | 约 30 秒跑完 |
 
 > `test-protocols.mjs` / `test-worker-api.mjs` 是 `.mjs`（ESM），因为它们直接 import
 > `worker/auth-protocols.mjs` 与 `worker/index.js`。`test-worker-api.mjs` 用 Node 内置
