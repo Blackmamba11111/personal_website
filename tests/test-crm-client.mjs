@@ -66,7 +66,7 @@ function json(body, status) {
     Buffer.from(body.password, 'base64').length === 128,
     String(Buffer.from(body.password, 'base64').length));
   check('无验证码时不带 NECaptchaValidate（前端也会剔除 null 字段）', body.NECaptchaValidate === undefined);
-  check('会话 cookie 被保留', !!r.session.cookies.JSESSIONID, JSON.stringify(r.session.cookies));
+  check('会话 cookie 被保留', Array.isArray(r.session.cookies) && r.session.cookies.some(c => c.name === 'JSESSIONID'), JSON.stringify(r.session.cookies));
 }
 
 /* ---------------- 2. 登录失败分支 ---------------- */
@@ -88,6 +88,44 @@ function json(body, status) {
   check('HTTP 200 + 失败 scode 也判失败，并给出中文原因',
     r2.ok === false && /用户名或密码不正确/.test(r2.message) && /2030008/.test(r2.message), r2.message);
 
+  /* 密码正确但账号挂在租户下：登录只回 tenant_list + passport_id，必须再选租户换 code */
+  const TID = '1021027678470539';
+  let authorizeCalls = 0;
+  let authorizeBody = null;
+  const r2t = await xsyLogin({ loginName: 'a', password: 'b' }, {
+    fetchImpl: async (url, init) => {
+      const u = String(url);
+      if (u.indexOf('password-key') >= 0) return json({ scode: '200', result: { pwdSwitch: 1, key: PUB_B64 } });
+      if (u.indexOf('/auc/oauth2/authorize-code') >= 0) {
+        authorizeCalls++;
+        authorizeBody = JSON.parse(init.body);
+        return json({ scode: '302', result: { redirectUrl: XSY_HOSTS.crm + '/neologin/land' } });
+      }
+      if (u.indexOf('/auc/login') >= 0) {
+        return json({ scode: '200', result: { passport_id: 'p1', tenant_list: [{ id: TID, company: '测试公司', user_type: '0', encryptionKey: 'k1' }] } });
+      }
+      if (u.indexOf('/neologin/land') >= 0) return new Response('ok', { status: 200, headers: { 'set-cookie': 'SESSION=zzz; Domain=.xiaoshouyi.com; Path=/' } });
+      return new Response('', { status: 404 });
+    }
+  });
+  check('单租户账号自动选租户（authorize-code 一次）', r2t.ok === true && authorizeCalls === 1, JSON.stringify({ ok: r2t.ok, code: r2t.code, msg: r2t.message, n: authorizeCalls }));
+  check('选租户请求带对了 tenant_id / passport_id / encryption_key',
+    !!authorizeBody && authorizeBody.tenant_id === TID && authorizeBody.passport_id === 'p1' && authorizeBody.encryption_key === 'k1',
+    JSON.stringify(authorizeBody));
+  check('租户 ID 落到会话里', r2t.ok && String(r2t.session.tenantId) === TID, r2t.ok ? String(r2t.session.tenantId) : r2t.message);
+
+  /* 多租户且未指定 → 明确报错，不瞎猜 */
+  const r2m = await xsyLogin({ loginName: 'a', password: 'b' }, {
+    fetchImpl: async (url) => {
+      const u = String(url);
+      if (u.indexOf('password-key') >= 0) return json({ scode: '200', result: { pwdSwitch: 1, key: PUB_B64 } });
+      if (u.indexOf('/auc/login') >= 0) return json({ scode: '200', result: { passport_id: 'p1', tenant_list: [{ id: 'T1', company: '甲公司' }, { id: 'T2', company: '乙公司' }] } });
+      return json({}, 200);
+    }
+  });
+  check('多租户未指定 → code=tenant 且列出可选租户',
+    r2m.ok === false && r2m.code === 'tenant' && /甲公司\(T1\)/.test(r2m.message) && /乙公司\(T2\)/.test(r2m.message), JSON.stringify(r2m));
+
   const r3 = await xsyLogin({ loginName: 'a', password: 'b' }, {
     fetchImpl: async (url) => {
       const u = String(url);
@@ -101,7 +139,7 @@ function json(body, status) {
 }
 
 /* ---------------- 3. 商机全量分页 ---------------- */
-const SESSION = { cookies: { JSESSIONID: 'abc' }, userId: '1001', tenantId: '800001' };
+const SESSION = { cookies: [{ name: 'JSESSIONID', value: 'abc', domain: 'crm-tencent.xiaoshouyi.com', path: '/', expires: 0, secure: true }], userId: '1001', tenantId: '800001' };
 {
   const pages = [];
   const mkRec = (i) => ({ id: 1000 + i, opportunityName: '项目' + i, accountId: { name: '客户' + i }, updatedAt: '2026-11-0' + (i % 9 + 1) });
@@ -269,7 +307,7 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
     String(got['承德银行'] && got['承德银行'].maintenance.length));
   check('未命中客户标 miss 且不查维保', got['不存在银行'].status === 'miss');
   check('每家命中客户各查一次维保', maintenanceCalls === 2, String(maintenanceCalls));
-  check('返回可复用 session', !!r.session && !!r.session.cookies.JSESSIONID);
+  check('返回可复用 session', !!r.session && Array.isArray(r.session.cookies) && r.session.cookies.some(c => c.name === 'JSESSIONID'));
 }
 void KEY_BYTES;
 

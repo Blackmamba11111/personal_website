@@ -218,36 +218,74 @@ function rsaEncrypt(keyRaw, text) {
   return bytesToB64(out);
 }
 
-/* ---------------- Cookie jar ---------------- */
+/* ---------------- Cookie jar ----------------
+ * 必须按域区分：同一批 cookie 名（SESSION / AUC_SESSION / x-ienterprise-*）
+ * 会分别落在 .xiaoshouyi.com（统一认证域）与 crm-tencent.xiaoshouyi.com（业务域），
+ * 值不同。早期用扁平 map 后写覆盖先写，把业务域 cookie 冲掉，
+ * 结果登录成功但业务接口一律 400「1020008 未登录」。 */
 
-function cookieFromSetCk(setCkList) {
-  /* set-cookie 可能为数组或逗号拼接字符串（取分号前段即可，忽略属性） */
-  const jar = {};
-  const flat = [];
-  if (typeof setCkList === 'string') flat.push(setCkList);
-  else if (Array.isArray(setCkList)) flat.push.apply(flat, setCkList);
-  else if (setCkList) Object.keys(setCkList).forEach(function (k) { flat.push(k + '=' + setCkList[k]); });
-  flat.forEach(function (line) {
-    String(line).split(/,(?=[^;]+?=)/).forEach(function (one) {
-      const m = /^([^=;,\s]+)=([^;]*)/.exec(String(one).trim());
-      if (m) jar[m[1]] = m[2];
+function jarStore(jar, setCkList, reqUrl) {
+  if (!setCkList) return;
+  let lines;
+  if (typeof setCkList === 'string') lines = setCkList.split(/,(?=[^;,\s]+=)/);
+  else if (Array.isArray(setCkList)) lines = setCkList;
+  else lines = Object.keys(setCkList).map(function (k) { return k + '=' + setCkList[k]; });
+
+  let host = '';
+  try { host = new URL(reqUrl).hostname.toLowerCase(); } catch (_) { host = ''; }
+
+  lines.forEach(function (raw) {
+    const parts = String(raw).split(';');
+    const first = parts.shift() || '';
+    const m = /^\s*([^=]+)=([\s\S]*?)\s*$/.exec(first);
+    if (!m) return;
+    const name = m[1].trim();
+    const value = m[2];
+    let domain = '', path = '/', expires = 0, secure = false;
+    parts.forEach(function (p) {
+      const eq = p.indexOf('=');
+      const k = (eq < 0 ? p : p.slice(0, eq)).trim().toLowerCase();
+      const v = eq < 0 ? '' : p.slice(eq + 1).trim();
+      if (k === 'domain') domain = v.replace(/^\./, '').toLowerCase();
+      else if (k === 'path') path = v || '/';
+      else if (k === 'max-age') { const n = Number(v); if (!isNaN(n)) expires = Date.now() + n * 1000; }
+      else if (k === 'expires') { const t = Date.parse(v); if (!isNaN(t)) expires = t; }
+      else if (k === 'secure') secure = true;
     });
+    if (!domain) domain = host;
+    const idx = jar.findIndex(function (c) { return c.name === name && c.domain === domain && c.path === path; });
+    if (expires && expires < Date.now()) { if (idx >= 0) jar.splice(idx, 1); return; }
+    const item = { name: name, value: value, domain: domain, path: path, expires: expires, secure: secure };
+    if (idx >= 0) jar[idx] = item; else jar.push(item);
   });
-  return jar;
 }
 
-function mergeCookie(jar, setCk) {
-  const add = cookieFromSetCk(setCk);
-  Object.keys(add).forEach(function (k) { jar[k] = add[k]; });
+function jarHeader(jar, url) {
+  if (!jar || !jar.length) return '';
+  let u;
+  try { u = new URL(url); } catch (_) { return ''; }
+  const host = u.hostname.toLowerCase();
+  const path = u.pathname || '/';
+  const now = Date.now();
+  return jar.filter(function (c) {
+    if (c.expires && c.expires < now) return false;
+    if (!(host === c.domain || host.endsWith('.' + c.domain))) return false;
+    if (path.indexOf(c.path) !== 0) return false;
+    if (c.secure && u.protocol !== 'https:') return false;
+    return true;
+  }).sort(function (a, b) { return b.path.length - a.path.length; })
+    .map(function (c) { return c.name + '=' + c.value; }).join('; ');
 }
 
-function cookieHeader(jar) {
-  return Object.keys(jar).map(function (k) { return k + '=' + jar[k]; }).join('; ');
+function jarGet(jar, name) {
+  if (!jar || !jar.length) return '';
+  const hit = jar.filter(function (c) { return c.name === name; });
+  return hit.length ? hit[hit.length - 1].value : '';
 }
 
 /* ---------------- 会话请求包装 ---------------- */
 
-function xsyHeaders(session, extra) {
+function xsyHeaders(session, url, extra) {
   const h = {
     'Content-Type': 'application/json',
     'Accept': 'application/json, text/plain, */*',
@@ -256,7 +294,10 @@ function xsyHeaders(session, extra) {
   if (session && session.userId) h['xsy-user-id'] = String(session.userId);
   if (session && session.tenantId) h['xsy-tenant-id'] = String(session.tenantId);
   h['xsy-client-type'] = 'neoweb';
-  if (session && session.cookies) h['Cookie'] = cookieHeader(session.cookies);
+  if (session && session.cookies) {
+    const ck = jarHeader(session.cookies, url);
+    if (ck) h['Cookie'] = ck;
+  }
   if (extra) Object.keys(extra).forEach(function (k) { h[k] = extra[k]; });
   return h;
 }
@@ -268,19 +309,23 @@ function err(code, message) {
 /* ---------------- 登录 ---------------- */
 /*
  * 返回 { ok, session, code, message }
- * session = { cookies:{}, userId, tenantId }
+ * session = { cookies:[{name,value,domain,path,...}], userId, tenantId }
  */
 export async function xsyLogin(opts, deps) {
   const fetchImpl = (deps && deps.fetchImpl) || fetch;
   const auc = (deps && deps.aucBase) || XSY_HOSTS.auc;
   const log = (deps && deps.log) || function () {};
-  const jar = {};
+  const jar = [];
 
-  const jarFetch = function (url, init, host) {
+  const jarFetch = function (url, init) {
     const headers = Object.assign({}, init.headers || {});
-    headers['Cookie'] = cookieHeader(jar);
+    const ck = jarHeader(jar, url);
+    if (ck) headers['Cookie'] = ck;
     return fetchImpl(url, Object.assign({}, init, { headers: headers, redirect: 'manual' })).then(function (resp) {
-      mergeCookie(jar, resp.headers && resp.headers.getSetCookie ? resp.headers.getSetCookie() : (resp.headers && resp.headers.get && resp.headers.get('set-cookie')));
+      const sc = resp.headers && resp.headers.getSetCookie
+        ? resp.headers.getSetCookie()
+        : (resp.headers && resp.headers.get && resp.headers.get('set-cookie'));
+      jarStore(jar, sc, url);
       return resp;
     });
   };
@@ -306,7 +351,7 @@ export async function xsyLogin(opts, deps) {
       }
       entryUrl = null;
     }
-    if (!jar['auc-sso-oauth-context']) {
+    if (!jarGet(jar, 'auc-sso-oauth-context')) {
       log('crm: 警告 —— 未取到 auc-sso-oauth-context，登录可能被判会话失效');
     }
 
@@ -356,6 +401,17 @@ export async function xsyLogin(opts, deps) {
     /* 成功码只有 200（直接成功）与 302（需跳转落地）；其余一律失败。
        失败时 HTTP 仍是 200，只看状态码会把错密码判成成功。 */
     const scode = String(lj.scode == null ? '' : lj.scode);
+    if (deps && deps.debug) {
+      log('crm[debug]: login scode=' + scode + ' http=' + lr.status +
+        ' top=' + Object.keys(lj).join(',') +
+        ' result=' + Object.keys(lj.result || {}).join(',') +
+        ' type=' + ((lj.result && lj.result.type) != null ? lj.result.type : '-') +
+        ' redirect=' + String((lj.result && (lj.result.redirectUrl || lj.result.redirect_url)) || '-').slice(0, 100));
+      const tl = (lj.result && lj.result.tenant_list) || [];
+      if (Array.isArray(tl) && tl.length) {
+        log('crm[debug]: tenant_list n=' + tl.length + ' sample=' + JSON.stringify(tl[0]).slice(0, 300));
+      }
+    }
     if (scode && scode !== '200' && scode !== '302') {
       if (scode === '2030007' || scode === '1030010') {
         return err('needcode', '登录需要验证码或补充认证（scode ' + scode + '），账号密码方式暂不可用');
@@ -368,10 +424,54 @@ export async function xsyLogin(opts, deps) {
       return err('authfail', '登录失败：HTTP ' + lr.status + '（未返回 scode）');
     }
     const res = lj.result || {};
-    const next = res.redirectUrl || res.redirect_url || res.url
+    let next = res.redirectUrl || res.redirect_url || res.url
       || (lj.data && (lj.data.redirectUrl || lj.data.redirect_url || lj.data.url))
       || lj.redirect_url
       || (lr.headers && lr.headers.get && lr.headers.get('location'));
+
+    /* 2.5 该账号挂在租户下：登录只返回 tenant_list + passport_id，
+       必须先选租户换 code（/auc/oauth2/authorize-code），否则拿不到业务域会话。
+       实测本账号 tenant_list 恰好 1 条（互联网域名系统北京市工程研究中心有限公司）。 */
+    let chosenTenantId = '';
+    if (!next && Array.isArray(res.tenant_list) && res.tenant_list.length) {
+      const tl = res.tenant_list;
+      let tenant = null;
+      if (opts.tenantId) tenant = tl.filter(function (t) { return String(t.id) === String(opts.tenantId); })[0] || null;
+      if (!tenant && tl.length === 1) tenant = tl[0];
+      if (!tenant) {
+        return err('tenant', '该账号属于 ' + tl.length + ' 个租户，需要在配置里指定租户 ID：' +
+          tl.map(function (t) { return (t.company || t.id) + '(' + t.id + ')'; }).join('、'));
+      }
+      log('crm: 选择租户 ' + (tenant.company || tenant.id));
+      chosenTenantId = String(tenant.id || '');
+      const ar = await jarFetch(auc + '/auc/oauth2/authorize-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/plain, */*',
+          'Origin': auc,
+          'Referer': loginPage || (auc + '/auc/default_login'),
+        },
+        body: JSON.stringify({
+          user_type: tenant.user_type,
+          encryption_key: tenant.encryptionKey || tenant.encryption_key,
+          tenant_id: tenant.id,
+          passport_id: res.passport_id,
+          mfa_type: null,
+        }),
+      });
+      let aj = {};
+      try { aj = await ar.json(); } catch (_) { aj = {}; }
+      const acode = String(aj.scode == null ? '' : aj.scode);
+      if (deps && deps.debug) log('crm[debug]: authorize-code scode=' + acode + ' top=' + Object.keys(aj).join(','));
+      if (acode && acode !== '200' && acode !== '302') {
+        return err('tenant', '选择租户失败：' + (CRM_SCODE[acode] || aj.error_msg || aj.message || acode));
+      }
+      next = (aj.result && (aj.result.redirectUrl || aj.result.redirect_url || aj.result.url))
+        || aj.redirect_url
+        || (ar.headers && ar.headers.get && ar.headers.get('location'));
+      if (!next) return err('tenant', '选择租户后未返回跳转地址');
+    }
 
     /* 3. 跟随重定向（最多 6 跳，跨域也允许——登录链会跳到 crm 域落地会话） */
     let hop = next;
@@ -394,15 +494,16 @@ export async function xsyLogin(opts, deps) {
 
     /* 4. 从 cookie 提取用户/租户标识（xsy-* 请求头的值；缺失也能跑，靠 cookie 鉴权） */
     const session = { cookies: jar };
-    const cUser = jar['c-user'] || '';
+    const cUser = jarGet(jar, 'c-user');
     const mUid = /"userId"\s*:\s*(\d+)/.exec(cUser) || /^(\d+)/.exec(cUser);
     if (mUid) session.userId = mUid[1];
-    const cTenant = jar['x-ienterprise-tenant'] || '';
-    const mT = /(\d{5,})/.exec(cTenant);
+    const mT = /(\d{5,})/.exec(jarGet(jar, 'x-ienterprise-tenant'));
     if (mT) session.tenantId = mT[1];
-    if (!Object.keys(jar).length) {
+    else if (chosenTenantId) session.tenantId = chosenTenantId;
+    if (!jar.length) {
       return err('nosession', '登录响应未返回任何会话 cookie（scode ' + scode + '）');
     }
+    log('crm: cookie ' + jar.length + ' 条，域 ' + Array.from(new Set(jar.map(function (c) { return c.domain; }))).join(' / '));
     return { ok: true, session: session, message: '登录成功' };
   } catch (e) {
     return err('exception', '登录异常：' + (e && e.message));
@@ -413,12 +514,21 @@ export async function xsyLogin(opts, deps) {
 
 async function xsyJson(session, url, init, deps) {
   const fetchImpl = (deps && deps.fetchImpl) || fetch;
-  const headers = xsyHeaders(session, init && init.headers);
+  const headers = xsyHeaders(session, url, init && init.headers);
   const resp = await fetchImpl(url, Object.assign({}, init, { headers: headers, redirect: 'follow' }));
   const text = await resp.text();
   let j;
   try { j = JSON.parse(text); } catch (_) { return err('badjson', 'CRM 返回非 JSON（HTTP ' + resp.status + '）：' + text.slice(0, 120)); }
   if (resp.status === 401 || resp.status === 403) return err('authexpire', 'CRM 会话已失效（HTTP ' + resp.status + '）');
+  /* 未登录时 CRM 回 HTTP 400 + {"code":"1020008","msg":"未登录"}。
+     早期只看 401/403，把这种响应当成「查询成功、0 条记录」，症状就是连通性正常但商机 0 条。 */
+  if (resp.status >= 400) {
+    const why = (j && (j.msg || j.message)) || (j && j.code) || '';
+    return err('authexpire', 'CRM 接口未通过鉴权（HTTP ' + resp.status + (why ? '，' + why : '') + '），请重新登录');
+  }
+  if (!j.data && j.code && String(j.code) !== '200') {
+    return err('apierr', 'CRM 返回：' + (j.msg || j.message || j.code));
+  }
   return { ok: true, json: j, status: resp.status };
 }
 
