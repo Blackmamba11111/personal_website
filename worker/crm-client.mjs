@@ -33,6 +33,25 @@ export const XSY_HOSTS = {
   crm: 'https://crm-tencent.xiaoshouyi.com',
 };
 
+/* 销售易登录返回码（取自前端 login chunk 常量表，2026-11-05） */
+const CRM_SCODE = {
+  '2030001': '账号或密码错误',
+  '2030002': '账号或密码错误',
+  '2030003': '账号或密码错误',
+  '2030008': '用户名或密码不正确',
+  '2030007': '需要输入验证码',
+  '2030013': '密码已过期，请先在网页端修改',
+  '2030014': '账号已被锁定，请在网页端解锁',
+  '2030028': '首次登录需先重置密码',
+  '2030029': '首次登录需先重置密码',
+  '2030030': '首次登录需先重置密码',
+  '2030031': '首次登录需先重置密码',
+  '2030034': '首次登录需先在网页端完成初始化',
+  '2030063': '账号状态异常，请先在网页端登录处理',
+  '2030105': '密码已过期，请先在网页端修改',
+  '1030010': '需要先同意隐私协议，请在网页端登录一次',
+};
+
 /* 维保明细 NeoBI 视图（“设备维保明细表”，2026-11-05 抓包确认，替换 recordId 复用模板） */
 const WB_VIEW_ID = '3439246815003399';
 const WB_TEMPLATE = {
@@ -94,61 +113,77 @@ function utf8Bytes(str) {
   return new TextEncoder().encode(String(str));
 }
 
-/* 解析公钥：支持 PEM（X.509 SubjectPublicKeyInfo）与裸 hex 模数两种形态 */
+/* 读一个 DER TLV 头，返回内容区间（不含 tag/长度字节） */
+function derNode(der, pos) {
+  if (pos >= der.length) throw new Error('公钥 DER 越界');
+  const tag = der[pos];
+  let i = pos + 1;
+  if (i >= der.length) throw new Error('公钥 DER 截断');
+  let len = der[i++];
+  if (len & 0x80) {
+    const cnt = len & 0x7f;
+    if (cnt === 0 || cnt > 4) throw new Error('公钥 DER 长度字段非法');
+    len = 0;
+    for (let k = 0; k < cnt; k++) { len = (len << 8) | der[i++]; }
+  }
+  if (i + len > der.length) throw new Error('公钥 DER 长度越界');
+  return { tag: tag, start: i, len: len, end: i + len };
+}
+
+function derIntToBig(der, node) {
+  let v = 0n;
+  for (let k = 0; k < node.len; k++) v = (v << 8n) | BigInt(der[node.start + k]);
+  return v;
+}
+
+/* 解析公钥：支持
+ *   · 裸 base64 DER（销售易 /auc/passport/password-key 返回的就是这种）
+ *   · PEM（带 ----BEGIN PUBLIC KEY---- 头）
+ *   · 裸 hex 模数（JSEncrypt 的另一种写法，指数默认 65537）
+ * 结构两种：
+ *   SubjectPublicKeyInfo: SEQ{ SEQ{OID, NULL}, BITSTRING(0x00 || SEQ{INT n, INT e}) }
+ *   PKCS#1 RSAPublicKey:  SEQ{ INT n, INT e }
+ */
 function parseRsaKey(keyRaw) {
+  if (keyRaw && typeof keyRaw === 'object') {
+    /* 兜底：直接传了接口原始 result 对象 */
+    keyRaw = keyRaw.key || keyRaw.publicKey || '';
+  }
   const s = String(keyRaw || '').trim();
-  /* 形态1：裸 hex（JSEncrypt 有时直接用 hex 模数，指数默认 10001） */
+  if (!s) throw new Error('公钥内容为空');
   if (/^[0-9a-fA-F]{128,}$/.test(s)) return { n: BigInt('0x' + s), e: 65537n };
-  /* 形态2：PEM */
-  const b64 = s.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
-  const der = b64ToBytes(b64);
-  /* 简化 ASN.1 走位：找 INTEGER 序列 */
-  let i = 0;
-  const readLen = () => {
-    const first = der[i++];
-    if (first & 0x80) { const n = first & 0x7f; let v = 0; for (let k = 0; k < n; k++) v = (v << 8) | der[i++]; return v; }
-    return first;
-  };
-  /* 外层 SEQUENCE */
-  if (der[i++] !== 0x30) throw new Error('公钥不是有效的 ASN.1 结构');
-  readLen();
-  /* 可能包了一层 BIT STRING（SubjectPublicKeyInfo） */
-  const trySeq = () => {
-    if (der[i] === 0x02) { i++; readLen(); const start = i, len = 0; let j = i; let l2 = readLen(); void len; void start; void j; void l2; }
-  };
-  void trySeq;
-  /* 直接在 DER 里找两个 INTEGER：模数与指数。
-     SubjectPublicKeyInfo: SEQ{ SEQ{OID,OID}, BITSTRING{ SEQ{INT n, INT e}} }
-     RSAPublicKey:          SEQ{INT n, INT e}
-     统一策略：顺序扫描所有 0x02 INTEGER，取最后一个 >=128bit 的为 n，其后第一个小整数为 e。 */
-  const ints = [];
-  let p = 0;
-  while (p < der.length - 1) {
-    if (der[p] === 0x02) {
-      let q = p + 1;
-      let len = der[q++];
-      if (len & 0x80) { const n = len & 0x7f; len = 0; for (let k = 0; k < n; k++) len = (len << 8) | der[q++]; }
-      if (len > 0 && q + len <= der.length) { ints.push({ off: q, len }); p = q + len; continue; }
-    }
-    p++;
+
+  let der;
+  try {
+    der = b64ToBytes(s.replace(/-----[^-]+-----/g, '').replace(/\s+/g, ''));
+  } catch (e) {
+    throw new Error('公钥不是合法的 Base64 编码');
   }
-  if (!ints.length) throw new Error('公钥 DER 中未找到 RSA 模数');
-  const big = ints.filter(function (x) { return x.len >= 120; });
-  const pick = big.length ? big[big.length - 1] : ints[ints.length - 1];
-  let hex = '';
-  for (let k = 0; k < pick.len; k++) hex += der[pick.off + k].toString(16).padStart(2, '0');
-  const n = BigInt('0x' + (hex.replace(/^00/, '') || '0'));
-  let e = 65537n;
-  /* 找 pick 之后的短整数作为指数 */
-  for (const it of ints) {
-    if (it.off > pick.off && it.len <= 8) {
-      let eh = '';
-      for (let k = 0; k < it.len; k++) eh += der[it.off + k].toString(16).padStart(2, '0');
-      e = BigInt('0x' + (eh || '10001'));
-      break;
-    }
+  if (!der.length) throw new Error('公钥内容为空');
+  if (der[0] !== 0x30) throw new Error('公钥不是有效的 ASN.1 结构（首字节 0x' + der[0].toString(16) + '）');
+
+  const top = derNode(der, 0);
+  const first = derNode(der, top.start);
+  if (first.tag === 0x02) {
+    /* 裸 PKCS#1 */
+    const eNode = derNode(der, first.end);
+    if (eNode.tag !== 0x02) throw new Error('公钥缺少 RSA 公钥指数');
+    return { n: derIntToBig(der, first), e: derIntToBig(der, eNode) };
   }
-  return { n, e };
+  if (first.tag === 0x30) {
+    /* X.509：跳过 AlgorithmIdentifier，取 BIT STRING，再剥掉 unused-bits 字节 */
+    const bits = derNode(der, first.end);
+    if (bits.tag !== 0x03) throw new Error('公钥 ASN.1 结构异常：缺少 BIT STRING');
+    if (!bits.len) throw new Error('公钥 BIT STRING 为空');
+    const inner = derNode(der, bits.start + 1);
+    if (inner.tag !== 0x30) throw new Error('公钥 ASN.1 结构异常：BIT STRING 内不是 SEQUENCE');
+    const nNode = derNode(der, inner.start);
+    if (nNode.tag !== 0x02) throw new Error('公钥缺少 RSA 模数');
+    const eNode = derNode(der, nNode.end);
+    if (eNode.tag !== 0x02) throw new Error('公钥缺少 RSA 公钥指数');
+    return { n: derIntToBig(der, nNode), e: derIntToBig(der, eNode) };
+  }
+  throw new Error('公钥 ASN.1 结构无法识别（tag 0x' + first.tag.toString(16) + '）');
 }
 
 function rsaEncrypt(keyRaw, text) {
@@ -253,43 +288,76 @@ export async function xsyLogin(opts, deps) {
     /* 1. 公钥 */
     log('crm: 拉取登录公钥');
     const kr = await jarFetch(auc + '/auc/passport/password-key', { method: 'GET' });
-    const kj = await kr.json();
+    let kj = {};
+    try { kj = await kr.json(); } catch (_) { kj = {}; }
     if (String(kj.scode) !== '200' || !kj.result) {
-      return err('pwdkey', '获取登录公钥失败：' + (kj.message || kj.scode || '未知'));
+      return err('pwdkey', '获取登录公钥失败：' + (kj.message || kj.error_msg || kj.scode || ('HTTP ' + kr.status)));
     }
-    const encPwd = rsaEncrypt(kj.result, opts.password);
+    /* 实际返回 {"scode":"200","result":{"pwdSwitch":1,"key":"MIGf..."}}，公钥在 result.key */
+    const keyRaw = typeof kj.result === 'string'
+      ? kj.result
+      : (kj.result.key || kj.result.publicKey || kj.result.public_key || '');
+    if (!keyRaw) return err('pwdkey', '获取登录公钥失败：响应中缺少 key 字段');
+    let encPwd;
+    try {
+      encPwd = rsaEncrypt(keyRaw, opts.password);
+    } catch (ke) {
+      return err('pwdkey', '登录公钥解析失败：' + (ke && ke.message));
+    }
 
-    /* 2. 提交登录 */
+    /* 2. 提交登录
+       实测（2026-11-05 前端 login chunk 反查）：/auc/login 只接受
+       application/x-www-form-urlencoded，且带 withCredentials；发 JSON 会被 301 打回登录页。 */
     log('crm: 提交登录（用户 ' + opts.loginName + '）');
+    const form = new URLSearchParams();
+    form.set('login_name', String(opts.loginName));
+    form.set('password', encPwd);
+    form.set('mobileParams[login_type]', 'web');
+    form.set('login_type', 'web');
+    if (opts.captcha) form.set('NECaptchaValidate', String(opts.captcha));
+
     const lr = await jarFetch(auc + '/auc/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        login_name: opts.loginName,
-        password: encPwd,
-        NECaptchaValidate: null,
-        login_type: 'web',
-        device_type: 'web',
-        mobileParams: { login_type: 'web' },
-      }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'Accept': 'application/json' },
+      body: form.toString(),
     });
     let lj = {};
     try { lj = await lr.json(); } catch (_) { lj = {}; }
-    /* 可能的响应形态：{scode:'200', data:{redirect_url}} / 302 location / {scode:'203xxxx'} 失败码 */
-    if (String(lj.scode) !== '200' && lr.status >= 400) {
-      return err('authfail', '登录失败：' + (lj.message || ('HTTP ' + lr.status)));
+    /* 成功码只有 200（直接成功）与 302（需跳转落地）；其余一律失败。
+       失败时 HTTP 仍是 200，只看状态码会把错密码判成成功。 */
+    const scode = String(lj.scode == null ? '' : lj.scode);
+    if (scode && scode !== '200' && scode !== '302') {
+      if (scode === '2030007' || scode === '1030010') {
+        return err('needcode', '登录需要验证码或补充认证（scode ' + scode + '），账号密码方式暂不可用');
+      }
+      const human = CRM_SCODE[scode] || lj.error_msg || lj.message || '';
+      const detail = human ? (human + (scode ? '（' + scode + '）' : '')) : ('HTTP ' + lr.status + '，未返回 scode');
+      return err('authfail', '登录失败：' + detail);
     }
-    const next = (lj.data && (lj.data.redirect_url || lj.data.redirectUrl || lj.data.url)) || lj.redirect_url || (lr.headers && lr.headers.get && lr.headers.get('location'));
+    if (!scode && lr.status >= 400) {
+      return err('authfail', '登录失败：HTTP ' + lr.status + '（未返回 scode）');
+    }
+    const res = lj.result || {};
+    const next = res.redirectUrl || res.redirect_url || res.url
+      || (lj.data && (lj.data.redirectUrl || lj.data.redirect_url || lj.data.url))
+      || lj.redirect_url
+      || (lr.headers && lr.headers.get && lr.headers.get('location'));
 
     /* 3. 跟随重定向（最多 6 跳，跨域也允许——登录链会跳到 crm 域落地会话） */
     let hop = next;
     let hops = 0;
+    let finalUrl = '';
     while (hop && hops < 6) {
       const abs = hop.startsWith('http') ? hop : auc + hop;
+      finalUrl = abs;
       log('crm: 跟随登录跳转 → ' + abs.slice(0, 80));
       const rr = await jarFetch(abs, { method: 'GET' });
       if (rr.status >= 300 && rr.status < 400) { hop = rr.headers && rr.headers.get && rr.headers.get('location'); hops++; continue; }
       hop = null;
+    }
+    /* 又被弹回登录页 → 实际没登录成功 */
+    if (/default_login|oauth2\/auth|\/login\.action/.test(finalUrl)) {
+      return err('authfail', '登录失败：认证未通过（被重定向回 ' + finalUrl.replace(/^https?:\/\/[^/]+/, '') + '）');
     }
 
     /* 4. 从 cookie 提取用户/租户标识（xsy-* 请求头的值；缺失也能跑，靠 cookie 鉴权） */
@@ -300,8 +368,8 @@ export async function xsyLogin(opts, deps) {
     const cTenant = jar['x-ienterprise-tenant'] || '';
     const mT = /(\d{5,})/.exec(cTenant);
     if (mT) session.tenantId = mT[1];
-    if (!jar['JSESSIONID'] && !jar['SESSION'] && !jar['AUC_SESSION']) {
-      return err('nosession', '登录响应未返回会话（可能触发验证码或账号密码错误）：' + (lj.scode || lj.message || '无 cookie'));
+    if (!Object.keys(jar).length) {
+      return err('nosession', '登录响应未返回任何会话 cookie（scode ' + scode + '）');
     }
     return { ok: true, session: session, message: '登录成功' };
   } catch (e) {

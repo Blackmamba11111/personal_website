@@ -58,14 +58,14 @@ function json(body, status) {
   check('登录 3 步：取公钥 → 提交 → 跟随跳转', calls.length === 3, String(calls.length));
   const loginCall = calls.filter(c => c.url.indexOf('/auc/login') >= 0)[0];
   check('登录走 POST /auc/login', loginCall && loginCall.method === 'POST', loginCall && loginCall.method);
-  const body = JSON.parse(loginCall.body);
+  const body = Object.fromEntries(new URLSearchParams(loginCall.body));
   check('提交 login_name', body.login_name === '13800000000', body.login_name);
   check('密码经 RSA 加密后提交（不是明文）', body.password !== 'Crm@12345' && /^[A-Za-z0-9+/=]+$/.test(body.password),
     String(body.password).slice(0, 24));
   check('密文长度等于模数字节数（PKCS#1 v1.5 填充）',
     Buffer.from(body.password, 'base64').length === 128,
     String(Buffer.from(body.password, 'base64').length));
-  check('请求带 NECaptchaValidate 字段（无验证码时为 null）', body.NECaptchaValidate === null);
+  check('无验证码时不带 NECaptchaValidate（前端也会剔除 null 字段）', body.NECaptchaValidate === undefined);
   check('会话 cookie 被保留', !!r.session.cookies.JSESSIONID, JSON.stringify(r.session.cookies));
 }
 
@@ -79,17 +79,19 @@ function json(body, status) {
   const r2 = await xsyLogin({ loginName: 'a', password: 'b' }, {
     fetchImpl: async (url, init) => {
       const u = String(url);
-      if (u.indexOf('password-key') >= 0) return json({ scode: '200', result: PUB_B64 });
-      if (u.indexOf('/auc/login') >= 0) return json({ scode: '202001', message: '密码错误' }, 401);
+      if (u.indexOf('password-key') >= 0) return json({ scode: '200', result: { pwdSwitch: 1, key: PUB_B64 } });
+      if (u.indexOf('/auc/login') >= 0) return json({ scode: '2030008', error_msg: null }, 200);
       return json({}, 200);
     }
   });
   check('账号密码错误 → code=authfail', r2.ok === false && r2.code === 'authfail', JSON.stringify(r2));
+  check('HTTP 200 + 失败 scode 也判失败，并给出中文原因',
+    r2.ok === false && /用户名或密码不正确/.test(r2.message) && /2030008/.test(r2.message), r2.message);
 
   const r3 = await xsyLogin({ loginName: 'a', password: 'b' }, {
     fetchImpl: async (url) => {
       const u = String(url);
-      if (u.indexOf('password-key') >= 0) return json({ scode: '200', result: PUB_B64 });
+      if (u.indexOf('password-key') >= 0) return json({ scode: '200', result: { pwdSwitch: 1, key: PUB_B64 } });
       if (u.indexOf('/auc/login') >= 0) return json({ scode: '200', data: { redirect_url: '/landing' } });
       return json({}, 200);   /* 落地页没有下发任何会话 cookie */
     }
