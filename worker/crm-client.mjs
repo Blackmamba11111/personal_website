@@ -53,30 +53,33 @@ const CRM_SCODE = {
   '1030010': '需要先同意隐私协议，请在网页端登录一次',
 };
 
-/* 维保明细 NeoBI 视图（“设备维保明细表”，2026-11-05 抓包确认，替换 recordId 复用模板） */
+/* 维保明细 NeoBI 视图（“设备维保明细表”，2026-11-05 网页抓包，整份请求体照抄，别再自己拼） */
 const WB_VIEW_ID = '3439246815003399';
-const WB_TEMPLATE = {
-  url: XSY_HOSTS.crm + '/rest/neobi/v2.0/query/query?avatarViewId=' + WB_VIEW_ID + '&avatarLayoutId=unknown&avatarBizType=unknown',
-  /* 视图层固定过滤条件与 board 拼装见 buildWbFilter；此模板来自线上抓包 */
+const WB_QUERY_URL = XSY_HOSTS.crm + '/rest/neobi/v2.0/query/query?avatarViewId=' + WB_VIEW_ID + '&avatarLayoutId=unknown&avatarBizType=unknown';
+/* filter 之外的固定表单字段：缺一个就查不回来数据（实测 filter 齐了但少这些照样返回空表） */
+const WB_FORM_EXTRA = {
+  config: '{"flush":false,"pageSize":50}',
+  dataShareOwner: '1213538825241293',
+  reportType: 'data',
+  layoutId: '2685589369609034',
+  widgetId: '8431848',
 };
-
-const WB_VIEW_FIXED_FILTER = [
-  { modelKey: 'customEntity98__c', serialNo: 1, modelType: null, fieldKey: 'customItem2__c', type: 'text', udfId: null, hierarchyLevel: null, seq: '1', udfField: null, optionType: null, currencyOption: null, funType: null, pattern: null, udfType: null, operate: 'ex', value: [], timeType: null, formula: null, entityOnlyFilter: 0, transferSQL: null, excludeEmptyString: 1, includeNullValue: null, momYoY: null, timezone: null, langCode: null, moM: null, yoY: null },
-  { modelKey: 'quoteLine', serialNo: 1, modelType: null, fieldKey: 'customItem36__c', type: 'text', udfId: null, hierarchyLevel: null, seq: '2', udfField: null, optionType: null, currencyOption: null, funType: null, pattern: null, udfType: null, operate: 'ex', value: [], timeType: null, formula: null, entityOnlyFilter: 0, transferSQL: null, excludeEmptyString: 1, includeNullValue: null, momYoY: null, timezone: null, langCode: null, moM: null, yoY: null },
-  { modelKey: 'quoteLine', serialNo: 1, modelType: null, fieldKey: 'customItem7__c', type: 'text', udfId: null, hierarchyLevel: null, seq: '3', udfField: null, optionType: null, currencyOption: null, funType: null, pattern: null, udfType: null, operate: 'ex', value: [], timeType: null, formula: null, entityOnlyFilter: 0, transferSQL: null, excludeEmptyString: 1, includeNullValue: null, momYoY: null, timezone: null, langCode: null, moM: null, yoY: null },
-  { modelKey: 'quoteLine', serialNo: 1, modelType: null, fieldKey: 'customItem9__c', type: 'text', udfId: null, hierarchyLevel: null, seq: '4', udfField: null, optionType: null, currencyOption: null, funType: null, pattern: null, udfType: null, operate: 'ex', value: [], timeType: null, formula: null, entityOnlyFilter: 0, transferSQL: null, excludeEmptyString: 1, includeNullValue: null, momYoY: null, timezone: null, langCode: null, moM: null, yoY: null },
-  { modelKey: 'quoteLine', serialNo: 1, modelType: null, fieldKey: 'customItem10__c', type: 'text', udfId: null, hierarchyLevel: null, seq: '5', udfField: null, optionType: null, currencyOption: null, funType: null, pattern: null, udfType: null, operate: 'ex', value: [], timeType: null, formula: null, entityOnlyFilter: 0, transferSQL: null, excludeEmptyString: 1, includeNullValue: null, momYoY: null, timezone: null, langCode: null, moM: null, yoY: null },
-  { modelKey: 'quoteLine', serialNo: 1, modelType: null, fieldKey: 'customItem11__c', type: 'text', udfId: null, hierarchyLevel: null, seq: '6', udfField: null, optionType: null, currencyOption: null, funType: null, pattern: null, udfType: null, operate: 'ex', value: [], timeType: null, formula: null, entityOnlyFilter: 0, transferSQL: null, excludeEmptyString: 1, includeNullValue: null, momYoY: null, timezone: null, langCode: null, moM: null, yoY: null },
-];
+/* 视图模板：唯一变量是 board.filter[0].value[0].val（商机 recordId） */
+const WB_FILTER_TEMPLATE = JSON.parse('{"board":{"filter":[{"modelKey":"account","serialNo":1,"fieldKey":"customItem287__c","type":"refer","fieldName":"技术项目","views":[3439246815003399],"operate":"eq","value":[{"val":0}]}],"relation":"1"},"view":{"hrelation":null,"relation":"1 and 2 and 3 and 4 and 5 and 6","filter":[{"modelKey":"customEntity98__c","serialNo":1,"modelType":null,"fieldKey":"customItem2__c","type":"text","udfId":null,"hierarchyLevel":null,"seq":"1","udfField":null,"optionType":null,"currencyOption":null,"funType":null,"pattern":null,"udfType":null,"operate":"ex","value":[],"timeType":null,"formula":null,"entityOnlyFilter":0,"transferSQL":null,"excludeEmptyString":1,"includeNullValue":null,"momYoY":null,"timezone":null,"langCode":null,"moM":null,"yoY":null},{"modelKey":"quoteLine","serialNo":1,"modelType":null,"fieldKey":"customItem36__c","type":"text","udfId":null,"hierarchyLevel":null,"seq":"2","udfField":null,"optionType":null,"currencyOption":null,"funType":null,"pattern":null,"udfType":null,"operate":"notIn","value":[{"val":"DNS-配件","name":null,"close":null,"delta":0,"baseType":null,"sub":false,"measure":null,"specialType":null,"source":null}],"timeType":null,"formula":null,"entityOnlyFilter":0,"transferSQL":null,"excludeEmptyString":null,"includeNullValue":1,"momYoY":null,"timezone":null,"langCode":null,"moM":null,"yoY":null},{"modelKey":"quoteLine","serialNo":1,"modelType":null,"fieldKey":"customItem36__c","type":"text","udfId":null,"hierarchyLevel":null,"seq":"3","udfField":null,"optionType":null,"currencyOption":null,"funType":null,"pattern":null,"udfType":null,"operate":"notIn","value":[{"val":"DHCP-配件","name":null,"close":null,"delta":0,"baseType":null,"sub":false,"measure":null,"specialType":null,"source":null}],"timeType":null,"formula":null,"entityOnlyFilter":0,"transferSQL":null,"excludeEmptyString":null,"includeNullValue":1,"momYoY":null,"timezone":null,"langCode":null,"moM":null,"yoY":null},{"modelKey":"quoteLine","serialNo":1,"modelType":null,"fieldKey":"customItem36__c","type":"text","udfId":null,"hierarchyLevel":null,"seq":"4","udfField":null,"optionType":null,"currencyOption":null,"funType":null,"pattern":null,"udfType":null,"operate":"notIn","value":[{"val":"DDI-配件","name":null,"close":null,"delta":0,"baseType":null,"sub":false,"measure":null,"specialType":null,"source":null}],"timeType":null,"formula":null,"entityOnlyFilter":0,"transferSQL":null,"excludeEmptyString":null,"includeNullValue":1,"momYoY":null,"timezone":null,"langCode":null,"moM":null,"yoY":null},{"modelKey":"customEntity98__c","serialNo":1,"modelType":null,"fieldKey":"customItem40__c","type":"text","udfId":null,"hierarchyLevel":null,"seq":"5","udfField":null,"optionType":null,"currencyOption":null,"funType":null,"pattern":null,"udfType":null,"operate":"in","value":null,"timeType":null,"formula":null,"entityOnlyFilter":0,"transferSQL":null,"excludeEmptyString":null,"includeNullValue":null,"momYoY":null,"timezone":null,"langCode":null,"moM":null,"yoY":null},{"modelKey":"customEntity98__c","serialNo":1,"modelType":null,"fieldKey":"customItem16__c","type":"text","udfId":null,"hierarchyLevel":null,"seq":"6","udfField":null,"optionType":null,"currencyOption":null,"funType":null,"pattern":null,"udfType":null,"operate":null,"value":null,"timeType":null,"formula":null,"entityOnlyFilter":0,"transferSQL":null,"excludeEmptyString":null,"includeNullValue":null,"momYoY":null,"timezone":null,"langCode":null,"moM":null,"yoY":null}]},"cascading":{},"drillInfo":{}}');
 
 function buildWbFilter(recordId) {
-  return {
-    board: {
-      filter: [{ modelKey: 'account', serialNo: 1, fieldKey: 'customItem287__c', type: 'refer', fieldName: '技术项目', views: [Number(WB_VIEW_ID)], operate: 'eq', value: [{ val: Number(recordId) }] }],
-      relation: '1',
-    },
-    view: { hrelation: null, relation: '1 and 2 and 3 and 4 and 5 and 6', filter: WB_VIEW_FIXED_FILTER },
-  };
+  const f = JSON.parse(JSON.stringify(WB_FILTER_TEMPLATE));
+  const n = Number(recordId);
+  f.board.filter[0].value[0].val = isNaN(n) ? recordId : n;
+  return f;
+}
+
+function buildWbBody(recordId) {
+  const p = new URLSearchParams();
+  p.set('viewId', WB_VIEW_ID);
+  p.set('filter', JSON.stringify(buildWbFilter(recordId)));
+  Object.keys(WB_FORM_EXTRA).forEach(function (k) { p.set(k, WB_FORM_EXTRA[k]); });
+  return p.toString();
 }
 
 /* ---------------- RSA PKCS1-v1_5（纯 BigInt，与 JSEncrypt 兼容） ---------------- */
@@ -600,11 +603,10 @@ export function translateRecord(rec, labels) {
 
 export async function fetchMaintenance(session, recordId, deps) {
   const log = (deps && deps.log) || function () {};
-  const body = 'viewId=' + WB_VIEW_ID + '&filter=' + encodeURIComponent(JSON.stringify(buildWbFilter(recordId)));
-  const r = await xsyJson(session, WB_TEMPLATE.url, {
+  const r = await xsyJson(session, WB_QUERY_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body,
+    body: buildWbBody(recordId),
   }, deps);
   if (!r.ok) return r;
   /* NeoBI 响应：data 里嵌套 {type,row,col,value} 单元格数组（type=1 表头） */

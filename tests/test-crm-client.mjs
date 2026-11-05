@@ -270,6 +270,7 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
   });
 
   let maintenanceCalls = 0;
+  const wbCalls = [];
   const fetchImpl = async (url, init) => {
     const u = String(url);
     if (u.indexOf('/auc/passport/password-key') >= 0) return json({ scode: '200', result: pub2 });
@@ -283,7 +284,11 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
       ] } });
     }
     if (u.indexOf('/neoui/table/search') >= 0) return json({ data: { records: opps } });
-    if (u.indexOf('/neobi/v2.0/query/query') >= 0) { maintenanceCalls++; return json({ data: { grid: devCells } }); }
+    if (u.indexOf('/neobi/v2.0/query/query') >= 0) {
+      maintenanceCalls++;
+      wbCalls.push({ url: u, body: String((init && init.body) || ''), ctype: String(((init && init.headers) || {})['Content-Type'] || '') });
+      return json({ data: { grid: devCells } });
+    }
     return json({}, 404);
   };
 
@@ -307,6 +312,16 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
     String(got['承德银行'] && got['承德银行'].maintenance.length));
   check('未命中客户标 miss 且不查维保', got['不存在银行'].status === 'miss');
   check('每家命中客户各查一次维保', maintenanceCalls === 2, String(maintenanceCalls));
+  /* 维保请求体照抄网页抓包：少一个固定字段服务端就返回空表（2026-11-05 实测） */
+  const wbq = new URLSearchParams(wbCalls[0] && wbCalls[0].body || '');
+  check('维保请求带 avatarViewId', /avatarViewId=3439246815003399/.test(wbCalls[0] && wbCalls[0].url), wbCalls[0] && wbCalls[0].url);
+  check('维保请求为表单编码', /x-www-form-urlencoded/.test(wbCalls[0] && wbCalls[0].ctype), wbCalls[0] && wbCalls[0].ctype);
+  check('维保表单固定字段齐全（config/dataShareOwner/reportType/layoutId/widgetId）',
+    ['config', 'dataShareOwner', 'reportType', 'layoutId', 'widgetId'].every(k => wbq.get(k)),
+    Array.from(wbq.keys()).join(','));
+  check('维保 filter 带商机 recordId',
+    /"fieldKey":"customItem287__c"/.test(wbq.get('filter') || '') && /"val":101\b/.test(wbq.get('filter') || ''),
+    (wbq.get('filter') || '').slice(0, 120));
   check('返回可复用 session', !!r.session && Array.isArray(r.session.cookies) && r.session.cookies.some(c => c.name === 'JSESSIONID'));
 }
 void KEY_BYTES;
