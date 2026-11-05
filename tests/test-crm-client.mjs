@@ -55,7 +55,7 @@ function json(body, status) {
   };
   const r = await xsyLogin({ loginName: '13800000000', password: 'Crm@12345' }, { fetchImpl });
   check('登录成功返回 session', r.ok === true && !!r.session, JSON.stringify(r));
-  check('登录 3 步：取公钥 → 提交 → 跟随跳转', calls.length === 3, String(calls.length));
+  check('登录 4 步：建租户上下文 → 取公钥 → 提交 → 跟随跳转', calls.length === 4, String(calls.length));
   const loginCall = calls.filter(c => c.url.indexOf('/auc/login') >= 0)[0];
   check('登录走 POST /auc/login', loginCall && loginCall.method === 'POST', loginCall && loginCall.method);
   const body = Object.fromEntries(new URLSearchParams(loginCall.body));

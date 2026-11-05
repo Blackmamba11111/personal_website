@@ -48,6 +48,7 @@ const CRM_SCODE = {
   '2030031': '首次登录需先重置密码',
   '2030034': '首次登录需先在网页端完成初始化',
   '2030063': '账号状态异常，请先在网页端登录处理',
+  '2030072': '登录会话已失效（需先建立租户上下文，请重试）',
   '2030105': '密码已过期，请先在网页端修改',
   '1030010': '需要先同意隐私协议，请在网页端登录一次',
 };
@@ -285,6 +286,30 @@ export async function xsyLogin(opts, deps) {
   };
 
   try {
+    /* 0. 先打开租户登录入口，收集租户上下文 cookie。
+       实测（2026-11-05）：直接打 /auc/login 只带 password-key 的会话，
+       密码校验通过后会回 2030072「长时间未操作，请刷新重试」——
+       因为缺少 /global/login.action → /neologin/skip/... → /auc/oauth2/auth
+       这条链下发的 SESSION / AUC_SESSION / auc-sso-oauth-context / x-ienterprise-tenant。 */
+    log('crm: 打开登录入口，建立租户上下文');
+    let entryUrl = ((deps && deps.crmBase) || XSY_HOSTS.crm) + '/global/login.action';
+    let loginPage = '';
+    let hops0 = 0;
+    while (entryUrl && hops0 < 6) {
+      const er = await jarFetch(entryUrl, { method: 'GET', headers: { 'Accept': 'text/html,application/xhtml+xml' } });
+      loginPage = entryUrl;
+      const loc = er.headers && er.headers.get && er.headers.get('location');
+      if (er.status >= 300 && er.status < 400 && loc) {
+        entryUrl = loc.startsWith('http') ? loc : new URL(loc, entryUrl).toString();
+        hops0++;
+        continue;
+      }
+      entryUrl = null;
+    }
+    if (!jar['auc-sso-oauth-context']) {
+      log('crm: 警告 —— 未取到 auc-sso-oauth-context，登录可能被判会话失效');
+    }
+
     /* 1. 公钥 */
     log('crm: 拉取登录公钥');
     const kr = await jarFetch(auc + '/auc/passport/password-key', { method: 'GET' });
@@ -318,7 +343,12 @@ export async function xsyLogin(opts, deps) {
 
     const lr = await jarFetch(auc + '/auc/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'Accept': 'application/json' },
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'Accept': 'application/json, text/plain, */*',
+        'Origin': auc,
+        'Referer': loginPage || (auc + '/auc/default_login'),
+      },
       body: form.toString(),
     });
     let lj = {};
@@ -330,7 +360,7 @@ export async function xsyLogin(opts, deps) {
       if (scode === '2030007' || scode === '1030010') {
         return err('needcode', '登录需要验证码或补充认证（scode ' + scode + '），账号密码方式暂不可用');
       }
-      const human = CRM_SCODE[scode] || lj.error_msg || lj.message || '';
+      const human = String(CRM_SCODE[scode] || lj.error_msg || lj.message || '').replace(/^登录失败[：:]\s*/, '');
       const detail = human ? (human + (scode ? '（' + scode + '）' : '')) : ('HTTP ' + lr.status + '，未返回 scode');
       return err('authfail', '登录失败：' + detail);
     }
@@ -347,8 +377,10 @@ export async function xsyLogin(opts, deps) {
     let hop = next;
     let hops = 0;
     let finalUrl = '';
+    let base = auc;
     while (hop && hops < 6) {
-      const abs = hop.startsWith('http') ? hop : auc + hop;
+      const abs = hop.startsWith('http') ? hop : new URL(hop, base).toString();
+      base = abs;
       finalUrl = abs;
       log('crm: 跟随登录跳转 → ' + abs.slice(0, 80));
       const rr = await jarFetch(abs, { method: 'GET' });
