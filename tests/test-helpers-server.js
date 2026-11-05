@@ -39,7 +39,9 @@ function userView(u) {
     serverType: u.serverType || '',
     shareFrom: u.shareFrom || '',
     sessionMins: Number(u.sessionMins) > 0 ? Number(u.sessionMins) : 30,
-    hideSensitive: !!u.hideSensitive
+    hideSensitive: !!u.hideSensitive,
+    nameCn: u.nameCn || '',
+    crmVisible: !!u.crmVisible
   };
 }
 
@@ -54,7 +56,10 @@ function installApiStub(window, opts) {
     ledgers: {},
     logs: [],                 /* 台账变更日志：{username(owner), actor, kind, action, target, detail, at} */
     attachments: {},          /* id -> {id,name,mime,size,data(base64),owner} */
-    servers: (opts.servers || []).slice()   /* 认证服务器（远程用户用） */
+    servers: (opts.servers || []).slice(),  /* 认证服务器（远程用户用） */
+    crmMatches: opts.crmMatches || {},      /* CRM 快照：{ 客户名: {status, opp, maintenance, warranty} } */
+    crmConfig: { loginName: '', password: '', intervalHours: 12 },
+    calls: []                               /* 调用记录：{path, method, body}（断言请求方法用） */
   };
   for (let i = 0; i < ls.length; i++) {
     const k = ls.key(i);
@@ -273,6 +278,57 @@ function installApiStub(window, opts) {
       return ok(null);
     }
 
+    /* CRM 台账关联（超管）：配置 / 连通性 / 手动检索 / 状态列表 */
+    if (p === '/crm/config' && method === 'GET') {
+      if (auth.role !== 'admin') return bad('仅超级管理员可查看 CRM 配置', 403);
+      const c = srv.crmConfig;
+      return ok({
+        configured: !!(c.loginName && c.password), loginName: c.loginName,
+        intervalHours: c.intervalHours, lastSyncAt: '', lastResult: null, running: false
+      });
+    }
+    if (p === '/crm/config' && method === 'PUT') {
+      if (auth.role !== 'admin') return bad('仅超级管理员可修改 CRM 配置', 403);
+      if (body.loginName !== undefined) srv.crmConfig.loginName = String(body.loginName || '').trim();
+      if (body.password) srv.crmConfig.password = String(body.password);
+      if (body.intervalHours) srv.crmConfig.intervalHours = Math.max(1, Math.min(168, Number(body.intervalHours) || 12));
+      return ok({ configured: !!(srv.crmConfig.loginName && srv.crmConfig.password) });
+    }
+    if (p === '/crm/test' && method === 'POST') {
+      if (auth.role !== 'admin') return bad('仅超级管理员可测试 CRM 连通性', 403);
+      /* 密码留空沿用已保存值（与真实服务端同口径） */
+      const pwd = body.password !== undefined ? String(body.password) : srv.crmConfig.password;
+      if (!body.loginName || !pwd) return bad('请先填写 CRM 账号与密码');
+      return ok({ ok: true, oppCount: 2, message: '连通正常：登录成功，拉取到 2 条商机' });
+    }
+    if (p === '/crm/sync' && method === 'POST') {
+      if (auth.role !== 'admin') return bad('仅超级管理员可触发 CRM 检索', 403);
+      return ok({ started: true });
+    }
+    if (p === '/crm/status' && method === 'GET') {
+      if (auth.role !== 'admin') return bad('仅超级管理员可查看 CRM 匹配状态', 403);
+      return ok({ lastSyncAt: '', lastResult: null, running: false, items: [] });
+    }
+
+    /* CRM 现网信息快照：与两版真实服务端同口径 —— 非超管且 crmVisible=0 时只回空表 */
+    if (p === '/crm/data' && method === 'GET') {
+      if (!auth.crmVisible && auth.role !== 'admin') {
+        return ok({ crmVisible: false, matches: {}, nameCn: auth.nameCn || '' });
+      }
+      const all = srv.crmMatches || {};
+      const matches = {};
+      let allow = null;
+      if (auth.role !== 'admin') {
+        allow = {};
+        ((srv.ledgers[dataOwner(auth.username)] || {}).customers || []).forEach(c => { if (c && c.name) allow[c.name] = true; });
+      }
+      Object.keys(all).forEach(k => {
+        if (allow && !allow[k]) return;
+        matches[k] = all[k];
+      });
+      return ok({ crmVisible: true, matches: matches, nameCn: auth.nameCn || '' });
+    }
+
     if (p === '/ledger' && method === 'GET') return ok(bundle(auth));
     if (p === '/ledger' && method === 'PUT') {
       if (auth.role !== 'admin' && auth.perm === 'ro') return bad('当前账号为只读权限，不能修改台账。', 403);
@@ -395,7 +451,9 @@ function installApiStub(window, opts) {
         mustChange: !s, createdAt: '2026-01-01', lastLogin: '',
         sessionMins: isFinite(Number(body.sessionMins)) && Number(body.sessionMins) > 0
           ? Math.min(43200, Math.max(5, Math.round(Number(body.sessionMins)))) : 30,
-        hideSensitive: !!body.hideSensitive
+        hideSensitive: !!body.hideSensitive,
+        nameCn: String(body.nameCn || '').trim(),
+        crmVisible: !!body.crmVisible
       };
       srv.users.push(nu);
       if (!shareFrom && body.data) srv.ledgers[un] = body.data;
@@ -415,6 +473,8 @@ function installApiStub(window, opts) {
         if (body.note != null) t.note = body.note;
         if (body.perm != null) t.perm = body.perm === 'ro' ? 'ro' : 'rw';
         if (body.hideSensitive !== undefined) t.hideSensitive = !!body.hideSensitive;
+        if (body.nameCn !== undefined) t.nameCn = String(body.nameCn || '').trim();
+        if (body.crmVisible !== undefined) t.crmVisible = !!body.crmVisible;
         /* 登录超时（分钟）：与 Worker 版 normSessionMins 同口径（5–43200，非法回退 30） */
         if (body.sessionMins !== undefined) {
           const n = Math.round(Number(body.sessionMins));
@@ -470,6 +530,7 @@ function installApiStub(window, opts) {
     const method = (init.method || 'GET').toUpperCase();
     let body = {};
     try { body = init.body ? JSON.parse(init.body) : {}; } catch (e) { body = {}; }
+    window.__SRV__.calls.push({ path: path, method: method, body: body });
     return Promise.resolve().then(() => route(path, method, body));
   };
 }

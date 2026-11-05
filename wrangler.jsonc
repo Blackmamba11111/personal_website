@@ -30,5 +30,9 @@
      有了版本 ID 作为强校验器，未变更时只回 304，二次打开几乎不消耗流量。 */
   "version_metadata": {
     "binding": "CF_VERSION_METADATA"
+  },
+  /* CRM 台账关联定时检索：每小时检查一次，到配置的间隔（默认 12 小时）才真正跑 */
+  "triggers": {
+    "crons": ["0 * * * *"]
   }
 }

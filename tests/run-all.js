@@ -15,6 +15,8 @@ const SUITES = [
   ['看板 · 巡检分组', 'test-units.js'],
   ['看板 · 一年2次（半年口径）', 'test-half.js'],
   ['看板 · 弹窗防误关', 'test-modal-guard.js'],
+  ['看板 · CRM 台账关联', 'test-crm.js'],
+  ['CRM · 询盘云协议模块', 'test-crm-client.mjs'],
   ['首页 · 结构与部署产物', 'test-home.js'],
   ['首页 · 照片服务端接口', 'test-photo-api.js'],
   ['看板 · 巡检登记增强', 'test-visits.js'],

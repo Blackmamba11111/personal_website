@@ -115,6 +115,20 @@
 | E5 | 缓存策略 | HTML 短缓存 + 后台刷新；`/assets/*` 长缓存 immutable |
 | E6 | 服务端接口 | `/api/*` 走 Worker，其余走静态资源，未匹配回 404.html |
 
+### F. CRM 台账关联（2026-11-05，询盘云 / 销售易）
+
+| # | 需求 | 实现要点 |
+| --- | --- | --- |
+| F1 | 超管「CRM 台账关联」页 | 配账号密码 + 检索间隔（1–168 小时，默认 12）、测试连通性、立即检索；按台账客户逐个显示获取状态（成功/未匹配）与维保到期 |
+| F2 | 客户详情两块 | 「客户现网信息」：项目名称、客户名称、客户级别、行业、战区/部门、项目所有人、项目技术负责人（=维护人A）、维护人B + 硬件逐台（序列号/型号/服务时间/版本）+ 维保三态；「产品与技术信息」：主要使用功能、总采购数量/GSLB台数、高可靠架构、操作系统版本、现网软件版本 |
+| F4 | 项目技术负责人 | 直接用 CRM 的 `维护人A`（中文名），不改写、不映射 |
+| F5 | 我负责的项目 | 客户列表搜索区「全部项目 / 我负责的项目」切换；命中条件 = 登录用户 `name_cn` 与商机 `维护人A` 全等（拼音登录名靠管理员填中文名转译） |
+| F6 | 按用户控制可见性 | 用户管理里逐账号开关，**默认关闭**；关闭时服务端不下发任何 CRM 数据 |
+| F7 | 列表维保徽标 | 与「未巡检」徽标并列，三态：维保全部到期 / 部分到期 / 未到期；未匹配客户不显示 |
+
+**服务端必须自己登录 CRM**（不能依赖任何人的浏览器会话）：账号密码存 `crm_config`，会话存 `crm_config.session`，失效自动重登一次；内网用 `setInterval`、公网用 Cron Trigger 各自驱动。
+
+
 ---
 
 ## 3. 核心业务口径（**必须原样继承，改错会直接导致考核结论错误**）
@@ -202,6 +216,7 @@
 | 地图 | `loadTMap()` 1754 · `initMap()` 1783 · `buildRegionLayers()` 2000 · `renderMarkers()` 2107 |
 | 客户与客户管理页 | `openCustModal()` 2652 · `openCustsPage()` 3796 · `renderCustsPage()` 3839 |
 | 汇总渲染 | `save()` 1378 · `renderAll()` 3041 |
+| CRM 展示 | `refreshCrmData()` 5569 · `crmMatchOf()` 5582 · `warrantyBadgeOf()` 5588 · `isMyProject()` 5597 · `openCrmPage()` 5961 |
 
 ---
 
@@ -211,11 +226,13 @@
 
 | 表 | 字段 | 说明 |
 | --- | --- | --- |
-| `users` | username(PK), name, role(`admin`/`user`), status(`active`/`disabled`), note, salt, hash, must_change, created_at, last_login, source(`local`/`radius`/`tacacs`/`ldap`), perm(`rw`/`ro`), server_id | 账号、口令来源与数据权限；远程账号的 salt/hash 为空串 |
+| `users` | username(PK), name, role(`admin`/`user`), status(`active`/`disabled`), note, salt, hash, must_change, created_at, last_login, source(`local`/`radius`/`tacacs`/`ldap`), perm(`rw`/`ro`), server_id, name_cn, crm_visible | 账号、口令来源与数据权限；远程账号的 salt/hash 为空串。`name_cn` 是中文姓名（「我负责的项目」按它比对维护人A）；`crm_visible` 控制能否看 CRM 现网信息，默认 `0` |
 | `auth_servers` | id(PK, `srv`+10 位 hex), name, type, host, port, enabled, cfg(JSON), created_at, updated_at | 远程认证服务器；`cfg.secret` 只写不回显 |
 | `ledgers` | username(PK), data(JSON TEXT), updated_at, updated_by | 一人一份台账，`data` 为整份 JSON |
 | `sessions` | token(PK), username, created_at, expires_at | Bearer 令牌，30 天 |
 | `attachments` | id(PK, 24 位随机 hex), name, mime, size, owner, created_at, ext(内网版), data(Cloudflare 版) | 巡检附件；Cloudflare 版把文件 base64 存 `data`（D1 单行上限 2MB → 单文件 1MB）；内网版只存元数据，文件落 `DATA_DIR/uploads/<id><ext>`，单文件上限 100MB（2026-11-03 起，`MAX_BODY=200MB` 承接 base64 膨胀）。**`ext` 存的是按文件头嗅探出的真实扩展名，不能用文件名后缀推断**——前端会把图片统一重编码成 JPEG（文件名仍是 `.png`），只按名字找文件会 404 |
+| `crm_config` | k(PK, 固定 `main`), v(JSON) | CRM 登录账号/密码/检索间隔/上轮结果/会话快照；密码只写不回显 |
+| `crm_matches` | customer_name(PK), status(`ok`/`miss`), record_id, level(1/2), multi, data(JSON), updated_at | 每个台账客户一条 CRM 快照，`data` 存 `{opp, maintenance, warranty, error}` |
 
 ### 5.2 台账 JSON 结构（`ledgers.data`）
 
@@ -327,6 +344,62 @@ LDAP = TCP simple bind（BER，RFC 4511）。**Cloudflare Workers 没有 UDP 出
 公网站点的 RADIUS 会返回 `unsupported`**；TACACS+ / LDAP 走 `cloudflare:sockets`，两端都可用。
 内部部署版把该文件放在 `server.js` 同级（`deploy.sh` 自动上传），仓库内则从 `worker/` 动态加载。
 
+### 6.2 CRM（询盘云 / 销售易）台账关联（2026-11-05 新增）
+
+把台账里的客户名称拿到询盘云匹配商机，取回「客户现网信息 / 产品与技术信息 / 维保明细」。
+协议实现集中在 **`worker/crm-client.mjs`**（与 `auth-protocols.mjs` 同一种模式：纯 HTTP，宿主注入 `fetchImpl`），
+内网版由 `deploy.sh` 与 `server.js` 一起上传，公网 Worker 直接 `import`。**两站代码完全一致**。
+
+登录链路（纯 HTTP，无需浏览器）：
+
+1. `GET https://login.xiaoshouyi.com/auc/passport/password-key` → `{scode:'200', result:<SPKI DER base64>}`
+2. 用模数/指数做 **RSA PKCS#1 v1.5** 加密口令（纯 BigInt 实现，Node / Workers 通用，无 crypto 依赖）
+3. `POST /auc/login`，body：`{login_name, password:<密文>, NECaptchaValidate:null, login_type:'web', device_type:'web'}`
+4. 跟随 302（最多 6 跳）落到 `crm-tencent.xiaoshouyi.com`，从 `set-cookie` 收会话；`c-user` / `x-ienterprise-tenant`
+   里能取到 `userId` / `tenantId`（请求头 `xsy-user-id` / `xsy-tenant-id`），缺了也能靠 cookie 跑
+
+数据接口：
+
+| 用途 | 请求 |
+| --- | --- |
+| 商机全量 | `POST /rest/bff/v3.0/neoui/table/search?entityApiKey=opportunity&skipTotalSize=true`，`dataView: opportunity_view_225`，**服务端忽略 `conditions`**，只能全量分页后本地筛 |
+| 字段中文标签 | `GET /rest/bff/v3.0/neoui/table/initData1?...&objectApiKey=opportunity` → `data.items[].{apiKey,label}` |
+| 维保明细 | `POST /rest/neobi/v2.0/query/query?avatarViewId=3439246815003399`，`application/x-www-form-urlencoded`，`filter` 里 `account.customItem287__c = recordId` |
+
+返回体是 NeoBI 的稀疏单元格数组（`{type,row,col,value}`，`type=1` 为表头）。列序：
+`销售|合同日期|合同名称|序列号|产品名称|产品型号|维保开始|维保结束|到期天数|操作系统|软件版本`，
+解析时按表头文字定位列（不写死下标），并丢弃「台/套数」合计行。**序列号是设备行判据，空则跳过**。
+
+**匹配口径**：第一级 `客户名称` 精确等于台账客户名；不中再走第二级 `项目名称` 双向包含
+（先去掉 `技术专用-` 前缀）。多条命中取 `updatedAt` 最新一条并标 `multi`。`updatedAt` 兼容
+毫秒时间戳与 ISO 字符串（`Date.parse` 兜底），否则「取最新」会退化成不稳定排序。
+
+**维保三态**（`warrantyStatus`）：按 `end` 与今天比较 —— 全部过期 `expired` / 部分过期 `partial` /
+全部未到期 `ok` / 无服务时间 `unknown`。到期当天算未过期（字符串日期 `YYYYMMDD` 比较）。
+前端列表徽标（`维保全部到期` / `维保部分到期` / `维保未到期`）与客户详情徽标同源。
+
+**「我负责的项目」**：`users.name_cn`（超管在用户表单里填）与商机的 **`维护人A`** 全等才命中。
+**只认维护人A**，维护人B 相同不算（潘超 在「承德银行」是维护人B，不该出现在他的项目里）。
+
+**按用户可见性**：`users.crm_visible` 默认 `0`。非超管且未开启时，`GET /api/crm/data` 直接返回
+`{crmVisible:false, matches:{}}`，前端据此隐藏列表徽标、详情两块与项目切换条 —— **数据不出服务端**。
+超管恒可见。开启后仍只下发「自己台账里的客户名」对应的快照，不越权看别家。
+
+**定时任务**：内网 `server.js` 用 `setInterval(60s)` 判断「上次运行 + 间隔小时」是否到期；
+公网 Worker 用 Cron Trigger（`wrangler.jsonc` 的 `crons: ["0 * * * *"]`）在 `scheduled()` 里做同样判断。
+默认 12 小时，可在管理页改成 1–168。**登录态由服务端自己拿**（存 `crm_config.session`，失效自动重登一次），
+不依赖任何人的浏览器会话——这是本功能最关键的约束。
+
+新表：
+
+| 表 | 字段 | 说明 |
+| --- | --- | --- |
+| `crm_config` | k(PK, 固定 `main`), v(JSON) | `{loginName, password, intervalHours, lastSyncAt, lastResult, session}`；密码只写不回显 |
+| `crm_matches` | customer_name(PK), status(`ok`/`miss`), record_id, level(1/2), multi, data(JSON), updated_at | 每个台账客户一行快照；`data` 存 `{opp, maintenance, warranty, error}` |
+
+接口：`GET/PUT /api/crm/config`、`POST /api/crm/test`、`POST /api/crm/sync`、`GET /api/crm/status`
+（均超管）、`GET /api/crm/data`（登录用户，受 `crm_visible` 约束）。
+
 
 
 照片三接口两套实现都有：首页无账号体系，故不要求登录，但校验同源 `Origin` 与文件头（jpg/png/webp）。
@@ -342,7 +415,7 @@ Cloudflare 版以 base64 存 D1 的 `home_photo` 单行（受 D1 单行 2MB 限�
 
 ---
 
-## 7. 接手必读：九个坑（都踩过，别再踩）
+## 7. 接手必读：十一个坑（都踩过，别再踩）
 
 1. **不要新增 `_headers`。** Workers 静态资源永不更新「已存在的」`_headers`，改了线上仍旧策略，曾导致地图样式域名被拦、底图全灰。CSP 走页面 `meta`，其余安全头由 Worker 注入。
 2. **`assets.run_worker_first` 必须是 `true`。** 写成路径数组时只有匹配路径进 Worker，页面类响应拿不到安全头。
@@ -354,6 +427,7 @@ Cloudflare 版以 base64 存 D1 的 `home_photo` 单行（受 D1 单行 2MB 限�
 8. **腾讯地图 Key 依赖域名白名单。** 换域名要到腾讯位置服务控制台加白，否则底图空白；WebGL 被关闭也会空白，页面内有「检测显卡支持」自查按钮。
 9. **部署后不要立刻断言失败。** 边缘缓存 1–2 分钟，刚发布可能仍命中旧副本；无头浏览器验证大页面要轮询 `document.readyState === 'complete'`，固定 sleep 会误判。
 10. **弹窗防误关是全局约定，新增弹窗要登记。** 只读弹窗（预览 / 提醒 / 导出 / 确认）点遮罩直接关；表单弹窗一律加进 `FORM_MASKS`，一旦被改动过（`input`/`change` 或 `markDirty()` 手动标记），点遮罩或按 Esc 先弹「放弃填写的内容？」。遮罩点击要求「按下与抬起都在遮罩上」（`maskDown`），避免拖选文字误判。Esc 只关最上层（`topMask()` 按 z-index 取峰值）。`maskConfirm` 固定 `z-index:350`，否则会压在 `.high` 弹窗下面看不见。**用 JS 赋值改表单（坐标回填、按钮组、动态增删行）不会触发事件，必须手动 `markDirty(id)`**，否则拦截失效。
+11. **`me` 已经是驼峰对象，别再读下划线列名。** 两版服务端的 `currentUser()` 都过 `mapUser()`，返回的是 `crmVisible` / `nameCn` / `hideSensitive` 这类驼峰字段。曾用 `me.crm_visible` 判可见性 → 永远 `undefined` → 非超管始终看不到 CRM 数据，而登录 bundle 又是对的，极难发现。**新加的 users 列一定要同时改三处**：`USER_COLS`、`currentUser()` 的 `SELECT`（漏了 `u.name_cn/u.crm_visible` 会得到 `undefined`）、`mapUser()` 映射。
 
 ---
 
@@ -403,15 +477,17 @@ npm run test:board       # 单跑某一套
 | `test-units.js` | 39 | 巡检分组：三态判定、整体巡检、y12×分组、表单编辑、详情勾选 |
 | `test-half.js` | 26 | 一年2次：半年窗口、跨季度一致、other 不计、半年×分组、KPI/CSV 口径 |
 | `test-modal-guard.js` | 31 | 弹窗防误关：只读直接关、改动拦一句、Esc 只关最上层、拖选不误判 |
+| `test-crm.js` | 42 | CRM 展示层：列表维保三态徽标、详情两块、项目技术负责人、我负责的项目筛选、可见性开关、管理页 PUT/POST、用户表单中文名 |
+| `test-crm-client.mjs` | 49 | 询盘云协议：RSA 登录、跳转与 cookie、商机分页、字段标签化、NeoBI 维保解析、三态、两级匹配、端到端同步 |
 | `test-home.js` | 98 | 首页结构/动效/降级、部署产物、省界拆分与版本号一致性 |
 | `test-photo-api.js` | 13 | 照片接口（两版等价） |
 | `test-visits.js` | 62 | 巡检方式/结果/附件/巡检人必填 |
 | `test-attach.js` | 30 | 附件上传下载、扩展名持久化 |
 | `test-remote-auth.js` | 53 | 本地/远程用户界面、只读拦截、认证服务器增删改测 |
 | `test-protocols.mjs` | 27 | RADIUS/TACACS+/LDAP 真实报文（本地起假服务器，Node 直跑） |
-| `test-worker-api.mjs` | 57 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支 |
+| `test-worker-api.mjs` | 79 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支（含 CRM 配置/可见性/越权） |
 | `test-session.mjs` | 20 | 会话滑动过期 |
-| **合计** | **912** | 约 32 秒跑完 |
+| **合计** | **1025** | 19 套，约 33 秒跑完 |
 
 > `test-protocols.mjs` / `test-worker-api.mjs` 是 `.mjs`（ESM），因为它们直接 import
 > `worker/auth-protocols.mjs` 与 `worker/index.js`。`test-worker-api.mjs` 用 Node 内置
@@ -513,6 +589,11 @@ npm run test:board       # 单跑某一套
      附件在线预览扩展到 Excel（.xls/.xlsx，SheetJS 渲染为带工作表切换的表格）与
      Word（.docx，mammoth 转 HTML）。预览组件按需加载，位于 `assets/vendor/`
      （xlsx.full.min.js / mammoth.browser.min.js，`?v=` 破缓存），旧 .doc / .ppt 仍只提供下载。
+9. **巡检分组 / 频率档位 / 附件上限**（2026-11-03 ~ 11-04）：客户内部分组与三态完成度、
+   一年 2 次（半年口径）、附件上限提到 100MB。
+10. **CRM 台账关联**（2026-11-05）：逆向询盘云账密登录（纯 HTTP + RSA），
+    服务端 12 小时自动同步商机与 NeoBI 维保明细；客户详情两块现网/技术信息、
+    列表维保三态徽标、「我负责的项目」筛选、按账号 CRM 可见性开关。
 
 更细的「每轮需求原话 → 根因 → 交付结果」记录在项目内部档案里（含个人信息，未随仓库公开），
 需要时向原负责人索取。

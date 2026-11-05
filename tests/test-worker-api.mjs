@@ -234,5 +234,74 @@ r = await api('/ledger', { method: 'GET' }, r.data.token);
 check('关闭后受限户看到明文地址', r.data.ledgers.sensw.customers[0].addr === '河北省衡水市桃城区人民东路528号',
   r.data.ledgers.sensw.customers[0].addr);
 
+/* ================= CRM（询盘云）台账关联 ================= */
+/* 1) 用户级中文名 + 可见开关（默认关闭，超管可开） */
+r = await api('/users', { method: 'POST', body: { username: 'crmu', name: '河北片区', password: 'Crm@12345' } }, tk);
+check('新建用户默认 CRM 不可见', r.ok && r.data.user.crmVisible === false, JSON.stringify(r.data && r.data.user));
+check('新建用户中文名默认空', r.ok && r.data.user.nameCn === '', JSON.stringify(r.data && r.data.user.nameCn));
+r = await api('/users/crmu', { method: 'PATCH', body: { nameCn: '潘超', crmVisible: true } }, tk);
+check('PATCH 保存中文名', r.ok && r.data.user.nameCn === '潘超', JSON.stringify(r.data && r.data.user));
+check('PATCH 保存 CRM 可见开关', r.ok && r.data.user.crmVisible === true);
+r = await api('/auth/login', { method: 'POST', body: { username: 'crmu', password: 'Crm@12345' } });
+const crk = r.data.token;
+check('登录 bundle 带 nameCn / crmVisible', r.data.user.nameCn === '潘超' && r.data.user.crmVisible === true);
+/* 给该账号建一家客户，并写入两条 CRM 快照（一条属于自己、一条属于别人） */
+r = await api('/ledger', { method: 'PUT', body: { scope: 'crmu', data: {
+  regions: [], visits: [], customers: [{ id: 'x1', name: '承德银行' }]
+} } }, crk);
+check('CRM 测试账号台账写入成功', r.ok === true, JSON.stringify(r));
+db.prepare('INSERT INTO crm_matches (customer_name,status,record_id,level,multi,data,updated_at) VALUES (?,?,?,?,?,?,?)')
+  .run('承德银行', 'ok', '2683492002290513', 1, 0,
+    JSON.stringify({ opp: { '项目名称': '技术专用-承德银行GSLB扩容', '客户名称': '承德银行', '维护人A': '季荣成' },
+      maintenance: [{ serialNo: 'T5100S-001', end: '2025/11/09' }],
+      warranty: { status: 'expired', total: 1, known: 1, expired: 1 } }), '2026-11-05T09:00:00.000Z');
+db.prepare('INSERT INTO crm_matches (customer_name,status,record_id,level,multi,data,updated_at) VALUES (?,?,?,?,?,?,?)')
+  .run('别家客户', 'ok', '999', 2, 0, JSON.stringify({ opp: { '客户名称': '别家客户' }, maintenance: [], warranty: null }), '2026-11-05T09:00:00.000Z');
+
+r = await api('/crm/data', { method: 'GET' }, crk);
+check('可见账号能读到 CRM 快照', r.ok && r.data.crmVisible === true, JSON.stringify(r.data));
+check('只下发自己台账里的客户（不能越权看到别家）',
+  !!r.data.matches['承德银行'] && !r.data.matches['别家客户'], Object.keys(r.data.matches).join(','));
+check('快照含商机与维保三态', r.data.matches['承德银行'].opp['维护人A'] === '季荣成' &&
+  r.data.matches['承德银行'].warranty.status === 'expired');
+check('/crm/data 回传中文名（前端「我负责的项目」用）', r.data.nameCn === '潘超', r.data.nameCn);
+
+/* 关闭可见 → 服务端不再下发任何 CRM 数据（前端据此隐藏全部展示块） */
+await api('/users/crmu', { method: 'PATCH', body: { crmVisible: false } }, tk);
+r = await api('/crm/data', { method: 'GET' }, crk);
+check('关闭可见后只回空表', r.ok && r.data.crmVisible === false && Object.keys(r.data.matches).length === 0,
+  JSON.stringify(r.data));
+
+/* 2) 普通用户无权访问 CRM 管理接口 */
+r = await api('/crm/config', { method: 'GET' }, crk);
+check('普通用户读 CRM 配置 → 403', r.ok === false && r.status === 403, String(r.status));
+r = await api('/crm/config', { method: 'PUT', body: { loginName: 'x', password: 'y' } }, crk);
+check('普通用户改 CRM 配置 → 403', r.ok === false && r.status === 403, String(r.status));
+r = await api('/crm/status', { method: 'GET' }, crk);
+check('普通用户看检索状态 → 403', r.ok === false && r.status === 403, String(r.status));
+
+/* 3) 超管配置：密码只存不回显 */
+r = await api('/crm/config', { method: 'PUT', body: { loginName: '13800000000', password: 'Crm@12345', intervalHours: 6 } }, tk);
+check('超管保存 CRM 配置', r.ok && r.data.configured === true, JSON.stringify(r));
+r = await api('/crm/config', { method: 'GET' }, tk);
+check('配置回读账号与间隔', r.ok && r.data.loginName === '13800000000' && r.data.intervalHours === 6, JSON.stringify(r.data));
+check('配置接口不回显密码', r.ok && r.data.password === undefined, JSON.stringify(Object.keys(r.data)));
+r = await api('/crm/config', { method: 'PUT', body: { loginName: '13800000000', intervalHours: 0 } }, tk);
+check('间隔非法时回退到原值（不写成 0）', r.ok && r.data.configured === true);
+
+/* 4) 检索状态列表：按台账客户逐个给出结果 */
+r = await api('/crm/status', { method: 'GET' }, tk);
+check('状态接口返回客户级条目', r.ok && Array.isArray(r.data.items) && r.data.items.length > 0,
+  r.ok ? String((r.data.items || []).length) : r.error);
+const st = (r.data.items || []).filter(x => x.name === '承德银行')[0];
+check('状态条目带匹配结果与维保三态', !!st && st.status === 'ok' && st.level === 1 &&
+  st.warranty && st.warranty.status === 'expired', JSON.stringify(st));
+
+/* 5) 超管读 /crm/data：不受可见开关限制，且能看到全部客户 */
+r = await api('/crm/data', { method: 'GET' }, tk);
+check('超管始终可见 CRM 数据', r.ok && r.data.crmVisible === true);
+check('超管可见所有客户快照', !!r.data.matches['承德银行'] && !!r.data.matches['别家客户'],
+  Object.keys(r.data.matches).join(','));
+
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);

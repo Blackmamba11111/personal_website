@@ -136,6 +136,19 @@ CREATE TABLE IF NOT EXISTS ledger_logs (
   at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_logs_owner ON ledger_logs(username, at);
+CREATE TABLE IF NOT EXISTS crm_config (
+  k          TEXT PRIMARY KEY,               -- 固定 'main'（单行配置）
+  v          TEXT NOT NULL                   -- JSON：loginName / password / intervalHours / lastSyncAt / lastResult / session
+);
+CREATE TABLE IF NOT EXISTS crm_matches (
+  customer_name TEXT PRIMARY KEY,
+  status       TEXT NOT NULL,               -- ok（已匹配）/ miss（未匹配）
+  record_id    TEXT NOT NULL DEFAULT '',    -- 商机 recordId
+  level       INTEGER NOT NULL DEFAULT 0,   -- 1=客户名精确 2=项目名包含
+  multi       INTEGER NOT NULL DEFAULT 0,   -- 多条命中（取最新一条）
+  data        TEXT NOT NULL DEFAULT '{}',   -- {opp, maintenance, warranty, error}
+  updated_at  TEXT NOT NULL
+);
 `);
 
 /* 老库补列：attachments.ext（存盘真实扩展名）。SQLite 无 ADD COLUMN IF NOT EXISTS，先查 pragma */
@@ -158,7 +171,9 @@ try {
     ['server_id', "ALTER TABLE users ADD COLUMN server_id TEXT NOT NULL DEFAULT ''"],
     ['share_from', "ALTER TABLE users ADD COLUMN share_from TEXT NOT NULL DEFAULT ''"],
     ['session_mins', 'ALTER TABLE users ADD COLUMN session_mins INTEGER NOT NULL DEFAULT 30'],
-    ['hide_sensitive', 'ALTER TABLE users ADD COLUMN hide_sensitive INTEGER NOT NULL DEFAULT 0']
+    ['hide_sensitive', 'ALTER TABLE users ADD COLUMN hide_sensitive INTEGER NOT NULL DEFAULT 0'],
+    ['name_cn', "ALTER TABLE users ADD COLUMN name_cn TEXT NOT NULL DEFAULT ''"],
+    ['crm_visible', 'ALTER TABLE users ADD COLUMN crm_visible INTEGER NOT NULL DEFAULT 0']
   ];
   add.forEach(function (pair) {
     if (ucols.indexOf(pair[0]) < 0) {
@@ -215,7 +230,9 @@ function mapUser(row, srvMap) {
     serverType: srv ? srv.type : (sid ? '' : source),
     shareFrom: row.share_from != null ? row.share_from : (row.shareFrom || ''),
     sessionMins: normSessionMins(row.session_mins != null ? row.session_mins : row.sessionMins),
-    hideSensitive: row.hide_sensitive != null ? !!row.hide_sensitive : !!row.hideSensitive
+    hideSensitive: row.hide_sensitive != null ? !!row.hide_sensitive : !!row.hideSensitive,
+    nameCn: row.name_cn != null ? row.name_cn : (row.nameCn || ''),
+    crmVisible: row.crm_visible != null ? !!row.crm_visible : !!row.crmVisible
   };
 }
 
@@ -286,6 +303,110 @@ function loadProtocols() {
   }
   return protocolsMod;
 }
+
+/* ---------------- CRM（询盘云/销售易）台账关联 ----------------
+ * 协议实现在 worker/crm-client.mjs（与 Cloudflare Workers 版共用同一份）：
+ * 登录（账密自动，RSA PKCS1-v1_5）+ 商机全量拉取 + 客户两级匹配 + NeoBI 维保明细。
+ * 这里只负责：配置存取 / 定时调度 / 快照落库 / API 路由。 */
+let crmMod = null;
+function loadCrm() {
+  if (!crmMod) {
+    crmMod = import('./crm-client.mjs').catch(function () {
+      return import('../../worker/crm-client.mjs');
+    });
+    crmMod.catch(function () { crmMod = null; });
+  }
+  return crmMod;
+}
+
+const CRM_DEFAULT_INTERVAL = 12;   /* 小时 */
+function readCrmConfig() {
+  const row = db.prepare("SELECT v FROM crm_config WHERE k = 'main'").get();
+  if (!row) return { loginName: '', password: '', intervalHours: CRM_DEFAULT_INTERVAL, lastSyncAt: '', lastResult: null, session: null };
+  try {
+    const v = JSON.parse(row.v) || {};
+    return {
+      loginName: v.loginName || '', password: v.password || '',
+      intervalHours: Number(v.intervalHours) > 0 ? Number(v.intervalHours) : CRM_DEFAULT_INTERVAL,
+      lastSyncAt: v.lastSyncAt || '', lastResult: v.lastResult || null, session: v.session || null
+    };
+  } catch (e) { return { loginName: '', password: '', intervalHours: CRM_DEFAULT_INTERVAL, lastSyncAt: '', lastResult: null, session: null }; }
+}
+function saveCrmConfig(cfg) {
+  db.prepare("INSERT INTO crm_config (k, v) VALUES ('main', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+    .run(JSON.stringify(cfg));
+}
+function crmConfigured() { const c = readCrmConfig(); return !!(c.loginName && c.password); }
+
+/* 全库客户名去重（所有台账 owner 的 customers[].name） */
+function collectCustomerNames() {
+  const names = {};
+  db.prepare('SELECT username FROM users').all().forEach(function (r) {
+    const d = readLedger(r.username);
+    if (!d || !Array.isArray(d.customers)) return;
+    d.customers.forEach(function (c) { if (c && c.name) names[c.name] = true; });
+  });
+  return Object.keys(names);
+}
+
+function upsertCrmMatch(name, r) {
+  const at = nowIso();
+  if (r.status !== 'ok') {
+    db.prepare('INSERT INTO crm_matches (customer_name, status, record_id, level, multi, data, updated_at) VALUES (?, ?, ?, 0, 0, ?, ?) ' +
+      'ON CONFLICT(customer_name) DO UPDATE SET status = excluded.status, record_id = excluded.record_id, level = 0, multi = 0, data = excluded.data, updated_at = excluded.updated_at')
+      .run(name, 'miss', '', JSON.stringify({ error: r.error || null }), at);
+    return;
+  }
+  db.prepare('INSERT INTO crm_matches (customer_name, status, record_id, level, multi, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+    'ON CONFLICT(customer_name) DO UPDATE SET status = excluded.status, record_id = excluded.record_id, level = excluded.level, multi = excluded.multi, data = excluded.data, updated_at = excluded.updated_at')
+    .run(name, 'ok', String(r.opp.id || ''), r.level === 2 ? 2 : 1, r.multi ? 1 : 0,
+      JSON.stringify({ opp: r.opp.f, maintenance: r.maintenance || [], warranty: r.warranty || null, error: r.error || null }), at);
+}
+
+let crmSyncing = false;
+/* 跑一轮完整同步；reason 用于日志（scheduled / manual）。返回 {ok, stats|message} */
+async function doCrmSync(reason) {
+  const cfg = readCrmConfig();
+  if (!crmConfigured()) return { ok: false, message: '未配置 CRM 账号' };
+  if (crmSyncing) return { ok: false, message: '上一轮检索仍在进行中' };
+  crmSyncing = true;
+  const startedAt = nowIso();
+  console.log('[crm] 同步开始（' + reason + '），客户 ' + collectCustomerNames().length + ' 个');
+  let outcome;
+  try {
+    const P = await loadCrm();
+    outcome = await P.runCrmSync({
+      loginName: cfg.loginName,
+      password: cfg.password,
+      session: cfg.session,
+      customerNames: collectCustomerNames(),
+      onMatch: upsertCrmMatch
+    }, { fetchImpl: fetch, log: function (m) { console.log('[crm] ' + m); } });
+  } catch (e) {
+    outcome = { ok: false, code: 'exception', message: '同步异常：' + (e && e.message) };
+  } finally {
+    crmSyncing = false;
+  }
+  cfg.lastSyncAt = startedAt;
+  cfg.session = (outcome && outcome.session) || null;
+  cfg.lastResult = outcome && outcome.ok
+    ? { ok: true, at: nowIso(), reason: reason, stats: outcome.stats }
+    : { ok: false, at: nowIso(), reason: reason, code: outcome && outcome.code, message: outcome && outcome.message };
+  saveCrmConfig(cfg);
+  console.log('[crm] 同步结束：' + JSON.stringify(cfg.lastResult));
+  return cfg.lastResult;
+}
+
+/* 定时调度：每分钟检查一次「上次运行 + 间隔」是否到期（配置齐全才跑） */
+setInterval(function () {
+  try {
+    if (!crmConfigured() || crmSyncing) return;
+    const cfg = readCrmConfig();
+    if (!cfg.lastSyncAt) { doCrmSync('scheduled-first'); return; }
+    const due = Date.parse(cfg.lastSyncAt) + cfg.intervalHours * 3600 * 1000;
+    if (Date.now() >= due) doCrmSync('scheduled');
+  } catch (e) { console.error('[crm] 调度异常：' + (e && e.message)); }
+}, 60 * 1000).unref();
 
 /* 一次 UDP 交互（RADIUS）：发一包、等一包、超时即报错 */
 function sendUdp(host, port, bytes, timeoutMs) {
@@ -431,9 +552,9 @@ function ensureServerInput(body, base) {
 /* ---------------- 数据访问 ---------------- */
 const stmtSessionJoin =
   'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login, ' +
-  'u.source, u.perm, u.server_id, u.session_mins, u.hide_sensitive ' +
+  'u.source, u.perm, u.server_id, u.session_mins, u.hide_sensitive, u.name_cn, u.crm_visible ' +
   'FROM sessions s JOIN users u ON u.username = s.username WHERE s.token = ?';
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible';
 
 /* 登录超时（分钟）：按用户配置，默认 30，范围 5 ~ 43200（30 天）。
    会话为滑动过期：每次通过鉴权的请求都会把过期时间顺延到 now + session_mins。 */
@@ -1122,6 +1243,98 @@ async function handleApi(req, res, url) {
   }
 
   /* --- 用户管理（仅超管） --- */
+  /* ---------------- CRM 台账关联（询盘云/销售易） ---------------- */
+  if (p === '/api/crm/config' && method === 'GET') {
+    if (!isAdmin) return bad(res, '仅超级管理员可查看 CRM 配置', 403);
+    const c = readCrmConfig();
+    return ok(res, {
+      configured: !!(c.loginName && c.password), loginName: c.loginName,
+      intervalHours: c.intervalHours, lastSyncAt: c.lastSyncAt,
+      lastResult: c.lastResult, running: crmSyncing
+    });
+  }
+  if (p === '/api/crm/config' && method === 'PUT') {
+    if (!isAdmin) return bad(res, '仅超级管理员可修改 CRM 配置', 403);
+    const c = readCrmConfig();
+    if (body.loginName !== undefined && !String(body.loginName || '').trim()) return bad(res, 'CRM 登录账号不能为空');
+    if (body.password !== undefined && !String(body.password || '')) return bad(res, 'CRM 登录密码不能为空');
+    const loginName = body.loginName !== undefined ? String(body.loginName).trim() : c.loginName;
+    /* 密码不回显：前端只传新值时更新，传空串表示保留 */
+    const password = body.password !== undefined ? String(body.password) : c.password;
+    const intervalHours = Math.max(1, Math.min(168, parseInt(body.intervalHours, 10) || c.intervalHours));
+    c.loginName = loginName; c.password = password; c.intervalHours = intervalHours;
+    if (body.resetSession) c.session = null;
+    saveCrmConfig(c);
+    return ok(res, { configured: !!(c.loginName && c.password) });
+  }
+  if (p === '/api/crm/test' && method === 'POST') {
+    if (!isAdmin) return bad(res, '仅超级管理员可测试 CRM 连通性', 403);
+    const c = readCrmConfig();
+    const loginName = body.loginName !== undefined ? String(body.loginName || '').trim() : c.loginName;
+    const password = body.password !== undefined ? String(body.password || '') : c.password;
+    if (!loginName || !password) return bad(res, '请先填写 CRM 账号与密码');
+    let P;
+    try { P = await loadCrm(); } catch (e) { return bad(res, 'CRM 模块 crm-client.mjs 未加载：' + (e && e.message), 500); }
+    const lr = await P.xsyLogin({ loginName: loginName, password: password }, {
+      fetchImpl: fetch, log: function (m) { console.log('[crm:test] ' + m); }
+    });
+    if (!lr.ok) return ok(res, { ok: false, stage: 'login', code: lr.code, message: lr.message });
+    const fr = await P.fetchAllOpportunities(lr.session, {
+      fetchImpl: fetch, maxPages: 1, log: function (m) { console.log('[crm:test] ' + m); }
+    });
+    if (!fr.ok) return ok(res, { ok: false, stage: 'fetch', code: fr.code, message: fr.message });
+    return ok(res, { ok: true, oppCount: fr.records.length, message: '连通正常：登录成功，拉取到 ' + fr.records.length + ' 条商机' });
+  }
+  if (p === '/api/crm/sync' && method === 'POST') {
+    if (!isAdmin) return bad(res, '仅超级管理员可触发 CRM 检索', 403);
+    if (!crmConfigured()) return bad(res, '请先保存 CRM 账号配置');
+    if (crmSyncing) return ok(res, { started: false, message: '上一轮检索仍在进行中' });
+    doCrmSync('manual').catch(function (e) { console.error('[crm] 手动同步异常：' + (e && e.message)); });
+    return ok(res, { started: true });
+  }
+  if (p === '/api/crm/status' && method === 'GET') {
+    if (!isAdmin) return bad(res, '仅超级管理员可查看 CRM 匹配状态', 403);
+    const c = readCrmConfig();
+    const map = {};
+    db.prepare('SELECT * FROM crm_matches').all().forEach(function (r) { map[r.customer_name] = r; });
+    return ok(res, {
+      lastSyncAt: c.lastSyncAt, lastResult: c.lastResult, running: crmSyncing,
+      items: collectCustomerNames().sort().map(function (n) {
+        const r = map[n];
+        let data = {};
+        try { data = JSON.parse((r && r.data) || '{}') || {}; } catch (e) {}
+        return {
+          name: n, status: r ? r.status : 'pending', level: r ? r.level : 0,
+          multi: r ? !!r.multi : false, updatedAt: r ? r.updated_at : '',
+          error: data.error || null, warranty: data.warranty || null
+        };
+      })
+    });
+  }
+  if (p === '/api/crm/data' && method === 'GET') {
+    /* 普通用户读 CRM 快照：受 crm_visible 开关控制；只返回自己台账里的客户 */
+    /* 注意：me 已由 mapUser 转成驼峰字段（crmVisible / nameCn），不要再读下划线列名 */
+    if (!me.crmVisible && me.role !== 'admin') return ok(res, { crmVisible: false, matches: {}, nameCn: me.nameCn || '' });
+    let allow = null;
+    if (me.role !== 'admin') {
+      allow = {};
+      const d = readLedger(dataOwner(me.username));
+      (d && Array.isArray(d.customers) ? d.customers : []).forEach(function (c) { if (c && c.name) allow[c.name] = true; });
+    }
+    const matches = {};
+    db.prepare('SELECT * FROM crm_matches').all().forEach(function (r) {
+      if (allow && !allow[r.customer_name]) return;
+      let data = {};
+      try { data = JSON.parse(r.data || '{}') || {}; } catch (e) {}
+      matches[r.customer_name] = {
+        status: r.status, recordId: r.record_id, level: r.level, multi: !!r.multi,
+        opp: data.opp || null, maintenance: data.maintenance || [],
+        warranty: data.warranty || null, updatedAt: r.updated_at
+      };
+    });
+    return ok(res, { crmVisible: true, matches: matches, nameCn: me.nameCn || '' });
+  }
+
   if (p === '/api/users' && method === 'GET') {
     if (!isAdmin) return bad(res, '仅超级管理员可查看用户列表', 403);
     const smap = serversMap();
@@ -1186,9 +1399,9 @@ async function handleApi(req, res, url) {
     }
 
     db.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0);
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0);
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
     return ok(res, {
@@ -1238,8 +1451,8 @@ async function handleApi(req, res, url) {
         return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
-      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ? WHERE username = ?')
-        .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), target);
+      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ? WHERE username = ?')
+        .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), body.nameCn == null ? (row.name_cn || '') : String(body.nameCn).trim(), body.crmVisible == null ? (row.crm_visible ? 1 : 0) : (body.crmVisible ? 1 : 0), target);
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad(res, '密码至少 6 位');
@@ -1479,7 +1692,7 @@ const MIME = {
   '.map': 'application/json; charset=utf-8'
 };
 const COMPRESSIBLE = /^(text\/|application\/(javascript|json)|image\/svg)/;
-const BLOCKED = /^\/(server\.js|auth-protocols\.mjs|package(-lock)?\.json|Dockerfile|docker-compose\.yml|\.dockerignore|data\/|node_modules\/|\.git\/|tests\/|worker\/)/;
+const BLOCKED = /^\/(server\.js|auth-protocols\.mjs|crm-client\.mjs|package(-lock)?\.json|Dockerfile|docker-compose\.yml|\.dockerignore|data\/|node_modules\/|\.git\/|tests\/|worker\/)/;
 
 const cache = new Map(); // key: file:mtime:size -> { buf, gz, br }
 const CACHE_MAX = 40;

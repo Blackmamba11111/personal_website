@@ -330,8 +330,9 @@ async function main() {
     check('预取地址与 PROV_SRC 版本号一致', !!srcVer && srcVer === preVer, srcVer + ' / ' + preVer);
     /* 2026-11-02 区域视野贴合客户 + Word(doc/wps) 预览分派，上限同步放宽。
        2026-11-03 巡检分组（客户内部分组）+ 完成度三态，上限同步放宽。
+       2026-11-05 CRM 台账关联（管理页 + 详情两块 + 列表维保徽标 + 项目筛选），上限放宽到 400 KB。
        注意：doc97 解析器本身在 assets/vendor/doc97.js，不计入主页体积。 */
-    check('看板体积已降到 360 KB 以内', Buffer.byteLength(dash, 'utf8') < 360 * 1024,
+    check('看板体积已降到 400 KB 以内', Buffer.byteLength(dash, 'utf8') < 400 * 1024,
       Math.round(Buffer.byteLength(dash, 'utf8') / 1024) + ' KB');
   });
 

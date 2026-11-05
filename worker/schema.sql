@@ -86,6 +86,21 @@ CREATE TABLE IF NOT EXISTS home_photo (
   updated_at TEXT NOT NULL
 );
 
+-- CRM 台账关联（询盘云/销售易）：配置单行 + 每客户匹配快照
+CREATE TABLE IF NOT EXISTS crm_config (
+  k          TEXT PRIMARY KEY,
+  v          TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS crm_matches (
+  customer_name TEXT PRIMARY KEY,
+  status       TEXT NOT NULL,
+  record_id    TEXT NOT NULL DEFAULT '',
+  level        INTEGER NOT NULL DEFAULT 0,
+  multi        INTEGER NOT NULL DEFAULT 0,
+  data         TEXT NOT NULL DEFAULT '{}',
+  updated_at   TEXT NOT NULL
+);
+
 -- 初始超级管理员：口令为既有默认值，标记必须首次登录后立即修改（must_change=1）
 -- 已存在则不覆盖，保证改密后重复执行不会回退
 INSERT OR IGNORE INTO users (username, name, role, status, note, salt, hash, must_change, created_at, last_login)

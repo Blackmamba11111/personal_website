@@ -8,11 +8,11 @@ HOST=10.1.114.115
 REMOTE_DIR=/opt/inspection
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TS=$(date +%Y%m%d-%H%M)
-# 源文件 → 服务器上的文件名（auth-protocols.mjs 是远程认证协议实现，被 server.js 动态加载，
-# 必须与 server.js 同级；源文件放在 worker/ 下供两版服务端共用）
-SRC_FILES=(deploy/internal/server.js index.html inspection-dashboard.html worker/auth-protocols.mjs)
-DST_FILES=(server.js index.html inspection-dashboard.html auth-protocols.mjs)
-REMOTE_LIST="server.js index.html inspection-dashboard.html auth-protocols.mjs"
+# 源文件 → 服务器上的文件名（auth-protocols.mjs / crm-client.mjs 是被 server.js
+# 动态加载的共享模块，必须与 server.js 同级；源文件放在 worker/ 下供两版服务端共用）
+SRC_FILES=(deploy/internal/server.js index.html inspection-dashboard.html worker/auth-protocols.mjs worker/crm-client.mjs)
+DST_FILES=(server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs)
+REMOTE_LIST="server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs"
 
 : "${SSH_PASS:?用法：SSH_PASS='口令' bash deploy/internal/deploy.sh}"
 
@@ -34,6 +34,9 @@ grep -q 'https.createServer' "$REPO_ROOT/deploy/internal/server.js" || { echo '!
 
 echo "==> 部署前校验：远程认证协议模块必须存在（RADIUS / TACACS+ / LDAP 依赖它）"
 [ -f "$REPO_ROOT/worker/auth-protocols.mjs" ] || { echo '!! worker/auth-protocols.mjs 缺失，终止'; exit 1; }
+
+echo "==> 部署前校验：CRM 客户端模块必须存在（询盘云台账关联依赖它）"
+[ -f "$REPO_ROOT/worker/crm-client.mjs" ] || { echo '!! worker/crm-client.mjs 缺失，终止'; exit 1; }
 
 echo "==> 服务器端备份到 backup/src-$TS/"
 $SSH "cd $REMOTE_DIR && mkdir -p backup/src-$TS && for f in $REMOTE_LIST; do [ -f \"\$f\" ] && cp -a \"\$f\" backup/src-$TS/; done; true" </dev/null

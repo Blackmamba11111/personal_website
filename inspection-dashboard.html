@@ -153,6 +153,11 @@
   .badge.ok{background:var(--ok-soft);color:#0B7B55;}
   .badge.part{background:var(--part-soft);color:#9A5B06;}
   .badge.miss{background:var(--miss-soft);color:#B91C1C;}
+  /* CRM 维保三态徽标（询盘云匹配） */
+  .badge.wb-expired{background:rgba(220,38,38,.13);color:#B91C1C;}
+  .badge.wb-partial{background:rgba(217,119,6,.15);color:#9A5B06;}
+  .badge.wb-ok{background:rgba(14,159,110,.13);color:#0B7B55;}
+  .mine-chips .chip{padding:3px 9px;font-size:11.5px;}
   .cc-row2{display:flex;align-items:center;gap:8px;margin-top:4px;color:var(--text-3);font-size:11.5px;}
   .cc-row2 .sep{opacity:.4;}
   .cc-note{margin-top:5px;font-size:11.5px;color:var(--text-2);background:var(--panel-2);
@@ -171,6 +176,12 @@
   .mstrip-lg .mcell{font-size:12px;padding:5px 0;}
   .m-caption{font-size:11.5px;color:var(--text-3);margin-bottom:6px;}
   .empty{padding:36px 16px;text-align:center;color:var(--text-3);font-size:12.5px;}
+
+  /* ---------- CRM 现网信息（询盘云匹配数据） ---------- */
+  .crm-kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 18px;}
+  .crm-kv-row{display:flex;gap:8px;font-size:12px;padding:2px 0;align-items:baseline;}
+  .crm-kv-row .k{color:var(--text-3);flex:0 0 auto;min-width:96px;}
+  .crm-kv-row .v{font-weight:500;word-break:break-all;}
 
   /* ---------- 巡检分组（客户内部分组，可选） ---------- */
   .unit-row{display:grid;grid-template-columns:1.15fr .9fr 1.3fr 26px;gap:6px;margin-top:6px;align-items:center;}
@@ -686,6 +697,10 @@
             <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
           <input type="text" id="searchInput" placeholder="搜索客户名称 / 城市">
         </div>
+        <div class="chips mine-chips" id="mineChips" style="display:none;flex:0 0 auto;">
+          <button type="button" class="chip on" data-mine="all">全部项目</button>
+          <button type="button" class="chip" data-mine="mine">我负责的项目</button>
+        </div>
       </div>
       <div class="chips" id="regionChips"></div>
       <div class="chips" id="chips">
@@ -874,6 +889,26 @@
             <tbody></tbody>
           </table>
         </div>
+      </div>
+
+      <!-- CRM 现网信息（询盘云匹配到的项目数据；未关联 / 无权限时整块隐藏） -->
+      <div class="readonly-box" id="dCrmInfo" style="display:none;margin-bottom:13px;">
+        <div class="m-caption">客户现网信息 <span class="sub2" id="dCrmSrc"></span></div>
+        <div id="dCrmBase" class="crm-kv"></div>
+        <div style="margin-top:10px;" id="dCrmHwWrap">
+          <div class="m-caption">硬件清单（共 <b id="dCrmHwCount">0</b> 台，维保到期以各条目服务时间为准）</div>
+          <div class="scroll-x" style="width:100%;">
+            <table class="mini" id="dCrmHwTable">
+              <thead><tr><th>序列号</th><th>产品 / 型号</th><th>维保服务时间</th><th>操作系统</th><th>软件版本</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="dCrmWarranty" style="margin-top:10px;"></div>
+      </div>
+      <div class="readonly-box" id="dCrmTech" style="display:none;margin-bottom:13px;">
+        <div class="m-caption">产品与技术信息</div>
+        <div id="dCrmTechBody" class="crm-kv"></div>
       </div>
 
       <div class="field">
@@ -1091,6 +1126,7 @@
   </div>
   <button type="button" id="umLogs">数据日志</button>
   <button type="button" id="umUsers">用户管理</button>
+  <button type="button" id="umCrm">CRM 台账关联</button>
   <button type="button" id="umPwd">修改密码</button>
   <button type="button" id="umLogout" class="danger">退出登录</button>
 </div>
@@ -1162,6 +1198,51 @@
   </div>
 </div>
 
+<!-- ==================== V5：CRM 台账关联页（超级管理员） ==================== -->
+<div class="page" id="crmView">
+  <div class="page-head">
+    <button type="button" class="btn" id="btnCrmBack">← 返回看板</button>
+    <h2>CRM 台账关联</h2>
+    <span class="sub" id="crmSub">询盘云（销售易）</span>
+    <div class="spacer"></div>
+    <button type="button" class="btn" id="btnCrmRefresh">刷新状态</button>
+    <button type="button" class="btn primary" id="btnCrmSyncNow">立即检索</button>
+  </div>
+  <div class="page-body">
+    <div class="ucard">
+      <div class="m-caption">关联账号（服务端保存并自动登录，按检索周期拉取 CRM 项目与维保数据）</div>
+      <div class="grid2" style="grid-template-columns:1fr 1fr 120px;gap:10px;">
+        <div class="field">
+          <label>CRM 登录账号（手机号 / 邮箱）</label>
+          <input type="text" id="crmLogin" placeholder="手机号或邮箱" autocomplete="off">
+        </div>
+        <div class="field">
+          <label>CRM 登录密码</label>
+          <input type="password" id="crmPwd" placeholder="已设置；留空表示不修改" autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label>检索间隔（小时）</label>
+          <input type="number" id="crmInterval" min="1" max="168" value="12">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+        <button type="button" class="btn primary" id="btnCrmSave">保存配置</button>
+        <button type="button" class="btn" id="btnCrmTest">测试连通性</button>
+      </div>
+      <div id="crmTestOut" style="display:none;margin-top:10px;"></div>
+    </div>
+    <div class="ucard" style="margin-top:12px;">
+      <div class="m-caption">检索状态（以台账里已录入的客户名称为条件，逐个匹配 CRM 商机并拉取维保明细）</div>
+      <div id="crmRunInfo" class="sub2" style="margin-bottom:8px;">—</div>
+      <div id="crmStatusWrap"><div class="empty">加载中…</div></div>
+    </div>
+    <p class="hint" style="margin:12px 2px 0;">
+      匹配规则：先按 CRM「客户名称」精确匹配，失败后再按「项目名称」包含式匹配；多条命中时取最新一条并标记。
+      登录密码只保存在服务端，页面上不回显。检索失败时（如登录失效）状态列表会标红提示重新测试连通性。
+    </p>
+  </div>
+</div>
+
 <!-- ==================== V3：客户管理页（客户主数据，不含巡检记录） ==================== -->
 <div class="page" id="custsView">
   <div class="page-head">
@@ -1212,7 +1293,12 @@
       </div>
       <div class="field">
         <label for="uName">区域展示名称 <span class="req">*</span></label>
-        <input type="text" id="uName" autocomplete="off" placeholder="如：张三（河北片区）">
+        <input type="text" id="uName" autocomplete="off" placeholder="如：河北片区">
+      </div>
+      <div class="field">
+        <label for="uNameCn">中文姓名</label>
+        <input type="text" id="uNameCn" autocomplete="off" placeholder="如：张三">
+        <div class="hint">登录名是拼音时，这里填对应的中文姓名。CRM「我负责的项目」按该中文名与询盘云的<b>维护人A</b>比对，留空则该账号只能看全部项目。</div>
       </div>
       <div class="field">
         <label for="uSourceType">账号类型</label>
@@ -1248,6 +1334,10 @@
       <div class="field">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uHideSens"> 隐藏敏感字段（详细地址 / 联系人电话）</label>
         <div class="hint">开启后该账号看到的客户详细地址与联系人电话一律打码显示：服务端直接下发打码数据，列表、详情、地图弹窗、导出均拿不到明文，也无法展开查看。</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uCrmVisible"> 可见 CRM 现网信息（默认关闭）</label>
+        <div class="hint">开启后该账号在客户详情能看到询盘云匹配到的「客户现网信息 / 产品与技术信息」、列表上的维保到期徽标，并可用「我负责的项目」筛选。关闭时服务端不下发任何 CRM 数据。</div>
       </div>
       <div class="field" id="uPwdField">
         <label for="uPwd">初始密码 <span class="req">*</span></label>
@@ -1840,7 +1930,7 @@
 
   /* ---------------- 状态 ---------------- */
   var DB = { regions: [], customers: [], visits: [] };
-  var state = { quarter: quarterKey(new Date()), filter: 'all', regionFilter: 'all', keyword: '', selectedId: null };
+  var state = { quarter: quarterKey(new Date()), filter: 'all', regionFilter: 'all', keyword: '', selectedId: null, crmMine: 'all' };
   var prefs = { autoRemind: true, mutedQuarters: [] };
   var map = null, markerLayer = null, focusLayer = null, infoWindow = null, mapReady = false;
   var regionPolyLayer = null, regionCircleLayer = null, regionLabelLayer = null, candidateLayer = null;
@@ -2128,9 +2218,11 @@
   function renderList() {
     var qk = state.quarter;
     var kw = state.keyword.trim().toLowerCase();
+    var mineMode = state.crmMine === 'mine';
     var arr = DB.customers.filter(function (c) {
       if (state.regionFilter !== 'all' && c.regionId !== state.regionFilter) return false;
       if (state.filter !== 'all' && statusOf(c, qk).status !== state.filter) return false;
+      if (mineMode && !isMyProject(c)) return false;
       if (kw) {
         var hay = (c.name + ' ' + (c.city || '') + ' ' + (c.province || '') + ' ' +
                    regionNameOf(c) + ' ' + (c.addr || '')).toLowerCase();
@@ -2160,10 +2252,12 @@
       list.forEach(function (c) {
         var s = statusOf(c, qk);
         var last = visitsOf(c.id)[0];
+        var wb = warrantyBadgeOf(c);
         html += '<div class="card-cust s-' + s.status + (state.selectedId === c.id ? ' sel' : '') +
           '" data-id="' + c.id + '">' +
           '<div class="cc-row1"><span class="cc-name">' + esc(c.name) + '</span>' +
-          '<span class="badge ' + s.status + '">' + statusText(c, s) + '</span></div>' +
+          '<span class="badge ' + s.status + '">' + statusText(c, s) + '</span>' +
+          (wb ? '<span class="badge wb-' + wb.cls + '">' + esc(wb.text) + '</span>' : '') + '</div>' +
           '<div class="cc-row2"><span>' + esc(c.province || '') +
           (c.city ? ' · ' + esc(c.city) : '') + '</span><span class="sep">|</span>' +
           '<span>' + s.freq.label + '</span><span class="sep">|</span>' +
@@ -3983,6 +4077,48 @@
       document.querySelector('#dUnitsTable tbody').innerHTML = '';
     }
 
+    /* CRM 现网信息 + 产品与技术信息（匹配成功且当前账号有可见权限才渲染） */
+    var crmBox = document.getElementById('dCrmInfo');
+    var crmTech = document.getElementById('dCrmTech');
+    var cm = crmMatchOf(c);
+    if (cm && cm.opp) {
+      var f = cm.opp;
+      var kvRow = function (label, val) {
+        return '<div class="crm-kv-row"><span class="k">' + esc(label) + '</span><span class="v">' + esc(val || '—') + '</span></div>';
+      };
+      crmBox.style.display = 'block';
+      document.getElementById('dCrmSrc').textContent =
+        '· ' + (f['项目名称'] || '—') + (cm.multi ? '（多条命中，取最新一条）' : '') +
+        ' · 更新 ' + ((cm.updatedAt || '').replace('T', ' ').slice(0, 16));
+      document.getElementById('dCrmBase').innerHTML =
+        kvRow('项目名称', f['项目名称']) + kvRow('客户名称', f['客户名称']) +
+        kvRow('客户级别', f['客户级别']) + kvRow('所属行业', (f['一级行业'] || f['二级行业'] ? [f['一级行业'], f['二级行业']].filter(Boolean).join(' / ') : '')) +
+        kvRow('战区 / 部门', [f['战区'], f['所属部门']].filter(Boolean).join(' / ')) +
+        kvRow('项目所有人', f['项目所有人']) +
+        kvRow('项目技术负责人（维护人A）', f['维护人A']) + kvRow('维护人B', f['维护人B']);
+      var devs = cm.maintenance || [];
+      document.getElementById('dCrmHwCount').textContent = devs.length;
+      document.querySelector('#dCrmHwTable tbody').innerHTML = devs.map(function (dv) {
+        return '<tr><td style="font-family:monospace;">' + esc(dv.serialNo || '—') + '</td>' +
+          '<td>' + esc((dv.product || '') + (dv.model ? ' · ' + dv.model : '')) + '</td>' +
+          '<td>' + esc((dv.start || '—') + ' ~ ' + (dv.end || '—')) + '</td>' +
+          '<td>' + esc(dv.os || '—') + '</td><td>' + esc(dv.version || '—') + '</td></tr>';
+      }).join('') || '<tr><td colspan="5" class="sub2">CRM 维保明细为空</td></tr>';
+      var wb = warrantyBadgeOf(c);
+      document.getElementById('dCrmWarranty').innerHTML = wb
+        ? '<span class="tag ' + (wb.cls === 'expired' ? 'disabled' : (wb.cls === 'partial' ? 'user' : 'active')) + '">维保：' + esc(wb.text) + '</span>'
+        : '<span class="sub2">维保状态：无服务时间数据</span>';
+      crmTech.style.display = 'block';
+      document.getElementById('dCrmTechBody').innerHTML =
+        kvRow('主要使用功能', f['主要使用功能']) +
+        kvRow('总采购数量 / GSLB台数', (f['总采购数量'] != null ? f['总采购数量'] + ' 台' : '—') + ' / ' + (f['GSLB台数'] != null ? f['GSLB台数'] + ' 台' : '—')) +
+        kvRow('高可靠架构', f['高可靠架构']) + kvRow('操作系统版本', f['操作系统版本']) +
+        kvRow('现网软件版本', f['现网软件版本']);
+    } else {
+      crmBox.style.display = 'none';
+      crmTech.style.display = 'none';
+    }
+
     var tl = visitsOf(id), html = '';
     if (!tl.length) html = '<div class="hint" style="padding:4px 0;">暂无巡检记录</div>';
     tl.forEach(function (v) {
@@ -4963,6 +5099,16 @@
     document.getElementById('searchInput').oninput = function () {
       state.keyword = this.value; renderList();
     };
+    /* 「全部项目 / 我负责的项目」切换（CRM 匹配数据存在时才显示） */
+    Array.prototype.forEach.call(document.querySelectorAll('#mineChips .chip'), function (btn) {
+      btn.onclick = function () {
+        state.crmMine = btn.getAttribute('data-mine') || 'all';
+        Array.prototype.forEach.call(document.querySelectorAll('#mineChips .chip'), function (b2) {
+          b2.classList.toggle('on', b2 === btn);
+        });
+        renderList();
+      };
+    });
     Array.prototype.forEach.call(document.querySelectorAll('#chips .chip'), function (b) {
       b.onclick = function () {
         Array.prototype.forEach.call(document.querySelectorAll('#chips .chip'), function (x) { x.classList.remove('on'); });
@@ -5409,8 +5555,51 @@
         renderUserChip();
         renderReadonlyBanner();
       }
+      /* CRM 现网信息快照：随轮询一起刷新（crmVisible=0 时服务端只回空表，成本极低） */
+      refreshCrmData();
       return true;
     }, function () { return false; });
+  }
+
+  /* ---------- CRM（询盘云）现网信息 ----------
+     CRM_DATA.matches = { 客户名: {status, opp, maintenance, warranty, ...} }；
+     crmVisible=false 时 matches 恒为空，所有 CRM 展示块自动隐藏。 */
+  var CRM_DATA = { crmVisible: false, matches: {}, nameCn: '' };
+  var CRM_DATA_LOADED = false;
+  function refreshCrmData() {
+    if (!AUTH.user) return;
+    api('/crm/data').then(function (r) {
+      if (!r.ok || !r.data) return;
+      CRM_DATA = { crmVisible: !!r.data.crmVisible, matches: r.data.matches || {}, nameCn: r.data.nameCn || '' };
+      CRM_DATA_LOADED = true;
+      /* 有 CRM 匹配数据时显示「全部项目 / 我负责的项目」切换 */
+      var mineWrap = document.getElementById('mineChips');
+      if (mineWrap) mineWrap.style.display = (CRM_DATA.crmVisible && Object.keys(CRM_DATA.matches).length) ? 'inline-flex' : 'none';
+      renderList();
+      if (document.getElementById('crmView').classList.contains('on')) renderCrmStatusIfOpen();
+    }).catch(function () {});
+  }
+  function crmMatchOf(c) {
+    if (!c || !CRM_DATA.crmVisible) return null;
+    var m = CRM_DATA.matches[c.name];
+    return (m && m.status === 'ok') ? m : null;
+  }
+  /* 维保三态徽标（功能2口径：全部到期/部分到期/未到期） */
+  function warrantyBadgeOf(c) {
+    var m = crmMatchOf(c);
+    if (!m || !m.warranty || m.warranty.status === 'unknown') return null;
+    var w = m.warranty;
+    if (w.status === 'expired') return { cls: 'expired', text: '维保全部到期' };
+    if (w.status === 'partial') return { cls: 'partial', text: '维保部分到期' };
+    return { cls: 'ok', text: '维保未到期' };
+  }
+  /* 「我负责的项目」：登录用户中文名 == CRM 维护人A（口径 2026-11-05 确认只认 A） */
+  function isMyProject(c) {
+    var m = crmMatchOf(c);
+    if (!m || !m.opp) return false;
+    var maintA = String(m.opp['维护人A'] || '').trim();
+    var myName = String(CRM_DATA.nameCn || (AUTH.user && AUTH.user.nameCn) || '').trim();
+    return !!maintA && !!myName && maintA === myName;
   }
 
   /* ---------- 超管汇总视图：把各账号台账合并为一份只读数据集 ----------
@@ -5549,6 +5738,7 @@
       roleText(u) + ' · ' + permText(u) + ' · ' + esc(srcTxt) + ' · 我的台账 ' + cnt.customers + ' 家客户' +
       (u.lastLogin ? '<br>上次登录 ' + esc(u.lastLogin) : '');
     document.getElementById('umUsers').style.display = isAdmin() ? 'block' : 'none';
+    document.getElementById('umCrm').style.display = isAdmin() ? 'block' : 'none';
   }
   function renderScopeSelect() {
     var wrap = document.getElementById('umScopeWrap');
@@ -5644,6 +5834,7 @@
     document.getElementById('userMenu').classList.remove('on');
     document.getElementById('usersView').classList.remove('on');
     document.getElementById('serversView').classList.remove('on');
+    document.getElementById('crmView').classList.remove('on');
     CUSTS_OPEN = false;
     CUSTS_SEL = {};
     USERS_SEL = {};
@@ -5678,6 +5869,7 @@
   function closeUsersPage() {
     document.getElementById('usersView').classList.remove('on');
     document.getElementById('serversView').classList.remove('on');
+    document.getElementById('crmView').classList.remove('on');
     document.getElementById('logsView').classList.remove('on');
   }
 
@@ -5700,6 +5892,7 @@
     }
     document.getElementById('usersView').classList.remove('on');
     document.getElementById('serversView').classList.remove('on');
+    document.getElementById('crmView').classList.remove('on');
     document.getElementById('logsView').classList.add('on');
     renderLogsPage();
   }
@@ -5764,6 +5957,113 @@
     });
   }
 
+  /* ---------- CRM 台账关联（询盘云/销售易，超级管理员） ---------- */
+  function openCrmPage() {
+    if (!isAdmin()) { toast('仅超级管理员可访问 CRM 台账关联'); return; }
+    document.getElementById('userMenu').classList.remove('on');
+    document.getElementById('crmTestOut').style.display = 'none';
+    document.getElementById('crmLogin').value = '';
+    document.getElementById('crmPwd').value = '';
+    /* 先拉配置回填（密码只显示已设置占位，不回显明文） */
+    api('/crm/config').then(function (r) {
+      if (r.ok && r.data) {
+        document.getElementById('crmLogin').value = r.data.loginName || '';
+        document.getElementById('crmPwd').placeholder = r.data.configured ? '已设置；留空表示不修改' : '请输入 CRM 登录密码';
+        document.getElementById('crmInterval').value = r.data.intervalHours || 12;
+      }
+    });
+    document.getElementById('crmView').classList.add('on');
+    renderCrmStatusIfOpen();
+  }
+  function crmConfigPayload() {
+    var p = {
+      loginName: document.getElementById('crmLogin').value.trim(),
+      intervalHours: parseInt(document.getElementById('crmInterval').value, 10) || 12
+    };
+    /* 密码留空 = 沿用服务端已保存的那个（保存后输入框会清空，此时再点测试也能用） */
+    var pwd = document.getElementById('crmPwd').value;
+    if (pwd) p.password = pwd;
+    return p;
+  }
+  function saveCrmConfig() {
+    var p = crmConfigPayload();
+    if (!p.loginName) { toast('请填写 CRM 登录账号'); return; }
+    api('/crm/config', { method: 'PUT', body: p }).then(function (r) {
+      if (!r.ok) { toast(r.error || '保存失败'); return; }
+      toast('CRM 配置已保存');
+      document.getElementById('crmPwd').value = '';
+      renderCrmStatusIfOpen();
+    });
+  }
+  function testCrmConnect() {
+    var out = document.getElementById('crmTestOut');
+    out.style.display = 'block';
+    out.innerHTML = '<div class="sub2">正在登录询盘云并拉取商机列表…</div>';
+    api('/crm/test', { method: 'POST', body: crmConfigPayload() }).then(function (r) {
+      if (!r.ok) { out.innerHTML = '<div class="sub2" style="color:var(--danger,#c0392b);">连接失败：' + esc(r.error || '未知错误') + '</div>'; return; }
+      var d = r.data || {};
+      if (d.ok) out.innerHTML = '<div class="sub2" style="color:#2e7d32;">✔ ' + esc(d.message) + '</div>';
+      else out.innerHTML = '<div class="sub2" style="color:var(--danger,#c0392b);">✘ ' +
+        (d.stage === 'login' ? '登录失败' : '数据拉取失败') + '：' + esc(d.message || '未知错误') + '</div>';
+    });
+  }
+  function syncCrmNow() {
+    api('/crm/sync', { method: 'POST' }).then(function (r) {
+      if (!r.ok) { toast(r.error || '触发失败'); return; }
+      if (r.data && r.data.started) toast('已开始检索，完成后状态列表自动更新');
+      else toast((r.data && r.data.message) || '未开始');
+      renderCrmStatusIfOpen();
+    });
+  }
+  var CRM_STATUS_TIMER = null;
+  function renderCrmStatusIfOpen() {
+    var wrap = document.getElementById('crmStatusWrap');
+    var info = document.getElementById('crmRunInfo');
+    api('/crm/status').then(function (r) {
+      if (!r.ok) { wrap.innerHTML = '<div class="empty">' + esc(r.error || '加载失败') + '</div>'; return; }
+      var d = r.data || {};
+      var lastAt = (d.lastSyncAt || '').replace('T', ' ').slice(0, 19);
+      var lr = d.lastResult || null;
+      var head = lastAt ? '最近检索：' + lastAt : '尚未检索过';
+      if (lr && lr.ok) {
+        var st = lr.stats || {};
+        head += ' · 匹配成功 ' + (st.matched || 0) + ' / 未匹配 ' + (st.missed || 0) +
+          (st.failed ? ' / 失败 ' + st.failed : '') + ' 个客户';
+      } else if (lr && !lr.ok) {
+        head += ' · 上轮失败：' + (lr.message || lr.code || '未知');
+      }
+      info.textContent = head;
+      var items = d.items || [];
+      if (!items.length) { wrap.innerHTML = '<div class="empty">还没有客户档案；先在台账里录入客户</div>'; return; }
+      var rows = items.map(function (it) {
+        var wb = it.warranty;
+        var wbTxt = '';
+        if (it.status === 'ok') {
+          if (wb && wb.status === 'expired') wbTxt = '<span class="tag disabled">全部到期</span>';
+          else if (wb && wb.status === 'partial') wbTxt = '<span class="tag user">部分到期</span>';
+          else if (wb) wbTxt = '<span class="tag active">未到期</span>';
+        }
+        var stTag = it.status === 'ok'
+          ? '<span class="tag active">获取成功</span>' + (it.multi ? ' <span class="tag user">多条命中</span>' : '') +
+            (it.level === 2 ? ' <span class="tag user">按项目名匹配</span>' : '')
+          : (it.status === 'miss' ? '<span class="tag disabled">未匹配</span>' : '<span class="tag">待检索</span>');
+        return '<tr><td style="font-weight:600;">' + esc(it.name) + '</td><td>' + stTag + '</td><td>' + wbTxt + '</td>' +
+          '<td class="sub2" style="white-space:nowrap;">' + esc((it.updatedAt || '').replace('T', ' ').slice(0, 19) || '—') + '</td>' +
+          (it.error ? '<td class="sub2" style="color:var(--danger,#c0392b);">' + esc(it.error) + '</td>' : '<td class="sub2">—</td>') + '</tr>';
+      }).join('');
+      wrap.innerHTML =
+        '<table class="utable"><thead><tr><th>客户名称</th><th>匹配状态</th><th>维保</th><th>更新时间</th><th>错误信息</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table>';
+      /* 检索进行中：每 5s 轮询一次状态直到结束 */
+      if (d.running) {
+        if (!CRM_STATUS_TIMER) CRM_STATUS_TIMER = setTimeout(function () {
+          CRM_STATUS_TIMER = null;
+          if (document.getElementById('crmView').classList.contains('on')) renderCrmStatusIfOpen();
+        }, 5000);
+      }
+    });
+  }
+
   /* ---------- 认证服务器管理（RADIUS / TACACS+ / LDAP） ---------- */
   function openServersPage() {
     if (!isAdmin()) { toast('仅超级管理员可访问认证服务器'); return; }
@@ -5774,6 +6074,7 @@
   }
   function closeServersPage() {
     document.getElementById('serversView').classList.remove('on');
+    document.getElementById('crmView').classList.remove('on');
     document.getElementById('usersView').classList.add('on');
     renderUsersPage();
   }
@@ -6523,9 +6824,10 @@
             (isSelf ? ' <span class="tag user">当前登录</span>' : '') + '</div>' +
             (subParts ? '<div class="sub2">' + subParts + '</div>' : '') + '</div>' +
         '</div></td>' +
-        '<td>' + esc(u.name) + '</td>' +
+        '<td>' + esc(u.name) + (u.nameCn ? ' <span class="tag user" title="CRM 维护人比对使用的中文姓名">' + esc(u.nameCn) + '</span>' : '') + '</td>' +
         '<td>' + seqTag(u) + '</td>' +
-        '<td>' + permTag(u) + (u.hideSensitive ? ' <span class="tag ro" title="客户详细地址 / 联系人电话对该账号打码显示">隐藏敏感</span>' : '') + '</td>' +
+        '<td>' + permTag(u) + (u.hideSensitive ? ' <span class="tag ro" title="客户详细地址 / 联系人电话对该账号打码显示">隐藏敏感</span>' : '') +
+          (u.crmVisible ? ' <span class="tag active" title="该账号可查看询盘云 CRM 现网信息与维保到期提醒">CRM可见</span>' : '') + '</td>' +
         '<td><span class="tag ' + (u.role === 'admin' ? 'admin' : 'user') + '">' + roleText(u) + '</span></td>' +
         '<td><span class="tag ' + (u.status === 'active' ? 'active' : 'disabled') + '">' +
           (u.status === 'active' ? '启用中' : '已停用') + '</span></td>' +
@@ -6598,10 +6900,12 @@
     document.getElementById('uUsername').value = u ? u.username : '';
     document.getElementById('uUsername').disabled = !!u;
     document.getElementById('uName').value = u ? u.name : '';
+    document.getElementById('uNameCn').value = u ? (u.nameCn || '') : '';
     document.getElementById('uRole').value = u ? u.role : 'user';
     document.getElementById('uPerm').value = u ? (u.perm === 'ro' ? 'ro' : 'rw') : 'rw';
     document.getElementById('uSessionMins').value = u ? (u.sessionMins || 30) : 30;
     document.getElementById('uHideSens').checked = u ? !!u.hideSensitive : false;
+    document.getElementById('uCrmVisible').checked = u ? !!u.crmVisible : false;
     document.getElementById('uNote').value = u ? (u.note || '') : '';
     document.getElementById('uPwd').value = '';
 
@@ -6630,10 +6934,12 @@
       if (cloneFrom) {
         var seedOwner = findUser(cloneFrom.shareFrom || '') || cloneFrom;
         document.getElementById('uName').value = cloneFrom.name || '';
+        document.getElementById('uNameCn').value = cloneFrom.nameCn || '';
         document.getElementById('uRole').value = cloneFrom.role === 'admin' ? 'admin' : 'user';
         document.getElementById('uPerm').value = cloneFrom.perm === 'ro' ? 'ro' : 'rw';
         document.getElementById('uSessionMins').value = cloneFrom.sessionMins || 30;
         document.getElementById('uHideSens').checked = !!cloneFrom.hideSensitive;
+        document.getElementById('uCrmVisible').checked = !!cloneFrom.crmVisible;
         document.getElementById('uNote').value = cloneFrom.note || '';
         var cRemote = (cloneFrom.source || 'local') !== 'local';
         document.getElementById('uSourceType').value = cRemote ? 'remote' : 'local';
@@ -6695,6 +7001,8 @@
 
   function saveUser() {
     var name = document.getElementById('uName').value.trim();
+    var nameCn = document.getElementById('uNameCn').value.trim();
+    var crmVisible = document.getElementById('uCrmVisible').checked;
     var role = document.getElementById('uRole').value === 'admin' ? 'admin' : 'user';
     var perm = document.getElementById('uPerm').value === 'ro' ? 'ro' : 'rw';
     var note = document.getElementById('uNote').value.trim();
@@ -6716,7 +7024,7 @@
         toast('至少需要保留一个超级管理员，无法降级'); return;
       }
       var wasRemote = (target.source || 'local') !== 'local';
-      var patch = { name: name, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins,
+      var patch = { name: name, nameCn: nameCn, crmVisible: crmVisible, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins,
         hideSensitive: document.getElementById('uHideSens').checked };
       /* 远程 → 本地：必须补一个本地初始密码，否则该账号无法再登录 */
       if (wasRemote && !remote) {
@@ -6734,6 +7042,8 @@
               if (me) { AUTH.user = me; SENS_SHOW = {}; renderUserChip(); }
               if (!isAdmin()) applyScope(AUTH.user.username);
               renderScopeSelect();
+              /* CRM 可见开关可能刚被改动：重拉一次快照并重绘列表徽标 */
+              refreshCrmData();
             }
             toast('用户「' + name + '」已更新');
           });
@@ -6766,7 +7076,8 @@
     initDataP.then(function (initData) {
       if (!initData) return;
       var payload = {
-        username: username, name: name, role: role, note: note, perm: perm, sessionMins: mins,
+        username: username, name: name, nameCn: nameCn, crmVisible: crmVisible,
+        role: role, note: note, perm: perm, sessionMins: mins,
         hideSensitive: document.getElementById('uHideSens').checked
       };
       if (initData.shareFrom) payload.shareFrom = initData.shareFrom;
@@ -6893,6 +7204,15 @@
       openLogsPage('');
     });
     document.getElementById('umUsers').addEventListener('click', openUsersPage);
+    document.getElementById('umCrm').addEventListener('click', openCrmPage);
+    document.getElementById('btnCrmBack').addEventListener('click', function () {
+      document.getElementById('crmView').classList.remove('on');
+      if (CRM_STATUS_TIMER) { clearTimeout(CRM_STATUS_TIMER); CRM_STATUS_TIMER = null; }
+    });
+    document.getElementById('btnCrmSave').addEventListener('click', saveCrmConfig);
+    document.getElementById('btnCrmTest').addEventListener('click', testCrmConnect);
+    document.getElementById('btnCrmSyncNow').addEventListener('click', syncCrmNow);
+    document.getElementById('btnCrmRefresh').addEventListener('click', renderCrmStatusIfOpen);
     document.getElementById('umPwd').addEventListener('click', function () {
       document.getElementById('userMenu').classList.remove('on');
       /* 远程账号的口令在认证服务器上，本页改不了 */
@@ -7057,6 +7377,8 @@
     renderUserChip();
     renderReadonlyBanner();
     renderScopeSelect();
+    /* 登录即拉一次 CRM 快照：列表维保徽标 / 详情现网信息 / 「我负责的项目」都依赖它 */
+    refreshCrmData();
     if (opts && opts.welcome) toast('欢迎回来，' + user.name);
     if (!DB.customers.length) {
       setTimeout(function () { toast('当前台账暂无客户数据，点击右上角「新增客户」开始录入'); }, 500);
