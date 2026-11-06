@@ -123,8 +123,9 @@
 | F2 | 客户详情两块 | 「客户现网信息」：项目名称、客户名称、客户级别、行业、战区/部门、项目所有人、项目技术负责人（=维护人A）、维护人B + 硬件逐台（序列号/型号/服务时间/版本）+ 维保三态；「产品与技术信息」：主要使用功能、总采购数量/GSLB台数、高可靠架构、操作系统版本、现网软件版本 |
 | F4 | 项目技术负责人 | 直接用 CRM 的 `维护人A`（中文名），不改写、不映射 |
 | F5 | 我负责的项目 | 客户列表搜索区「全部项目 / 我负责的项目」切换；命中条件 = 登录用户 `name_cn` 与商机 `维护人A` 全等（拼音登录名靠管理员填中文名转译） |
-| F6 | 按用户控制可见性 | 用户管理里逐账号开关，**默认关闭**；关闭时服务端不下发任何 CRM 数据 |
+| F6 | 按用户控制可见性 | 用户管理里逐账号开关，**默认关闭**；关闭只隐藏「别人负责的项目」——**「我负责的项目」对全员开放**（维护人A = 本人中文名即下发） |
 | F7 | 列表维保徽标 | 与「未巡检」徽标并列，三态：维保全部到期 / 部分到期 / 未到期；未匹配客户不显示 |
+| F8 | 区域统计（2026-11-06） | 超管在「CRM 台账关联」页选**战区**（如金融行业部）→ 拉该战区下**全部商机**（不限台账客户）→ 逐项目拉维保 → 以项目为主体输出明细（项目/客户/部门/销售/合同日期/合同名称/序列号/产品/型号/维保起止）→ 按**产品型号汇总台数**（序列号去重，可下钻）→ 导出明细/汇总 CSV |
 
 **服务端必须自己登录 CRM**（不能依赖任何人的浏览器会话）：账号密码存 `crm_config`，会话存 `crm_config.session`，失效自动重登一次；内网用 `setInterval`、公网用 Cron Trigger 各自驱动。
 
@@ -398,9 +399,15 @@ LDAP = TCP simple bind（BER，RFC 4511）。**Cloudflare Workers 没有 UDP 出
 **「我负责的项目」**：`users.name_cn`（超管在用户表单里填）与商机的 **`维护人A`** 全等才命中。
 **只认维护人A**，维护人B 相同不算（潘超 在「承德银行」是维护人B，不该出现在他的项目里）。
 
-**按用户可见性**：`users.crm_visible` 默认 `0`。非超管且未开启时，`GET /api/crm/data` 直接返回
-`{crmVisible:false, matches:{}}`，前端据此隐藏列表徽标、详情两块与项目切换条 —— **数据不出服务端**。
-超管恒可见。开启后仍只下发「自己台账里的客户名」对应的快照，不越权看别家。
+**按用户可见性**：`users.crm_visible` 默认 `0`，但**只管「别人负责的项目」**。
+非超管且未开启时，`GET /api/crm/data` 仍会下发「自己台账客户中 `维护人A = name_cn`」的快照（`mineOnly:true`），
+保证「我负责的项目」对全员可用；其余客户不下发。超管恒可见，且只下发自己台账里的客户名，不越权看别家。
+
+**区域统计（F8）**：范围是 CRM **全域**商机（与台账客户无关），按 `战区` 精确相等过滤。
+口径与多项目聚合一致：设备按序列号去重（去空格、忽略大小写），同序列号保留维保结束最新那条；
+台数按去重后计。实测「金融行业部」= 560 个项目 / 156 个有维保 / 1285 台 / 16 个型号，**约 6 分钟**（每项目 1 次 NeoBI 请求 + 250ms 间隔）。
+内网后台任务 + 独立进度条；公网 Worker 受单次 50 子请求限制，按 **16 个项目一批**执行、前端轮询到 `needNext` 自动续跑下一批，
+明细按 60 万字符分片存 `crm_stat_chunk`（大战区设备上万台，D1 单行 1MB 放不下）。
 
 **定时任务**：内网 `server.js` 用 `setInterval(60s)` 判断「上次运行 + 间隔小时」是否到期；
 公网 Worker 用 Cron Trigger（`wrangler.jsonc` 的 `crons: ["0 * * * *"]`）在 `scheduled()` 里做同样判断。
@@ -411,11 +418,15 @@ LDAP = TCP simple bind（BER，RFC 4511）。**Cloudflare Workers 没有 UDP 出
 
 | 表 | 字段 | 说明 |
 | --- | --- | --- |
-| `crm_config` | k(PK, 固定 `main`), v(JSON) | `{loginName, password, intervalHours, lastSyncAt, lastResult, session}`；密码只写不回显 |
-| `crm_matches` | customer_name(PK), status(`ok`/`miss`), record_id, level(1/2), multi, data(JSON), updated_at | 每个台账客户一行快照；`data` 存 `{opp, maintenance, warranty, error}` |
+| `crm_config` | k(PK, 固定 `main`), v(JSON) | `{loginName, password, intervalHours, lastSyncAt, lastResult, session}`；密码只写不回显；另有 `progress`（公网检索进度）、`stat_regions`（战区分布缓存）、`stat_progress`（区域统计进度） |
+| `crm_matches` | customer_name(PK), status(`ok`/`miss`), record_id, level(1/2/3), multi, data(JSON), updated_at | 每个台账客户一行快照；`data` 存 `{opp, projects, maintenance, warranty, error}` |
+| `crm_stat` | region(PK), updated_at, data(JSON) | 区域统计缓存：`{stats, rows, summary, projects, truncated}`（公网为瘦身版，明细在 `crm_stat_chunk`） |
+| `crm_stat_chunk` | region+idx(PK), data(JSON) | **仅公网**：明细分片，每片约 60 万字符 |
+| `crm_stat_state` | region(PK), updated_at, data(JSON) | **仅公网**：分批续跑的中间态（项目列表 / 已拉设备 / 进度） |
 
-接口：`GET/PUT /api/crm/config`、`POST /api/crm/test`、`POST /api/crm/sync`、`GET /api/crm/status`
-（均超管）、`GET /api/crm/data`（登录用户，受 `crm_visible` 约束）。
+接口：`GET/PUT /api/crm/config`、`POST /api/crm/test`、`POST /api/crm/sync`、`GET /api/crm/status`、
+`GET /api/crm/stat/meta`、`GET /api/crm/stat/data?region=`、`POST /api/crm/stat/run`、`GET /api/crm/stat/status`
+（均超管）、`GET /api/crm/data`（登录用户，`crm_visible` 关闭时只回「我负责的项目」）。
 
 
 
@@ -488,21 +499,21 @@ npm run test:board       # 单跑某一套
 | `test-board.js` | 57 | 季度切换、达标判定、客户/巡检增删改、导出、城市候选 |
 | `test-board-edge.js` | 9 | 空数据、极端频率、无坐标客户 |
 | `test-monthly.js` | 44 | 逐月覆盖、当月未到、同月多次只算一次 |
-| `test-auth.js` | 177 | 登录门禁、停用账号、角色边界、汇总只读、数据隔离、远程登录不弹改密、账号区显示登录名 |
+| `test-auth.js` | 180 | 登录门禁、停用账号、角色边界、汇总只读、数据隔离、远程登录不弹改密、账号区显示登录名 |
 | `test-map.js` | 44 | 带洞结构、标记数量、切换与登出时图层重建、AMap 门面增量同步 |
 | `test-custs.js` | 125 | 客户管理页字段、搜索、CRUD、层叠守卫、敏感字段逐条展开 |
 | `test-units.js` | 39 | 巡检分组：三态判定、整体巡检、y12×分组、表单编辑、详情勾选 |
 | `test-half.js` | 26 | 一年2次：半年窗口、跨季度一致、other 不计、半年×分组、KPI/CSV 口径 |
 | `test-modal-guard.js` | 31 | 弹窗防误关：只读直接关、改动拦一句、Esc 只关最上层、拖选不误判 |
-| `test-crm.js` | 49 | CRM 展示层：列表维保三态徽标与顺序、详情两块、配件不展示、项目技术负责人、我负责的项目筛选、可见性开关、管理页 PUT/POST、用户表单中文名与可选姓名提示 |
-| `test-crm-client.mjs` | 59 | 询盘云协议：RSA 登录、选租户换 code、域隔离 cookie、商机分页、字段标签化、NeoBI 维保解析（剔除配件）、三态、两级匹配、端到端同步 |
+| `test-crm.js` | 82 | CRM 展示层：维保三态徽标与顺序、详情两块、配件不展示、项目技术负责人、我负责的项目筛选、可见性关闭只影响别人负责的项目、管理页 PUT/POST、**区域统计（战区下拉/明细 11 列/型号汇总/下钻/CSV/进度条）** |
+| `test-crm-client.mjs` | 115 | 询盘云协议：RSA 登录、选租户换 code、域隔离 cookie、商机分页、字段标签化、NeoBI 维保解析（剔除配件/销售/合同列）、三态、三级匹配、端到端同步、**区域统计去重与型号汇总** |
 | `test-home.js` | 98 | 首页结构/动效/降级、部署产物、省界拆分与版本号一致性 |
 | `test-photo-api.js` | 13 | 照片接口（两版等价） |
 | `test-visits.js` | 62 | 巡检方式/结果/附件/巡检人必填 |
 | `test-attach.js` | 30 | 附件上传下载、扩展名持久化 |
 | `test-remote-auth.js` | 53 | 本地/远程用户界面、只读拦截、认证服务器增删改测 |
 | `test-protocols.mjs` | 27 | RADIUS/TACACS+/LDAP 真实报文（本地起假服务器，Node 直跑） |
-| `test-worker-api.mjs` | 79 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支（含 CRM 配置/可见性/越权） |
+| `test-worker-api.mjs` | 85 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支（含 CRM 配置/可见性/越权） |
 | `test-session.mjs` | 20 | 会话滑动过期 |
 | **合计** | **1040** | 19 套，约 33 秒跑完 |
 

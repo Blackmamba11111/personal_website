@@ -6491,6 +6491,7 @@
     var pageRows = rows.slice(start, start + CRM_STAT.pageSize);
     var body = pageRows.map(function (r) {
       var pj = (r.projects || []).filter(Boolean);
+      if (!pj.length && r.projectName) pj = [r.projectName];   /* 单项目设备不重复存名单 */
       var pjTxt = pj.length > 1 ? (r.projectName + ' 等 ' + pj.length + ' 个项目') : r.projectName;
       return '<tr>' +
         '<td title="' + esc(pj.join('\n')) + '">' + esc(pjTxt || '—') + '</td>' +
@@ -6528,13 +6529,15 @@
     var total = sum.reduce(function (a, x) { return a + (Number(x.count) || 0); }, 0);
     var body = sum.map(function (s) {
       var pjs = s.projects || [], cus = s.customers || [];
+      var pjN = (s.projectCount != null) ? s.projectCount : pjs.length;
+      var cuN = (s.customerCount != null) ? s.customerCount : cus.length;
       return '<tr class="crm-stat-sum-click" data-model="' + esc(s.model) + '">' +
         '<td style="font-weight:600;">' + esc(s.model) + '</td>' +
         '<td class="crm-stat-num"><b>' + (s.count || 0) + '</b></td>' +
-        '<td class="crm-stat-num sub2">' + pjs.length + '</td>' +
-        '<td class="crm-stat-num sub2">' + cus.length + '</td>' +
+        '<td class="crm-stat-num sub2">' + pjN + '</td>' +
+        '<td class="crm-stat-num sub2">' + cuN + '</td>' +
         '<td class="sub2" title="' + esc(pjs.join('\n')) + '">' +
-          esc(pjs.slice(0, 3).join(' / ') + (pjs.length > 3 ? ' 等 ' + pjs.length + ' 个' : '')) + '</td>' +
+          esc(pjs.slice(0, 3).join(' / ') + (pjN > 3 ? ' 等 ' + pjN + ' 个' : '')) + '</td>' +
         '<td style="text-align:right;"><button type="button" class="btn sm">查看明细</button></td></tr>';
     }).join('');
     wrap.innerHTML = '<table class="utable"><thead><tr>' +
@@ -6673,13 +6676,15 @@
   function exportCrmStatSum() {
     var sum = (CRM_STAT.data && CRM_STAT.data.summary) || [];
     if (!sum.length) { toast('没有可导出的汇总'); return; }
-    var head = ['产品型号', '台数', '涉及项目数', '涉及客户数', '涉及项目', '涉及客户'];
+    var head = ['产品型号', '台数', '涉及项目数', '涉及客户数', '涉及项目（前 5）', '涉及客户（前 5）'];
     var lines = [head.join(',')];
     var total = 0;
     sum.forEach(function (s) {
       var pjs = s.projects || [], cus = s.customers || [];
+      var pjN = (s.projectCount != null) ? s.projectCount : pjs.length;
+      var cuN = (s.customerCount != null) ? s.customerCount : cus.length;
       total += Number(s.count) || 0;
-      lines.push([s.model, s.count, pjs.length, cus.length,
+      lines.push([s.model, s.count, pjN, cuN,
         pjs.join(' / '), cus.join(' / ')].map(csvCell).join(','));
     });
     lines.push(['合计', total, '', '', '', ''].map(csvCell).join(','));

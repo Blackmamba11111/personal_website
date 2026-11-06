@@ -595,6 +595,13 @@ void KEY_BYTES;
   check('区域统计：stats 项目数/设备数/型号数/客户数',
     built.stats.projects === 2 && built.stats.devices === 3 && built.stats.models === 2 && built.stats.customers === 2,
     JSON.stringify(built.stats));
+  /* 体积：单项目设备不重复存项目名单，汇总只存数量 + 前几个名字（缓存要能放进 D1 单行） */
+  const single = built.rows.filter(r => serialKey(r.serialNo) === 'SN-Y')[0];
+  check('区域统计：单项目设备不重复存项目/客户名单',
+    !!single && single.projects === undefined && single.customers === undefined, JSON.stringify(single));
+  check('区域统计：汇总带项目/客户数量（名单只留前几个）',
+    built.summary[0].projectCount === 2 && built.summary[0].customerCount === 2 &&
+    built.summary[0].projects.length === 2, JSON.stringify(built.summary[0]).slice(0, 160));
   const empty = buildRegionStat([]);
   check('区域统计：空项目也不报错',
     empty.rows.length === 0 && empty.summary.length === 0 && empty.stats.projects === 0);

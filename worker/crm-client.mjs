@@ -1059,6 +1059,14 @@ export function buildRegionStat(projects) {
   });
   const summary = Array.from(map.values()).sort(function (a, b) {
     return b.count - a.count || cmp(a.model, b.model);
+  }).map(function (it) {
+    /* 汇总只需要台数与「涉及多少个项目/客户」；完整名单留在明细里下钻，
+       名单全存会让缓存膨胀数倍（东部战区设备上万台，公网 D1 单行放不下） */
+    return {
+      model: it.model, count: it.count,
+      projectCount: it.projects.length, customerCount: it.customers.length,
+      projects: it.projects.slice(0, 5), customers: it.customers.slice(0, 5)
+    };
   });
 
   const custSet = new Set();
@@ -1066,8 +1074,19 @@ export function buildRegionStat(projects) {
   const projSet = new Set();
   rows.forEach(function (r) { r.projects.forEach(function (n) { if (n) projSet.add(n); }); });
 
+  /* 瘦身：owner 前端不用；单项目设备不重复存 projects/customers（前端用 projectName/customer 兜底） */
+  const slimRows = rows.map(function (r) {
+    const o = {
+      projectId: r.projectId, projectName: r.projectName, customer: r.customer, dept: r.dept,
+      sales: r.sales, contractDate: r.contractDate, contractName: r.contractName,
+      serialNo: r.serialNo, product: r.product, model: r.model, start: r.start, end: r.end
+    };
+    if (r.projects.length > 1) { o.projects = r.projects; o.customers = r.customers; }
+    return o;
+  });
+
   return {
-    rows: rows,
+    rows: slimRows,
     summary: summary,
     stats: {
       projects: src.length, withDevices: withDevices, devices: rows.length,

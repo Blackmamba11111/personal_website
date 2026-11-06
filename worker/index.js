@@ -151,6 +151,11 @@ async function ensureSchema(env) {
       'CREATE TABLE IF NOT EXISTS crm_stat_state (region TEXT PRIMARY KEY, updated_at TEXT NOT NULL, ' +
       "data TEXT NOT NULL DEFAULT '{}')"
     ).run();
+    /* 明细分片：大战区（东部战区 6000+ 项目）设备上万台，D1 单行 1MB 放不下 */
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS crm_stat_chunk (region TEXT NOT NULL, idx INTEGER NOT NULL, ' +
+      "data TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (region, idx))"
+    ).run();
     await env.DB.prepare(
       'CREATE TABLE IF NOT EXISTS auth_servers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, ' +
       'host TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, ' +
@@ -684,17 +689,31 @@ async function doRegionStatBatch(env, region, reset) {
     });
     const built = P.buildRegionStat(projects);
     try {
+      /* 明细分片写：单分片约 60 万字符，主行只放统计与汇总，避免撞 D1 单行 1MB 上限 */
+      const CHUNK_CHARS = 600000;
+      const chunks = [];
+      let cur = [], curLen = 0;
+      built.rows.forEach(function (row) {
+        const s = JSON.stringify(row);
+        if (curLen + s.length > CHUNK_CHARS && cur.length) { chunks.push(cur); cur = []; curLen = 0; }
+        cur.push(row); curLen += s.length + 1;
+      });
+      if (cur.length) chunks.push(cur);
+      await env.DB.prepare('DELETE FROM crm_stat_chunk WHERE region = ?').bind(region).run();
+      for (let ci = 0; ci < chunks.length; ci++) {
+        await env.DB.prepare('INSERT INTO crm_stat_chunk (region, idx, data) VALUES (?, ?, ?)')
+          .bind(region, ci, JSON.stringify(chunks[ci])).run();
+      }
       await env.DB.prepare('INSERT INTO crm_stat (region, updated_at, data) VALUES (?, ?, ?) ' +
         'ON CONFLICT(region) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data')
         .bind(region, nowIso2(), JSON.stringify({
-          stats: built.stats, rows: built.rows, summary: built.summary,
+          stats: built.stats, summary: built.summary, chunkCount: chunks.length, truncated: false,
           projects: projects.map(function (p) {
             return {
               id: p.id, name: p.name, customer: p.customer, dept: p.dept, owner: p.owner,
               deviceCount: (p.devices || []).length, error: null
             };
-          }),
-          truncated: false
+          })
         })).run();
     } catch (e) {
       return await fail('统计结果写入失败（' + (e && e.message) + '）');
@@ -1388,9 +1407,22 @@ async function route(request, env) {
     if (!row) return ok({ found: false, region: region });
     let d = {};
     try { d = JSON.parse(row.data || '{}') || {}; } catch (e) {}
+    let rows = d.rows || [];
+    if (!rows.length) {
+      /* 明细在分片表里（大战区），主行只有统计与汇总 */
+      try {
+        const cr = await env.DB.prepare('SELECT data FROM crm_stat_chunk WHERE region = ? ORDER BY idx').bind(region).all();
+        (cr.results || []).forEach(function (c) {
+          try {
+            const arr = JSON.parse(c.data || '[]');
+            if (Array.isArray(arr)) rows = rows.concat(arr);
+          } catch (e) {}
+        });
+      } catch (e) {}
+    }
     return ok({
       found: true, region: region, updatedAt: row.updated_at,
-      stats: d.stats || null, rows: d.rows || [], summary: d.summary || [],
+      stats: d.stats || null, rows: rows, summary: d.summary || [],
       projects: d.projects || [], truncated: !!d.truncated
     });
   }
