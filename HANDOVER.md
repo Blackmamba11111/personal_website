@@ -350,13 +350,21 @@ LDAP = TCP simple bind（BER，RFC 4511）。**Cloudflare Workers 没有 UDP 出
 协议实现集中在 **`worker/crm-client.mjs`**（与 `auth-protocols.mjs` 同一种模式：纯 HTTP，宿主注入 `fetchImpl`），
 内网版由 `deploy.sh` 与 `server.js` 一起上传，公网 Worker 直接 `import`。**两站代码完全一致**。
 
-登录链路（纯 HTTP，无需浏览器）：
+登录链路（纯 HTTP，无需浏览器；五个坑都在 `xsyLogin` 里踩过）：
 
-1. `GET https://login.xiaoshouyi.com/auc/passport/password-key` → `{scode:'200', result:<SPKI DER base64>}`
-2. 用模数/指数做 **RSA PKCS#1 v1.5** 加密口令（纯 BigInt 实现，Node / Workers 通用，无 crypto 依赖）
-3. `POST /auc/login`，body：`{login_name, password:<密文>, NECaptchaValidate:null, login_type:'web', device_type:'web'}`
-4. 跟随 302（最多 6 跳）落到 `crm-tencent.xiaoshouyi.com`，从 `set-cookie` 收会话；`c-user` / `x-ienterprise-tenant`
-   里能取到 `userId` / `tenantId`（请求头 `xsy-user-id` / `xsy-tenant-id`），缺了也能靠 cookie 跑
+1. **先建租户上下文**：`GET {crm}/global/login.action` 跟 3 跳（→ `/neologin/skip/v2/global/login/info` → `/auc/oauth2/auth`），
+   拿到 `SESSION` / `AUC_SESSION` / `auc-sso-oauth-context` / `x-ienterprise-*`。**跳过这一步密码对了也会回 `2030072 长时间未操作`**
+2. `GET {auc}/auc/passport/password-key` → `{scode:'200', result:{key:'MIGf...'}}`，**公钥在 `result.key`**，
+   把整个 `result` 当字符串会报「不是有效的 ASN.1 结构」
+3. 公钥按 **DER 逐层解析**（X.509 SubjectPublicKeyInfo → BIT STRING → SEQ{INT n,INT e}，兼容裸 PKCS#1 / hex 模数），
+   再走 **RSA PKCS#1 v1.5** 加密口令（纯 BigInt，Node / Workers 通用）
+4. `POST {auc}/auc/login`，**必须 `application/x-www-form-urlencoded`**（发 JSON 会被 301 打回登录页），
+   字段 `login_name / password(密文) / login_type=web / device_type=web / mobileParams[login_type]=web`，补 `Origin` / `Referer`
+5. **按 `scode` 判成败（只有 200 / 302 算成功）**：失败时 HTTP 仍是 200，只看状态码会把「密码错误」当成登录成功
+6. 返回 `tenant_list` 时（本账号就是）先 `POST /auc/oauth2/authorize-code` 选租户换一次性 `code`，
+   再跟随跳转落到业务域；多租户且没指定就明确报错列出租户
+7. **cookie 必须按域隔离存**：`SESSION` 在 `.xiaoshouyi.com` 与 `crm-tencent.xiaoshouyi.com` 上同名不同值，
+   压成扁平 map 会互相覆盖，症状是「登录成功但业务接口 400 / 1020008 未登录」
 
 数据接口：
 
@@ -365,6 +373,15 @@ LDAP = TCP simple bind（BER，RFC 4511）。**Cloudflare Workers 没有 UDP 出
 | 商机全量 | `POST /rest/bff/v3.0/neoui/table/search?entityApiKey=opportunity&skipTotalSize=true`，`dataView: opportunity_view_225`，**服务端忽略 `conditions`**，只能全量分页后本地筛 |
 | 字段中文标签 | `GET /rest/bff/v3.0/neoui/table/initData1?...&objectApiKey=opportunity` → `data.items[].{apiKey,label}` |
 | 维保明细 | `POST /rest/neobi/v2.0/query/query?avatarViewId=3439246815003399`，`application/x-www-form-urlencoded`，`filter` 里 `account.customItem287__c = recordId` |
+
+维保请求体是**整份照抄网页抓包**（`WB_FILTER_TEMPLATE` + `WB_FORM_EXTRA`：`config/dataShareOwner/reportType/layoutId/widgetId`），
+只有 `board.filter[0].value[0].val` 换成商机 recordId。响应在 `data.commons`（`{type,row,col,value}` 单元格，`type=1` 是表头），
+不是 `data.grid`；`产品名称` 以「配件」开头的行在解析阶段就丢弃 —— 配件不进设备清单、不计台数、也不参与维保三态
+（否则「全部到期」会被配件算成「部分到期」）。
+
+「我负责的项目」靠 `users.name_cn`（中文姓名）与商机**维护人A** 精确比对：登录名是拼音，CRM 返中文，
+系统不做拼音转换，所以**每个账号必须填中文名**，为空时该账号筛出来永远是空列表（前端会明确提示，不是静默无结果）。
+用户表单会从 CRM 快照里汇总出「维护人A/B 出现过的姓名」贴在输入框下方供抄写。
 
 返回体是 NeoBI 的稀疏单元格数组（`{type,row,col,value}`，`type=1` 为表头）。列序：
 `销售|合同日期|合同名称|序列号|产品名称|产品型号|维保开始|维保结束|到期天数|操作系统|软件版本`，
@@ -477,8 +494,8 @@ npm run test:board       # 单跑某一套
 | `test-units.js` | 39 | 巡检分组：三态判定、整体巡检、y12×分组、表单编辑、详情勾选 |
 | `test-half.js` | 26 | 一年2次：半年窗口、跨季度一致、other 不计、半年×分组、KPI/CSV 口径 |
 | `test-modal-guard.js` | 31 | 弹窗防误关：只读直接关、改动拦一句、Esc 只关最上层、拖选不误判 |
-| `test-crm.js` | 42 | CRM 展示层：列表维保三态徽标、详情两块、项目技术负责人、我负责的项目筛选、可见性开关、管理页 PUT/POST、用户表单中文名 |
-| `test-crm-client.mjs` | 49 | 询盘云协议：RSA 登录、跳转与 cookie、商机分页、字段标签化、NeoBI 维保解析、三态、两级匹配、端到端同步 |
+| `test-crm.js` | 49 | CRM 展示层：列表维保三态徽标与顺序、详情两块、配件不展示、项目技术负责人、我负责的项目筛选、可见性开关、管理页 PUT/POST、用户表单中文名与可选姓名提示 |
+| `test-crm-client.mjs` | 59 | 询盘云协议：RSA 登录、选租户换 code、域隔离 cookie、商机分页、字段标签化、NeoBI 维保解析（剔除配件）、三态、两级匹配、端到端同步 |
 | `test-home.js` | 98 | 首页结构/动效/降级、部署产物、省界拆分与版本号一致性 |
 | `test-photo-api.js` | 13 | 照片接口（两版等价） |
 | `test-visits.js` | 62 | 巡检方式/结果/附件/巡检人必填 |
@@ -487,7 +504,7 @@ npm run test:board       # 单跑某一套
 | `test-protocols.mjs` | 27 | RADIUS/TACACS+/LDAP 真实报文（本地起假服务器，Node 直跑） |
 | `test-worker-api.mjs` | 79 | Worker 接口跑在 node:sqlite 的 D1 兼容层上，验证 SQL 与权限分支（含 CRM 配置/可见性/越权） |
 | `test-session.mjs` | 20 | 会话滑动过期 |
-| **合计** | **1025** | 19 套，约 33 秒跑完 |
+| **合计** | **1040** | 19 套，约 33 秒跑完 |
 
 > `test-protocols.mjs` / `test-worker-api.mjs` 是 `.mjs`（ESM），因为它们直接 import
 > `worker/auth-protocols.mjs` 与 `worker/index.js`。`test-worker-api.mjs` 用 Node 内置
