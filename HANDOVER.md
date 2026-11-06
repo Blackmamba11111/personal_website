@@ -119,7 +119,7 @@
 
 | # | 需求 | 实现要点 |
 | --- | --- | --- |
-| F1 | 超管「CRM 台账关联」页 | 配账号密码 + 检索间隔（1–168 小时，默认 12）、测试连通性、立即检索；按台账客户逐个显示获取状态（成功/未匹配）与维保到期 |
+| F1 | 超管「CRM 台账关联」页 | 配账号密码 + 检索间隔（1–168 小时，默认 12）、测试连通性、立即检索；**立即检索带真实进度条**（阶段 + 已完成 x/N + 当前客户 + 已用时长，完成 5 秒后收起）；按台账客户逐个显示获取状态（成功/未匹配）与维保到期 |
 | F2 | 客户详情两块 | 「客户现网信息」：项目名称、客户名称、客户级别、行业、战区/部门、项目所有人、项目技术负责人（=维护人A）、维护人B + 硬件逐台（序列号/型号/服务时间/版本）+ 维保三态；「产品与技术信息」：主要使用功能、总采购数量/GSLB台数、高可靠架构、操作系统版本、现网软件版本 |
 | F4 | 项目技术负责人 | 直接用 CRM 的 `维护人A`（中文名），不改写、不映射 |
 | F5 | 我负责的项目 | 客户列表搜索区「全部项目 / 我负责的项目」切换；命中条件 = 登录用户 `name_cn` 与商机 `维护人A` 全等（拼音登录名靠管理员填中文名转译） |
@@ -231,7 +231,7 @@
 | `ledgers` | username(PK), data(JSON TEXT), updated_at, updated_by | 一人一份台账，`data` 为整份 JSON |
 | `sessions` | token(PK), username, created_at, expires_at | Bearer 令牌，30 天 |
 | `attachments` | id(PK, 24 位随机 hex), name, mime, size, owner, created_at, ext(内网版), data(Cloudflare 版) | 巡检附件；Cloudflare 版把文件 base64 存 `data`（D1 单行上限 2MB → 单文件 1MB）；内网版只存元数据，文件落 `DATA_DIR/uploads/<id><ext>`，单文件上限 100MB（2026-11-03 起，`MAX_BODY=200MB` 承接 base64 膨胀）。**`ext` 存的是按文件头嗅探出的真实扩展名，不能用文件名后缀推断**——前端会把图片统一重编码成 JPEG（文件名仍是 `.png`），只按名字找文件会 404 |
-| `crm_config` | k(PK, 固定 `main`), v(JSON) | CRM 登录账号/密码/检索间隔/上轮结果/会话快照；密码只写不回显 |
+| `crm_config` | k(PK), v(JSON) | `k='main'` 存 CRM 登录账号/密码/检索间隔/上轮结果/会话快照（密码只写不回显）；`k='progress'` 仅公网用于落检索进度（跨 isolate 兜底） |
 | `crm_matches` | customer_name(PK), status(`ok`/`miss`), record_id, level(1/2), multi, data(JSON), updated_at | 每个台账客户一条 CRM 快照，`data` 存 `{opp, maintenance, warranty, error}` |
 
 ### 5.2 台账 JSON 结构（`ledgers.data`）
