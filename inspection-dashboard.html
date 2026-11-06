@@ -7649,7 +7649,8 @@
         '<td>' + esc(u.name) + (u.nameCn ? ' <span class="tag user" title="CRM 维护人比对使用的中文姓名">' + esc(u.nameCn) + '</span>' : '') + '</td>' +
         '<td>' + seqTag(u) + '</td>' +
         '<td>' + permTag(u) + (u.hideSensitive ? ' <span class="tag ro" title="客户详细地址 / 联系人电话对该账号打码显示">隐藏敏感</span>' : '') +
-          (u.crmVisible ? ' <span class="tag active" title="该账号可查看询盘云 CRM 现网信息与维保到期提醒">CRM可见</span>' : '') + '</td>' +
+          (u.crmVisible ? ' <span class="tag active" title="该账号可查看询盘云 CRM 现网信息与维保到期提醒">CRM可见</span>' : '') +
+          (u.statVisible ? ' <span class="tag active" title="该账号可查看区域统计（只读，不能触发检索）">区域统计</span>' : '') + '</td>' +
         '<td><span class="tag ' + (u.role === 'admin' ? 'admin' : 'user') + '">' + roleText(u) + '</span></td>' +
         '<td><span class="tag ' + (u.status === 'active' ? 'active' : 'disabled') + '">' +
           (u.status === 'active' ? '启用中' : '已停用') + '</span></td>' +

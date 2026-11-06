@@ -959,6 +959,13 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     await tick(80);
     const vv5 = usersOf(w).filter(u => u.username === 'vv')[0];
     check('批量应用后账号可查看区域统计', vv5.statVisible === true, JSON.stringify(vv5.statVisible));
+    /* 权限列必须把授权显示出来（否则开了也看不出，2026-11-06 修复） */
+    const permCellBefore = rowV5.children[4] ? rowV5.children[4].textContent : '';
+    const rowV5b = [...d.querySelectorAll('#usersTableWrap tbody tr')]
+      .filter(r => r.textContent.indexOf('vv') >= 0)[0];
+    const permCellAfter = rowV5b.children[4] ? rowV5b.children[4].textContent : '';
+    check('授权前「权限」列没有区域统计徽标', permCellBefore.indexOf('区域统计') < 0, permCellBefore);
+    check('授权后「权限」列显示「区域统计」徽标', permCellAfter.indexOf('区域统计') >= 0, permCellAfter);
     w.close();
   }
 
