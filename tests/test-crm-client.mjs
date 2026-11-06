@@ -12,7 +12,8 @@ import crypto from 'node:crypto';
 import {
   xsyLogin, fetchFieldLabels, fetchAllOpportunities, fetchMaintenance,
   warrantyStatus, matchForCustomer, normCompanyName, translateRecord, runCrmSync, mergeMaintenance,
-  crmProgressText, OPP_FIELDS, XSY_HOSTS
+  crmProgressText, OPP_FIELDS, XSY_HOSTS,
+  runRegionStat, buildRegionStat, crmStatProgressText, serialKey
 } from '../worker/crm-client.mjs';
 
 let pass = 0, fail = 0;
@@ -255,6 +256,9 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
     r.devices[0].start === '2024/11/10' && r.devices[0].end === '2025/11/09',
     JSON.stringify(r.devices[0]));
   check('操作系统 / 软件版本解析正确', r.devices[0].os === 'Kylin V10' && r.devices[0].version === 'V6.2.1');
+  check('销售 / 合同日期 / 合同名称 解析正确（区域统计用）',
+    r.devices[0].sales === '张三' && r.devices[0].contractDate === '2024/10/01' && r.devices[0].contractName === '合同A',
+    JSON.stringify({ s: r.devices[0].sales, d: r.devices[0].contractDate, n: r.devices[0].contractName }));
   check('请求按 recordId 过滤（viewId + filter）',
     posted.indexOf('viewId=3439246815003399') >= 0 && posted.indexOf('2683492002290513') >= 0,
     String(posted).slice(0, 60));
@@ -559,6 +563,124 @@ void KEY_BYTES;
   check('文案：没有待检索客户时不报 0/0',
     crmProgressText({ stage: 'match', done: 0, total: 0 }) === '没有待检索的客户',
     crmProgressText({ stage: 'match', done: 0, total: 0 }));
+}
+
+/* ---------------- 11. 区域统计（按战区汇总，2026-11-06） ---------------- */
+{
+  /* 11.1 纯函数：按序列号去重 + 项目/客户归属 + 型号汇总 */
+  const projects = [
+    { id: 1, name: 'A项目', customer: '客户甲', dept: '金融一部', owner: '孙',
+      devices: [
+        { serialNo: 'sn-x ', model: 'T6100', end: '2027/01/01', sales: '张三', contractDate: '2024/10/01', contractName: '合同A' },
+        { serialNo: 'SN-Y', model: 'T3110', end: '2028/05/05' }
+      ] },
+    { id: 2, name: 'B项目', customer: '客户乙', dept: '金融二部', owner: '李',
+      devices: [
+        { serialNo: 'SN-X', model: 'T6100', end: '2030/01/01' },
+        { serialNo: 'SN-Z', model: 'T6100', end: '2026/01/01' }
+      ] }
+  ];
+  const built = buildRegionStat(projects);
+  check('区域统计：按序列号去重（4 条 → 3 台）',
+    built.rows.length === 3 && built.stats.rawDevices === 4, JSON.stringify(built.stats));
+  const sx = built.rows.filter(r => serialKey(r.serialNo) === 'SN-X')[0];
+  check('区域统计：同序列号保留维保结束最新的一条', !!sx && sx.end === '2030/01/01', sx && sx.end);
+  check('区域统计：设备记录全部所属项目与客户',
+    !!sx && sx.projects.length === 2 && sx.customers.length === 2 && sx.projectName === 'B项目',
+    JSON.stringify(sx && { p: sx.projects, c: sx.customers, pn: sx.projectName }));
+  check('区域统计：汇总按型号计台数（T6100=2 / T3110=1）',
+    built.summary.length === 2 && built.summary[0].model === 'T6100' && built.summary[0].count === 2 &&
+    built.summary[1].model === 'T3110' && built.summary[1].count === 1,
+    JSON.stringify(built.summary));
+  check('区域统计：stats 项目数/设备数/型号数/客户数',
+    built.stats.projects === 2 && built.stats.devices === 3 && built.stats.models === 2 && built.stats.customers === 2,
+    JSON.stringify(built.stats));
+  const empty = buildRegionStat([]);
+  check('区域统计：空项目也不报错',
+    empty.rows.length === 0 && empty.summary.length === 0 && empty.stats.projects === 0);
+
+  /* 11.2 进度文案 */
+  const st1 = crmStatProgressText({ stage: 'devices', done: 3, total: 560, current: 'A项目' });
+  check('统计文案：拉项目维保带进度与项目名',
+    st1.indexOf('3/560') >= 0 && st1.indexOf('A项目') >= 0, st1);
+  check('统计文案：登录 / 拉商机 / 完成 / 失败',
+    crmStatProgressText({ stage: 'login' }).indexOf('登录') >= 0 &&
+    crmStatProgressText({ stage: 'opps' }).indexOf('商机') >= 0 &&
+    crmStatProgressText({ stage: 'done' }) === '统计完成' &&
+    crmStatProgressText({ stage: 'error' }) === '统计失败', '');
+
+  /* 11.3 端到端：只统计所选战区，其他战区不拉维保 */
+  const { publicKey: pk4 } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
+  const pub4 = pk4.export({ type: 'spki', format: 'der' }).toString('base64');
+  const opps4 = [
+    { id: 301, opportunityName: 'A项目', accountId: { name: '客户甲' }, customItem201__c: '金融一部', customItem202__c: '金融行业部', customItem203__c: '孙晶晶', updatedAt: '2026-11-01' },
+    { id: 302, opportunityName: 'B项目', accountId: { name: '客户乙' }, customItem201__c: '金融二部', customItem202__c: '金融行业部', customItem203__c: '潘明月', updatedAt: '2026-11-01' },
+    { id: 303, opportunityName: 'C项目', accountId: { name: '客户丙' }, customItem201__c: '东部一部', customItem202__c: '东部战区', customItem203__c: '某人', updatedAt: '2026-11-01' }
+  ];
+  const devRow4 = (sn, model, start, end) => ['张三', '2024/10/01', '合同A', sn, '产品' + model, model, start, end, '-1', 'Kylin', 'V1'];
+  const wb4 = (rows) => {
+    const cells = WB_HEADERS.map((h, i) => ({ type: 1, row: 0, col: i, value: h }));
+    rows.forEach((r, idx) => r.forEach((v, i) => cells.push({ type: 0, row: idx + 1, col: i, value: v })));
+    return json({ data: { grid: cells } });
+  };
+  const cells4 = {
+    301: [devRow4('SN-X', 'T6100', '2024/11/10', '2027/01/01'), devRow4('SN-Y', 'T3110', '2024/11/10', '2028/05/05')],
+    302: [devRow4('SN-X', 'T6100', '2024/11/10', '2030/01/01'), devRow4('SN-Z', 'T6100', '2024/11/10', '2026/01/01')],
+    303: [devRow4('SN-W', 'T9999', '2024/11/10', '2031/01/01')]
+  };
+  const called4 = [];
+  const fetch4 = async (url, init) => {
+    const u = String(url);
+    if (u.indexOf('/auc/passport/password-key') >= 0) return json({ scode: '200', result: pub4 });
+    if (u.indexOf('/auc/login') >= 0) return new Response('', { status: 302, headers: { location: XSY_HOSTS.crm + '/cb' } });
+    if (u.indexOf('/cb') >= 0) return new Response('ok', { status: 200, headers: { 'set-cookie': 'JSESSIONID=qqq; Path=/' } });
+    if (u.indexOf('/neoui/table/initData1') >= 0) {
+      return json({ data: { items: [
+        { apiKey: 'opportunityName', label: '项目名称' },
+        { apiKey: 'accountId', label: '客户名称' },
+        { apiKey: 'customItem201__c', label: '所属部门' },
+        { apiKey: 'customItem202__c', label: '战区' },
+        { apiKey: 'customItem203__c', label: '项目所有人' }
+      ] } });
+    }
+    if (u.indexOf('/neoui/table/search') >= 0) {
+      const b = JSON.parse(String((init && init.body) || '{}'));
+      const pn = (b.page && b.page.pageNo) || 1;
+      return json({ data: { records: pn === 1 ? opps4 : [] } });
+    }
+    if (u.indexOf('/neobi/v2.0/query/query') >= 0) {
+      const flt = new URLSearchParams(String(init.body)).get('filter') || '';
+      const rid = Number((/"val":(\d+)/.exec(flt) || [])[1]);
+      called4.push(rid);
+      return wb4(cells4[rid] || []);
+    }
+    return json({}, 404);
+  };
+  const prog4 = [];
+  const r4 = await runRegionStat({
+    loginName: 'a', password: 'b', region: '金融行业部',
+    onProgress: (p) => prog4.push(p)
+  }, { fetchImpl: fetch4, sleep: async () => {} });
+
+  check('区域统计：只统计所选战区的项目（2 / 3）',
+    r4.ok && r4.projects.length === 2 && r4.stats.projects === 2, JSON.stringify(r4.stats));
+  check('区域统计：不拉其他战区项目的维保', called4.indexOf(303) < 0 && called4.length === 2, JSON.stringify(called4));
+  check('区域统计：设备按序列号聚合（4 条 → 3 台）', r4.rows.length === 3, String(r4.rows.length));
+  check('区域统计：明细带部门 / 销售 / 合同信息',
+    r4.rows.some(x => x.dept === '金融一部' && x.sales === '张三' &&
+      x.contractDate === '2024/10/01' && x.contractName === '合同A'),
+    JSON.stringify(r4.rows[0]));
+  check('区域统计：型号汇总 T6100 = 2 台',
+    r4.summary[0].model === 'T6100' && r4.summary[0].count === 2, JSON.stringify(r4.summary));
+  check('区域统计：返回全域战区分布（供下拉框）',
+    r4.regions.length === 2 && r4.regions[0].name === '金融行业部' && r4.regions[0].count === 2,
+    JSON.stringify(r4.regions));
+  check('区域统计：进度含 login→opps→devices→done，total 为项目数',
+    prog4[0].stage === 'login' && prog4.some(p => p.stage === 'opps') &&
+    prog4.some(p => p.stage === 'devices' && p.total === 2) &&
+    prog4[prog4.length - 1].stage === 'done', JSON.stringify(prog4.map(p => p.stage)));
+  const bad4 = await runRegionStat({ loginName: 'a', password: 'b', region: ' ' }, { fetchImpl: fetch4 });
+  check('区域统计：缺区域名直接报错', bad4.ok === false && !!bad4.message, JSON.stringify(bad4));
 }
 
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');

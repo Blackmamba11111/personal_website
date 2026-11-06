@@ -534,6 +534,23 @@
   @keyframes crm-sweep{to{transform:translateX(100%);}}
   .crm-prog-foot{margin-top:7px;font-size:11.5px;color:var(--text-3);display:flex;gap:14px;flex-wrap:wrap;}
   .crm-prog-foot b{font-weight:650;color:var(--text-2);font-variant-numeric:tabular-nums;}
+  /* CRM 区域统计（2026-11-06）：工具栏 + 明细/汇总切换 */
+  .crm-stat-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;}
+  .crm-stat-bar>label{font-size:12px;color:var(--text-2);font-weight:600;}
+  .crm-stat-bar .hint{margin:0;font-size:11.5px;}
+  .crm-stat-tabs{display:flex;align-items:center;gap:2px;border-bottom:1px solid var(--border-2);margin-bottom:0;}
+  .crm-stat-tabs>button{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;
+    font-family:inherit;font-size:12.5px;font-weight:600;color:var(--text-2);cursor:pointer;}
+  .crm-stat-tabs>button.on{color:var(--primary);border-bottom-color:var(--primary);}
+  .crm-stat-tabs>button b{font-weight:650;font-variant-numeric:tabular-nums;color:var(--text-3);margin-left:3px;}
+  .crm-stat-tabs .crm-stat-filter{margin-left:auto;font-size:11.5px;color:var(--text-2);display:inline-flex;align-items:center;gap:6px;}
+  .crm-stat-tabs .crm-stat-filter button{border:0;background:var(--border-2);border-radius:999px;
+    padding:1px 7px;font-size:11px;cursor:pointer;color:var(--text-2);font-family:inherit;}
+  .crm-stat-pager{display:flex;align-items:center;gap:8px;justify-content:flex-end;padding:10px 2px 2px;
+    font-size:12px;color:var(--text-3);}
+  .crm-stat-sum-click{cursor:pointer;}
+  .crm-stat-sum-click:hover td{background:var(--panel-2);}
+  .crm-stat-num{font-variant-numeric:tabular-nums;}
   .ucard{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;}
   .utable{width:100%;border-collapse:collapse;font-size:12.5px;}
   .utable th{text-align:left;padding:11px 14px;background:var(--panel-2);border-bottom:1px solid var(--border);
@@ -1266,8 +1283,43 @@
       <div id="crmRunInfo" class="sub2" style="margin-bottom:8px;">—</div>
       <div id="crmStatusWrap"><div class="empty">加载中…</div></div>
     </div>
+
+    <!-- 区域统计（2026-11-06）：按「战区」汇总 CRM 全域项目，输出设备明细与型号台数 -->
+    <div class="ucard" style="margin-top:12px;" id="crmStatCard">
+      <div class="m-caption">区域统计（按「战区」汇总 CRM 全部项目，含台账外客户；设备按序列号去重）</div>
+      <div class="crm-stat-bar">
+        <label for="crmStatRegion">区域名称</label>
+        <select id="crmStatRegion" style="min-width:150px;width:auto;">
+          <option value="">加载中…</option>
+        </select>
+        <button type="button" class="btn primary" id="btnCrmStatRun">检索</button>
+        <span class="hint" id="crmStatInfo">尚未检索</span>
+        <div class="spacer"></div>
+        <button type="button" class="btn" id="btnCrmStatCsvRows">导出明细 CSV</button>
+        <button type="button" class="btn" id="btnCrmStatCsvSum">导出型号汇总 CSV</button>
+      </div>
+      <div class="crm-prog" id="crmStatProg" style="display:none;padding-left:0;padding-right:0;background:transparent;border-bottom:0;">
+        <div class="crm-prog-top">
+          <span class="crm-prog-stage" id="crmStatProgStage">准备检索…</span>
+          <span class="crm-prog-meta" id="crmStatProgMeta"></span>
+          <span class="crm-prog-pct" id="crmStatProgPct">0%</span>
+        </div>
+        <div class="crm-prog-track" id="crmStatProgTrack"><div class="crm-prog-fill" id="crmStatProgFill"></div></div>
+        <div class="crm-prog-foot" id="crmStatProgFoot"></div>
+      </div>
+      <div class="crm-stat-tabs" id="crmStatTabs">
+        <button type="button" class="on" data-stat-tab="rows">项目明细 <b id="crmStatTabRows">0</b></button>
+        <button type="button" data-stat-tab="sum">型号汇总 <b id="crmStatTabSum">0</b></button>
+        <span class="crm-stat-filter" id="crmStatFilter" style="display:none;"></span>
+      </div>
+      <div id="crmStatRowsWrap"><div class="empty">选择区域后点「检索」。首次需逐个项目拉取维保，约 1–6 分钟。</div></div>
+      <div id="crmStatSumWrap" style="display:none;"></div>
+      <div class="crm-stat-pager" id="crmStatPager"></div>
+    </div>
+
     <p class="hint" style="margin:12px 2px 0;">
-      匹配规则：先按 CRM「客户名称」精确匹配，失败后再按「项目名称」包含式匹配；多条命中时取最新一条并标记。
+      匹配规则：先按 CRM「客户名称」精确匹配，失败后按「项目名称」包含式匹配，最后按名称归一（去「有限公司/股份有限公司」等后缀）兜底；
+      同一客户命中多个项目时，维保明细按序列号聚合展示。
       登录密码只保存在服务端，页面上不回显。检索失败时（如登录失效）状态列表会标红提示重新测试连通性。
     </p>
   </div>
@@ -1367,7 +1419,7 @@
       </div>
       <div class="field">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uCrmVisible"> 可见 CRM 现网信息</label>
-        <div class="hint">开启后该账号在客户详情能看到询盘云匹配到的「客户现网信息 / 产品与技术信息」、列表上的维保到期徽标，并可用「我负责的项目」筛选。关闭时服务端不下发任何 CRM 数据。</div>
+        <div class="hint">开启后该账号在客户详情能看到询盘云匹配到的「客户现网信息 / 产品与技术信息」、列表上的维保到期徽标。关闭时只保留「维护人A = 本人中文名」的项目（我负责的项目），其余 CRM 数据不下发。</div>
       </div>
       <div class="field" id="uPwdField">
         <label for="uPwd">初始密码 <span class="req">*</span></label>
@@ -1474,10 +1526,10 @@
       <div class="field">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bCrmOn"> 应用 CRM 现网信息可见性</label>
         <select id="bCrmVisible">
-          <option value="1">可见 — 显示询盘云现网信息、维保到期徽标与「我负责的项目」</option>
-          <option value="0">不可见 — 隐藏全部 CRM 相关展示</option>
+          <option value="1">可见 — 显示询盘云现网信息、维保到期徽标</option>
+          <option value="0">仅我负责 — 只显示维护人A 为本人的项目</option>
         </select>
-        <div class="hint">关闭时服务端不下发该账号任何 CRM 数据；与单个用户弹窗里的「可见 CRM 现网信息」是同一开关。</div>
+        <div class="hint">「我负责的项目」对全员开放，不受此开关影响；关闭后只隐藏其他人负责的项目。与单个用户弹窗里的「可见 CRM 现网信息」是同一开关。</div>
       </div>
     </div>
     <div class="modal-foot">
@@ -5668,24 +5720,28 @@
 
   /* ---------- CRM（询盘云）现网信息 ----------
      CRM_DATA.matches = { 客户名: {status, opp, maintenance, warranty, ...} }；
-     crmVisible=false 时 matches 恒为空，所有 CRM 展示块自动隐藏。 */
-  var CRM_DATA = { crmVisible: false, matches: {}, nameCn: '' };
+     服务端已按权限过滤：crmVisible=1 时是本人台账全部客户，=0 时只含「维护人A = 本人」的项目
+     （我负责的项目对全员开放，2026-11-06 调整）。 */
+  var CRM_DATA = { crmVisible: false, mineOnly: false, matches: {}, nameCn: '' };
   var CRM_DATA_LOADED = false;
   function refreshCrmData() {
     if (!AUTH.user) return;
     api('/crm/data').then(function (r) {
       if (!r.ok || !r.data) return;
-      CRM_DATA = { crmVisible: !!r.data.crmVisible, matches: r.data.matches || {}, nameCn: r.data.nameCn || '' };
+      CRM_DATA = {
+        crmVisible: !!r.data.crmVisible, mineOnly: !!r.data.mineOnly,
+        matches: r.data.matches || {}, nameCn: r.data.nameCn || ''
+      };
       CRM_DATA_LOADED = true;
-      /* 有 CRM 匹配数据时显示「全部项目 / 我负责的项目」切换 */
+      /* 有数据就显示「全部项目 / 我负责的项目」切换（关掉可见性也有自己负责的项目） */
       var mineWrap = document.getElementById('mineChips');
-      if (mineWrap) mineWrap.style.display = (CRM_DATA.crmVisible && Object.keys(CRM_DATA.matches).length) ? 'inline-flex' : 'none';
+      if (mineWrap) mineWrap.style.display = Object.keys(CRM_DATA.matches).length ? 'inline-flex' : 'none';
       renderList();
       if (document.getElementById('crmView').classList.contains('on')) renderCrmStatusIfOpen();
     }).catch(function () {});
   }
   function crmMatchOf(c) {
-    if (!c || !CRM_DATA.crmVisible) return null;
+    if (!c) return null;
     var m = CRM_DATA.matches[c.name];
     return (m && m.status === 'ok') ? m : null;
   }
@@ -6079,6 +6135,7 @@
     });
     document.getElementById('crmView').classList.add('on');
     renderCrmStatusIfOpen();
+    loadCrmStatMeta();
   }
   function crmConfigPayload() {
     var p = {
@@ -6306,6 +6363,328 @@
         }, 5000);
       }
     });
+  }
+
+  /* ---------- 区域统计（按战区汇总 CRM 全域项目，2026-11-06） ---------- */
+  var CRM_STAT = { region: '', data: null, tab: 'rows', page: 1, pageSize: 100, modelFilter: '', timer: null, nextBusy: false, nextAt: 0 };
+
+  function crmStatEl(id) { return document.getElementById(id); }
+  function crmStatRegionKey() { return 'crmStatRegion'; }
+
+  /* 打开页面：拉战区列表（服务端缓存的 CRM 全域分布）+ 已缓存结果 */
+  function loadCrmStatMeta() {
+    api('/crm/stat/meta').then(function (r) {
+      if (!r.ok) return;
+      var d = r.data || {};
+      var regions = d.regions || [];
+      var sel = crmStatEl('crmStatRegion');
+      if (!sel) return;
+      var saved = '';
+      try { saved = localStorage.getItem(crmStatRegionKey()) || ''; } catch (e) {}
+      var names = regions.map(function (x) { return x.name; });
+      /* 首次进入优先选中「金融行业部」（最常用维度），否则取项目数最多的战区 */
+      var pick = '';
+      if (saved && names.indexOf(saved) >= 0) pick = saved;
+      else if (names.indexOf('金融行业部') >= 0) pick = '金融行业部';
+      else pick = names[0] || '';
+      sel.innerHTML = regions.length
+        ? regions.map(function (x) {
+            return '<option value="' + esc(x.name) + '"' + (x.name === pick ? ' selected' : '') + '>' +
+              esc(x.name) + '（' + x.count + ' 个项目）</option>';
+          }).join('')
+        : '<option value="">暂无战区数据（先完成一次检索）</option>';
+      if (pick) {
+        CRM_STAT.region = pick;
+        loadCrmStatData(pick);
+      }
+      /* 服务端正在跑（例如上次没看完）：自动接管进度条 */
+      if (d.running && d.progress) { crmStatPaintProg(d.progress); crmStatPoll(); }
+    });
+  }
+
+  function loadCrmStatData(region) {
+    if (!region) return;
+    api('/crm/stat/data?region=' + encodeURIComponent(region)).then(function (r) {
+      if (!r.ok) { crmStatEl('crmStatInfo').textContent = r.error || '加载失败'; return; }
+      var d = r.data || {};
+      if (!d.found) {
+        CRM_STAT.data = null;
+        CRM_STAT.page = 1;
+        CRM_STAT.modelFilter = '';
+        crmStatEl('crmStatInfo').textContent = region + '：尚无统计结果，点「检索」开始';
+        renderCrmStat();
+        return;
+      }
+      CRM_STAT.data = d;
+      CRM_STAT.page = 1;
+      CRM_STAT.modelFilter = '';
+      var st = d.stats || {};
+      crmStatEl('crmStatInfo').textContent = region + '：' + fmtTs(d.updatedAt) + ' 更新 · ' +
+        (st.projects || 0) + ' 个项目 · ' + (st.devices || 0) + ' 台设备 · ' + (st.models || 0) + ' 个型号' +
+        (d.truncated ? '（商机分页达到上限，结果可能不完整）' : '');
+      renderCrmStat();
+    });
+  }
+
+  function crmStatRowList() {
+    var rows = (CRM_STAT.data && CRM_STAT.data.rows) || [];
+    if (CRM_STAT.modelFilter) {
+      rows = rows.filter(function (r) { return (String(r.model || '').trim() || '（未填型号）') === CRM_STAT.modelFilter; });
+    }
+    return rows;
+  }
+
+  function renderCrmStat() {
+    var d = CRM_STAT.data;
+    var rowsN = d ? (d.rows || []).length : 0;
+    var sumN = d ? (d.summary || []).length : 0;
+    crmStatEl('crmStatTabRows').textContent = rowsN;
+    crmStatEl('crmStatTabSum').textContent = sumN;
+    Array.prototype.forEach.call(document.querySelectorAll('#crmStatTabs button[data-stat-tab]'), function (b) {
+      b.classList.toggle('on', b.getAttribute('data-stat-tab') === CRM_STAT.tab);
+    });
+    var f = crmStatEl('crmStatFilter');
+    if (CRM_STAT.modelFilter) {
+      f.style.display = 'inline-flex';
+      f.innerHTML = '型号：<b>' + esc(CRM_STAT.modelFilter) + '</b><button type="button" id="crmStatFilterClear" title="清除筛选">×</button>';
+      var cb = crmStatEl('crmStatFilterClear');
+      if (cb) cb.addEventListener('click', function () {
+        CRM_STAT.modelFilter = ''; CRM_STAT.page = 1; renderCrmStat();
+      });
+    } else {
+      f.style.display = 'none'; f.innerHTML = '';
+    }
+    if (!d) {
+      crmStatEl('crmStatRowsWrap').style.display = '';
+      crmStatEl('crmStatSumWrap').style.display = 'none';
+      crmStatEl('crmStatRowsWrap').innerHTML =
+        '<div class="empty">选择区域后点「检索」。首次需逐个项目拉取维保，约 1–6 分钟。</div>';
+      crmStatEl('crmStatSumWrap').innerHTML = '';
+      crmStatEl('crmStatPager').innerHTML = '';
+      return;
+    }
+    if (CRM_STAT.tab === 'rows') {
+      crmStatEl('crmStatRowsWrap').style.display = '';
+      crmStatEl('crmStatSumWrap').style.display = 'none';
+      renderCrmStatRows();
+    } else {
+      crmStatEl('crmStatRowsWrap').style.display = 'none';
+      crmStatEl('crmStatSumWrap').style.display = '';
+      renderCrmStatSummary();
+    }
+  }
+
+  function renderCrmStatRows() {
+    var rows = crmStatRowList();
+    var wrap = crmStatEl('crmStatRowsWrap');
+    var pager = crmStatEl('crmStatPager');
+    if (!rows.length) {
+      wrap.innerHTML = '<div class="empty">' +
+        (CRM_STAT.modelFilter ? ('型号「' + esc(CRM_STAT.modelFilter) + '」下没有设备') : '该区域下没有维保设备记录') +
+        '</div>';
+      pager.innerHTML = '';
+      return;
+    }
+    var pages = Math.max(1, Math.ceil(rows.length / CRM_STAT.pageSize));
+    if (CRM_STAT.page > pages) CRM_STAT.page = pages;
+    var start = (CRM_STAT.page - 1) * CRM_STAT.pageSize;
+    var pageRows = rows.slice(start, start + CRM_STAT.pageSize);
+    var body = pageRows.map(function (r) {
+      var pj = (r.projects || []).filter(Boolean);
+      var pjTxt = pj.length > 1 ? (r.projectName + ' 等 ' + pj.length + ' 个项目') : r.projectName;
+      return '<tr>' +
+        '<td title="' + esc(pj.join('\n')) + '">' + esc(pjTxt || '—') + '</td>' +
+        '<td>' + esc(r.customer || '—') + '</td>' +
+        '<td class="sub2">' + esc(r.dept || '—') + '</td>' +
+        '<td class="sub2">' + esc(r.sales || '—') + '</td>' +
+        '<td class="sub2" style="white-space:nowrap;">' + esc(r.contractDate || '—') + '</td>' +
+        '<td class="sub2">' + esc(r.contractName || '—') + '</td>' +
+        '<td class="sub2 crm-stat-num">' + esc(r.serialNo || '—') + '</td>' +
+        '<td class="sub2">' + esc(r.product || '—') + '</td>' +
+        '<td>' + esc(r.model || '—') + '</td>' +
+        '<td class="sub2" style="white-space:nowrap;">' + esc(r.start || '—') + '</td>' +
+        '<td class="sub2" style="white-space:nowrap;">' + esc(r.end || '—') + '</td>' +
+        '</tr>';
+    }).join('');
+    wrap.innerHTML = '<div style="overflow:auto;"><table class="utable"><thead><tr>' +
+      '<th>项目名称</th><th>客户名称</th><th>部门名称</th><th>所属销售</th><th>合同日期</th><th>合同名称</th>' +
+      '<th>序列号</th><th>产品名称</th><th>产品型号</th><th>维保开始</th><th>维保结束</th>' +
+      '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    pager.innerHTML = pages > 1
+      ? ('共 ' + rows.length + ' 台 · 第 ' + CRM_STAT.page + ' / ' + pages + ' 页 ' +
+         '<button type="button" class="btn sm" id="crmStatPrev"' + (CRM_STAT.page <= 1 ? ' disabled' : '') + '>上一页</button>' +
+         '<button type="button" class="btn sm" id="crmStatNext"' + (CRM_STAT.page >= pages ? ' disabled' : '') + '>下一页</button>')
+      : ('共 ' + rows.length + ' 台');
+    var pv = crmStatEl('crmStatPrev'), nx = crmStatEl('crmStatNext');
+    if (pv) pv.addEventListener('click', function () { CRM_STAT.page--; renderCrmStatRows(); });
+    if (nx) nx.addEventListener('click', function () { CRM_STAT.page++; renderCrmStatRows(); });
+  }
+
+  function renderCrmStatSummary() {
+    var sum = (CRM_STAT.data && CRM_STAT.data.summary) || [];
+    var wrap = crmStatEl('crmStatSumWrap');
+    crmStatEl('crmStatPager').innerHTML = '';
+    if (!sum.length) { wrap.innerHTML = '<div class="empty">该区域下没有维保设备记录</div>'; return; }
+    var total = sum.reduce(function (a, x) { return a + (Number(x.count) || 0); }, 0);
+    var body = sum.map(function (s) {
+      var pjs = s.projects || [], cus = s.customers || [];
+      return '<tr class="crm-stat-sum-click" data-model="' + esc(s.model) + '">' +
+        '<td style="font-weight:600;">' + esc(s.model) + '</td>' +
+        '<td class="crm-stat-num"><b>' + (s.count || 0) + '</b></td>' +
+        '<td class="crm-stat-num sub2">' + pjs.length + '</td>' +
+        '<td class="crm-stat-num sub2">' + cus.length + '</td>' +
+        '<td class="sub2" title="' + esc(pjs.join('\n')) + '">' +
+          esc(pjs.slice(0, 3).join(' / ') + (pjs.length > 3 ? ' 等 ' + pjs.length + ' 个' : '')) + '</td>' +
+        '<td style="text-align:right;"><button type="button" class="btn sm">查看明细</button></td></tr>';
+    }).join('');
+    wrap.innerHTML = '<table class="utable"><thead><tr>' +
+      '<th>产品型号</th><th>台数</th><th>涉及项目</th><th>涉及客户</th><th>项目清单</th><th></th>' +
+      '</tr></thead><tbody>' + body +
+      '<tr><td style="font-weight:650;">合计</td><td class="crm-stat-num"><b>' + total + '</b></td>' +
+      '<td colspan="4"></td></tr></tbody></table>';
+    Array.prototype.forEach.call(wrap.querySelectorAll('tr[data-model]'), function (tr) {
+      tr.addEventListener('click', function () {
+        CRM_STAT.modelFilter = tr.getAttribute('data-model');
+        CRM_STAT.tab = 'rows';
+        CRM_STAT.page = 1;
+        renderCrmStat();
+      });
+    });
+  }
+
+  function crmStatPaintProg(p) {
+    var wrap = crmStatEl('crmStatProg');
+    if (!wrap || !p) return;
+    wrap.style.display = 'block';
+    var total = Number(p.total) || 0;
+    var done = Number(p.done) || 0;
+    var running = !!p.running;
+    var known = total > 0 && p.stage !== 'login' && p.stage !== 'opps';
+    var pct = running
+      ? (known ? Math.min(100, Math.round(done / total * 100)) : 0)
+      : (p.ok ? 100 : (known ? Math.min(100, Math.round(done / total * 100)) : 0));
+    crmStatEl('crmStatProgStage').textContent = p.message || '处理中…';
+    crmStatEl('crmStatProgMeta').textContent =
+      (known && total) ? ('已完成 ' + Math.min(done, total) + ' / ' + total + ' 个项目') : '';
+    var pctEl = crmStatEl('crmStatProgPct');
+    pctEl.textContent = pct + '%';
+    pctEl.style.color = running ? 'var(--primary)' : (p.ok ? 'var(--ok)' : 'var(--miss)');
+    var track = crmStatEl('crmStatProgTrack');
+    if (running && !known) track.classList.add('waiting'); else track.classList.remove('waiting');
+    var fill = crmStatEl('crmStatProgFill');
+    fill.style.width = pct + '%';
+    fill.className = 'crm-prog-fill' + (running ? '' : (p.ok ? ' done' : ' fail'));
+    var parts = [];
+    var t0 = Date.parse(p.startedAt || '');
+    if (t0) {
+      var t1 = p.finishedAt ? (Date.parse(p.finishedAt) || Date.now()) : Date.now();
+      parts.push((running ? '已用' : '耗时') + ' <b>' + crmFmtDur(t1 - t0) + '</b>');
+    }
+    if (!running && p.stage === 'error' && p.error) {
+      parts.push('<span style="color:var(--miss);">' + esc(p.error) + '</span>');
+    }
+    crmStatEl('crmStatProgFoot').innerHTML = parts.join(' · ');
+  }
+
+  function crmStatPoll() {
+    if (CRM_STAT.timer) { clearTimeout(CRM_STAT.timer); CRM_STAT.timer = null; }
+    CRM_STAT.timer = setTimeout(function () {
+      api('/crm/stat/status').then(function (r) {
+        var p = (r.ok && r.data) ? r.data.progress : null;
+        if (!p) { CRM_STAT.timer = null; return; }
+        /* 区域选择被用户改过时，进度仍按服务端当前跑的区域显示 */
+        crmStatPaintProg(p);
+        if (p.running) {
+          /* 公网版单次只能跑一批：服务端标 needNext 时自动续跑下一批（8 秒节流防重） */
+          if (p.needNext && !CRM_STAT.nextBusy && Date.now() - CRM_STAT.nextAt > 8000) {
+            CRM_STAT.nextBusy = true;
+            CRM_STAT.nextAt = Date.now();
+            api('/crm/stat/run', { method: 'POST', body: { region: p.region, reset: false } }).then(function () {
+              CRM_STAT.nextBusy = false;
+            }, function () { CRM_STAT.nextBusy = false; });
+          }
+          crmStatPoll();
+          return;
+        }
+        CRM_STAT.timer = null;
+        crmStatEl('btnCrmStatRun').disabled = false;
+        if (p.ok) {
+          if (p.region && p.region !== CRM_STAT.region) {
+            CRM_STAT.region = p.region;
+            var sel = crmStatEl('crmStatRegion');
+            if (sel) sel.value = p.region;
+          }
+          if (p.region) loadCrmStatData(p.region);
+          toast(p.message || '统计完成');
+        } else {
+          toast('统计失败：' + (p.error || '未知错误'));
+        }
+      });
+    }, 1500);
+  }
+
+  function runCrmStat() {
+    var sel = crmStatEl('crmStatRegion');
+    var region = sel ? sel.value : '';
+    if (!region) { toast('请选择区域名称'); return; }
+    var btn = crmStatEl('btnCrmStatRun');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try { localStorage.setItem(crmStatRegionKey(), region); } catch (e) {}
+    CRM_STAT.region = region;
+    CRM_STAT.modelFilter = '';
+    crmStatPaintProg({
+      running: true, stage: 'login', region: region, message: '正在提交统计请求…',
+      done: 0, total: 0, startedAt: new Date().toISOString()
+    });
+    crmStatPoll();
+    api('/crm/stat/run', { method: 'POST', body: { region: region, reset: true } }).then(function (r) {
+      if (!r.ok) {
+        btn.disabled = false;
+        crmStatPaintProg({
+          running: false, ok: false, stage: 'error', message: '触发失败：' + (r.error || '未知错误'),
+          error: r.error || '未知错误', finishedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString()
+        });
+        toast(r.error || '触发失败');
+        return;
+      }
+      var d = r.data || {};
+      if (d.progress) crmStatPaintProg(d.progress);
+      if (d.started === false) toast(d.message || '未开始');
+    });
+  }
+
+  function exportCrmStatRows() {
+    var rows = crmStatRowList();
+    if (!rows.length) { toast('没有可导出的明细'); return; }
+    var head = ['项目名称', '客户名称', '部门名称', '所属销售', '合同日期', '合同名称',
+      '序列号', '产品名称', '产品型号', '维保开始', '维保结束'];
+    var lines = [head.join(',')];
+    rows.forEach(function (r) {
+      lines.push([r.projectName, r.customer, r.dept, r.sales, r.contractDate, r.contractName,
+        r.serialNo, r.product, r.model, r.start, r.end].map(csvCell).join(','));
+    });
+    download('CRM区域统计_' + (CRM_STAT.region || '全部') +
+      (CRM_STAT.modelFilter ? '_' + CRM_STAT.modelFilter : '') + '_明细.csv',
+      lines.join('\r\n'), 'text/csv');
+  }
+
+  function exportCrmStatSum() {
+    var sum = (CRM_STAT.data && CRM_STAT.data.summary) || [];
+    if (!sum.length) { toast('没有可导出的汇总'); return; }
+    var head = ['产品型号', '台数', '涉及项目数', '涉及客户数', '涉及项目', '涉及客户'];
+    var lines = [head.join(',')];
+    var total = 0;
+    sum.forEach(function (s) {
+      var pjs = s.projects || [], cus = s.customers || [];
+      total += Number(s.count) || 0;
+      lines.push([s.model, s.count, pjs.length, cus.length,
+        pjs.join(' / '), cus.join(' / ')].map(csvCell).join(','));
+    });
+    lines.push(['合计', total, '', '', '', ''].map(csvCell).join(','));
+    download('CRM区域统计_' + (CRM_STAT.region || '全部') + '_型号汇总.csv',
+      lines.join('\r\n'), 'text/csv');
   }
 
   /* ---------- 认证服务器管理（RADIUS / TACACS+ / LDAP） ---------- */
@@ -7484,7 +7863,28 @@
     document.getElementById('btnCrmSave').addEventListener('click', saveCrmConfig);
     document.getElementById('btnCrmTest').addEventListener('click', testCrmConnect);
     document.getElementById('btnCrmSyncNow').addEventListener('click', syncCrmNow);
-    document.getElementById('btnCrmRefresh').addEventListener('click', renderCrmStatusIfOpen);
+    document.getElementById('btnCrmRefresh').addEventListener('click', function () {
+      renderCrmStatusIfOpen();
+      loadCrmStatMeta();
+    });
+    /* 区域统计 */
+    document.getElementById('btnCrmStatRun').addEventListener('click', runCrmStat);
+    document.getElementById('btnCrmStatCsvRows').addEventListener('click', exportCrmStatRows);
+    document.getElementById('btnCrmStatCsvSum').addEventListener('click', exportCrmStatSum);
+    document.getElementById('crmStatRegion').addEventListener('change', function () {
+      CRM_STAT.region = this.value;
+      try { localStorage.setItem(crmStatRegionKey(), this.value); } catch (e) {}
+      CRM_STAT.modelFilter = '';
+      CRM_STAT.page = 1;
+      loadCrmStatData(this.value);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#crmStatTabs button[data-stat-tab]'), function (b) {
+      b.addEventListener('click', function () {
+        CRM_STAT.tab = b.getAttribute('data-stat-tab');
+        CRM_STAT.page = 1;
+        renderCrmStat();
+      });
+    });
     document.getElementById('umPwd').addEventListener('click', function () {
       document.getElementById('userMenu').classList.remove('on');
       /* 远程账号的口令在认证服务器上，本页改不了 */

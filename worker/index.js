@@ -142,6 +142,15 @@ async function ensureSchema(env) {
       "record_id TEXT NOT NULL DEFAULT '', level INTEGER NOT NULL DEFAULT 0, multi INTEGER NOT NULL DEFAULT 0, " +
       "data TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL)"
     ).run();
+    /* 区域统计（2026-11-06）：结果按战区缓存；state 用于公网分批续跑（子请求上限） */
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS crm_stat (region TEXT PRIMARY KEY, updated_at TEXT NOT NULL, ' +
+      "data TEXT NOT NULL DEFAULT '{}')"
+    ).run();
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS crm_stat_state (region TEXT PRIMARY KEY, updated_at TEXT NOT NULL, ' +
+      "data TEXT NOT NULL DEFAULT '{}')"
+    ).run();
     await env.DB.prepare(
       'CREATE TABLE IF NOT EXISTS auth_servers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, ' +
       'host TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, ' +
@@ -514,6 +523,198 @@ async function doCrmSync(env, reason) {
     : { ok: false, at: new Date().toISOString(), reason: reason, code: outcome && outcome.code, message: outcome && outcome.message };
   await saveCrmConfig(env, cfg);
   return cfg.lastResult;
+}
+
+/* ---------------- 区域统计（按战区，公网分批版，2026-11-06） ----------------
+ * Workers 免费版单次约 50 个子请求，金融行业部 560 个项目不可能一轮跑完：
+ *  - 首批：登录 + 字段标签 + 全量商机（约 23 个请求）→ 过滤战区 → 写 crm_stat_state
+ *  - 后续每批：重新登录 + 取 STAT_BATCH 个项目的维保，写回 state
+ *  - 前端轮询到 needNext=true 时再次 POST /api/crm/stat/run 续跑（不带 reset）
+ * state = { st: { opps, idx, devices, regions, startedAt }, prog: {…} }
+ */
+const STAT_BATCH = 16;
+let crmStatMem = null;
+
+function statProgNew(region) {
+  const t = new Date().toISOString();
+  return {
+    running: true, region: region, stage: 'login', message: '正在登录询盘云（销售易）…',
+    done: 0, total: 0, current: '', needNext: false,
+    startedAt: t, updatedAt: t, finishedAt: '', ok: null, error: ''
+  };
+}
+async function readStatState(env, region) {
+  try {
+    const row = await env.DB.prepare('SELECT data FROM crm_stat_state WHERE region = ?').bind(region).first();
+    if (!row) return null;
+    return JSON.parse(row.data || '{}') || null;
+  } catch (e) { return null; }
+}
+async function saveStatState(env, region, st, prog) {
+  try {
+    await env.DB.prepare('INSERT INTO crm_stat_state (region, updated_at, data) VALUES (?, ?, ?) ' +
+      'ON CONFLICT(region) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data')
+      .bind(region, new Date().toISOString(), JSON.stringify({ st: st, prog: prog })).run();
+  } catch (e) { console.error('[crm:stat] state 保存失败：' + (e && e.message)); }
+}
+async function clearStatState(env, region) {
+  try { await env.DB.prepare('DELETE FROM crm_stat_state WHERE region = ?').bind(region).run(); } catch (e) {}
+}
+async function readStatProgress(env) {
+  if (crmStatMem) return crmStatMem;
+  try {
+    const row = await env.DB.prepare("SELECT v FROM crm_config WHERE k = 'stat_progress'").first();
+    return row ? (JSON.parse(row.v) || null) : null;
+  } catch (e) { return null; }
+}
+async function setStatProgress(env, prog) {
+  crmStatMem = prog;
+  try {
+    await env.DB.prepare("INSERT INTO crm_config (k, v) VALUES ('stat_progress', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+      .bind(JSON.stringify(prog)).run();
+  } catch (e) {}
+}
+async function readStatRegions(env) {
+  try {
+    const row = await env.DB.prepare("SELECT v FROM crm_config WHERE k = 'stat_regions'").first();
+    const arr = row ? JSON.parse(row.v) : null;
+    if (Array.isArray(arr) && arr.length) return arr;
+  } catch (e) {}
+  return [];
+}
+
+/* 跑一批（约 STAT_BATCH 个项目）；reset=true 表示从拉商机重新开始 */
+async function doRegionStatBatch(env, region, reset) {
+  const cfg = await readCrmConfig(env);
+  if (!(cfg.loginName && cfg.password)) return { ok: false, message: '未配置 CRM 账号' };
+  const P = CRM_P;
+  const nowIso2 = function () { return new Date().toISOString(); };
+
+  let saved = reset ? null : await readStatState(env, region);
+  let st = saved && saved.st ? saved.st : null;
+  let prog = (saved && saved.prog) || statProgNew(region);
+  prog.region = region;
+  prog.running = true; prog.ok = null; prog.needNext = false;
+  prog.updatedAt = nowIso2();
+  if (!prog.startedAt) prog.startedAt = prog.updatedAt;
+
+  const fail = async function (msg) {
+    prog.running = false; prog.ok = false; prog.stage = 'error';
+    prog.error = String(msg || '未知错误'); prog.message = '统计失败：' + prog.error;
+    prog.finishedAt = nowIso2(); prog.updatedAt = prog.finishedAt; prog.needNext = false;
+    await setStatProgress(env, prog);
+    await clearStatState(env, region);
+    return { ok: false, message: prog.error, progress: prog };
+  };
+
+  const lr = await P.xsyLogin({ loginName: cfg.loginName, password: cfg.password }, { fetchImpl: fetch });
+  if (!lr.ok) return await fail(lr.message || ('登录失败 ' + (lr.code || '')));
+  const session = lr.session;
+
+  if (!st) {
+    prog.stage = 'opps'; prog.message = '正在拉取 CRM 商机列表（全域）…'; prog.updatedAt = nowIso2();
+    await setStatProgress(env, prog);
+    const labR = await P.fetchFieldLabels(session, { fetchImpl: fetch });
+    if (!labR.ok) return await fail(labR.message || '字段标签拉取失败');
+    const fr = await P.fetchAllOpportunities(session, { fetchImpl: fetch, labels: labR.labels });
+    if (!fr.ok) return await fail(fr.message || '商机拉取失败');
+    const recs = fr.records || [];
+    const regMap = {};
+    recs.forEach(function (r) {
+      const k = String((r.f && r.f['战区']) || '').trim() || '（未填战区）';
+      regMap[k] = (regMap[k] || 0) + 1;
+    });
+    const regions = Object.keys(regMap).sort(function (a, b) { return regMap[b] - regMap[a]; })
+      .map(function (k) { return { name: k, count: regMap[k] }; });
+    if (regions.length) {
+      try {
+        await env.DB.prepare("INSERT INTO crm_config (k, v) VALUES ('stat_regions', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+          .bind(JSON.stringify(regions)).run();
+      } catch (e) {}
+    }
+    const hits = recs.filter(function (r) {
+      return String((r.f && r.f['战区']) || '').trim() === region;
+    });
+    st = {
+      opps: hits.map(function (r) {
+        return {
+          id: r.id,
+          name: String((r.f && r.f['项目名称']) || ''),
+          customer: String((r.f && r.f['客户名称']) || ''),
+          dept: String((r.f && r.f['所属部门']) || ''),
+          owner: String((r.f && r.f['项目所有人']) || '')
+        };
+      }),
+      idx: 0, devices: {}, regions: regions, startedAt: prog.startedAt
+    };
+    prog.total = st.opps.length;
+    prog.done = 0;
+  }
+
+  /* 本批：逐个项目拉维保（不跨批复用会话，避免中途失效） */
+  const total = st.opps.length;
+  let n = 0;
+  while (st.idx < total && n < STAT_BATCH) {
+    const o = st.opps[st.idx];
+    prog.stage = 'devices';
+    prog.done = st.idx;
+    prog.total = total;
+    prog.current = o.name;
+    prog.message = '正在拉取项目维保（' + st.idx + '/' + total + '）：' + o.name;
+    prog.updatedAt = nowIso2();
+    try {
+      const wb = await P.fetchMaintenance(session, o.id, { fetchImpl: fetch });
+      st.devices[o.id] = wb.ok ? (wb.devices || []) : [];
+    } catch (e) {
+      st.devices[o.id] = [];
+    }
+    st.idx++;
+    n++;
+    if (st.idx < total && n < STAT_BATCH) {
+      await new Promise(function (r) { setTimeout(r, 250); });
+    }
+  }
+
+  if (st.idx >= total) {
+    const projects = st.opps.map(function (o) {
+      return {
+        id: o.id, name: o.name, customer: o.customer, dept: o.dept, owner: o.owner,
+        devices: st.devices[o.id] || [], error: null
+      };
+    });
+    const built = P.buildRegionStat(projects);
+    try {
+      await env.DB.prepare('INSERT INTO crm_stat (region, updated_at, data) VALUES (?, ?, ?) ' +
+        'ON CONFLICT(region) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data')
+        .bind(region, nowIso2(), JSON.stringify({
+          stats: built.stats, rows: built.rows, summary: built.summary,
+          projects: projects.map(function (p) {
+            return {
+              id: p.id, name: p.name, customer: p.customer, dept: p.dept, owner: p.owner,
+              deviceCount: (p.devices || []).length, error: null
+            };
+          }),
+          truncated: false
+        })).run();
+    } catch (e) {
+      return await fail('统计结果写入失败（' + (e && e.message) + '）');
+    }
+    prog.running = false; prog.ok = true; prog.stage = 'done';
+    prog.done = total; prog.total = total; prog.finishedAt = nowIso2(); prog.updatedAt = prog.finishedAt;
+    prog.needNext = false;
+    prog.message = '统计完成：' + built.stats.projects + ' 个项目，' + built.stats.devices +
+      ' 台设备，' + built.stats.models + ' 个型号';
+    await setStatProgress(env, prog);
+    await clearStatState(env, region);
+    return { ok: true, stats: built.stats, progress: prog };
+  }
+
+  prog.needNext = true;
+  prog.message = '正在拉取项目维保（' + st.idx + '/' + total + '），继续下一批…';
+  prog.updatedAt = nowIso2();
+  await setStatProgress(env, prog);
+  await saveStatState(env, region, st, prog);
+  return { ok: true, partial: true, progress: prog };
 }
 
 /* ---------- 变更日志：新旧台账 diff 出字段级明细 ---------- */
@@ -1157,21 +1358,80 @@ async function route(request, env) {
       })
     });
   }
+  /* --- 区域统计（按战区；公网分批续跑） --- */
+  if (p === '/api/crm/stat/meta' && method === 'GET') {
+    if (!isAdmin) return bad('仅超级管理员可查看区域统计', 403);
+    const regions = await readStatRegions(env);
+    let cached = [];
+    try {
+      const r = await env.DB.prepare('SELECT region, updated_at, data FROM crm_stat').all();
+      cached = (r.results || []).map(function (row) {
+        let d = {};
+        try { d = JSON.parse(row.data || '{}') || {}; } catch (e) {}
+        return { region: row.region, updatedAt: row.updated_at, stats: d.stats || null };
+      });
+    } catch (e) {}
+    const prog = crmStatMem || await readStatProgress(env);
+    return ok({
+      regions: regions, cached: cached,
+      running: !!(prog && prog.running), region: (prog && prog.region) || '', progress: prog
+    });
+  }
+  if (p === '/api/crm/stat/data' && method === 'GET') {
+    if (!isAdmin) return bad('仅超级管理员可查看区域统计', 403);
+    const region = String(url.searchParams.get('region') || '').trim();
+    if (!region) return bad('缺少区域名称');
+    let row = null;
+    try {
+      row = await env.DB.prepare('SELECT * FROM crm_stat WHERE region = ?').bind(region).first();
+    } catch (e) {}
+    if (!row) return ok({ found: false, region: region });
+    let d = {};
+    try { d = JSON.parse(row.data || '{}') || {}; } catch (e) {}
+    return ok({
+      found: true, region: region, updatedAt: row.updated_at,
+      stats: d.stats || null, rows: d.rows || [], summary: d.summary || [],
+      projects: d.projects || [], truncated: !!d.truncated
+    });
+  }
+  if (p === '/api/crm/stat/run' && method === 'POST') {
+    if (!isAdmin) return bad('仅超级管理员可触发区域统计', 403);
+    if (!(await crmConfigured(env))) return bad('请先保存 CRM 账号配置');
+    const region = String(body.region || '').trim();
+    if (!region) return bad('请选择区域名称');
+    /* 同步跑一批（约 10-15 秒）：前端轮询到 needNext 后再发下一批 */
+    const r = await doRegionStatBatch(env, region, !!body.reset);
+    if (r.ok === false) return ok({ started: false, message: r.message, progress: r.progress });
+    return ok({ started: true, partial: !!r.partial, progress: r.progress });
+  }
+  if (p === '/api/crm/stat/status' && method === 'GET') {
+    if (!isAdmin) return bad('仅超级管理员可查看区域统计', 403);
+    const prog = crmStatMem || await readStatProgress(env);
+    return ok({ running: !!(prog && prog.running), region: (prog && prog.region) || '', progress: prog });
+  }
+
   if (p === '/api/crm/data' && method === 'GET') {
-    /* me 已由 mapUser 转成驼峰字段：这里必须读 crmVisible / nameCn */
-    if (!me.crmVisible && me.role !== 'admin') return ok({ crmVisible: false, matches: {}, nameCn: me.nameCn || '' });
+    /* me 已由 mapUser 转成驼峰字段：这里必须读 crmVisible / nameCn。
+       crm_visible 只管「非我负责的现网信息」；「我负责的项目」（维护人A = 本人中文名）
+       对全员开放，关闭开关也要回（2026-11-06 调整） */
+    const mineOnly = !me.crmVisible && me.role !== 'admin';
     let allow = null;
     if (me.role !== 'admin') {
       allow = {};
       const d = await readLedger(env, await dataOwner(env, me.username));
       (d && Array.isArray(d.customers) ? d.customers : []).forEach(function (c) { if (c && c.name) allow[c.name] = true; });
     }
+    const myName = String(me.nameCn || '').trim();
     const matches = {};
     const r = await env.DB.prepare('SELECT * FROM crm_matches').all();
     (r.results || []).forEach(function (row) {
       if (allow && !allow[row.customer_name]) return;
       let data = {};
       try { data = JSON.parse(row.data || '{}') || {}; } catch (e) {}
+      if (mineOnly) {
+        const owner = String((data.opp && data.opp['维护人A']) || '').trim();
+        if (!myName || row.status !== 'ok' || owner !== myName) return;
+      }
       matches[row.customer_name] = {
         status: row.status, recordId: row.record_id, level: row.level, multi: !!row.multi,
         opp: data.opp || null, maintenance: data.maintenance || [],
@@ -1179,7 +1439,7 @@ async function route(request, env) {
         warranty: data.warranty || null, updatedAt: row.updated_at
       };
     });
-    return ok({ crmVisible: true, matches: matches, nameCn: me.nameCn || '' });
+    return ok({ crmVisible: !mineOnly, mineOnly: mineOnly, matches: matches, nameCn: myName });
   }
 
   /* --- 用户管理（仅超管） --- */

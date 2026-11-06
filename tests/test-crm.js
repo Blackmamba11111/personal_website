@@ -195,20 +195,34 @@ function makeBoard(opts) {
   await A.tick(2);
   check('A20 切回「全部项目」恢复 4 家', A.cards().length === 4, String(A.cards().length));
 
-  /* ==================== B. 不可见 CRM 的普通用户（默认） ==================== */
+  /* ==================== B. 关闭「可见 CRM 现网信息」的普通用户 ==================== */
+  /* 口径（2026-11-06）：关闭只影响「别人负责的项目」；「维护人A = 本人」的项目对全员开放 */
   const B = makeBoard({ demoCrmVisible: false, crmMatches: MATCHES });
   await B.waitReady();
   await B.tick(6);
-  check('B1 关闭可见后无任何维保徽标', !B.d.querySelector('.badge[class*="wb-"]'),
-    B.d.querySelector('.badge[class*="wb-"]') ? '仍有徽标' : '');
-  check('B2 关闭可见后隐藏项目切换条', B.id('mineChips').style.display === 'none',
-    B.id('mineChips').style.display);
+  const wbBadge = cid => {
+    const c = B.card(cid);
+    return c ? !!c.querySelector('.badge[class*="wb-"]') : false;
+  };
+  check('B1 关闭可见后：别人负责的客户无维保徽标', wbBadge('c1') === false, String(wbBadge('c1')));
+  check('B2 关闭可见后：自己负责的项目仍有维保徽标', wbBadge('c2') === true, String(wbBadge('c2')));
+  check('B3 关闭可见后仍显示「我负责的项目」切换条',
+    B.id('mineChips').style.display !== 'none', B.id('mineChips').style.display);
   B.click(B.card('c1'));
   await B.tick(2);
-  check('B3 关闭可见后详情不显示现网信息', B.id('dCrmInfo').style.display === 'none',
+  check('B4 别人负责的客户：详情不显示现网信息', B.id('dCrmInfo').style.display === 'none',
     B.id('dCrmInfo').style.display);
-  check('B4 关闭可见后详情不显示技术信息', B.id('dCrmTech').style.display === 'none');
-  check('B5 登录后确实请求了 CRM 快照（服务端回空表）',
+  check('B5 别人负责的客户：详情不显示技术信息', B.id('dCrmTech').style.display === 'none');
+  B.click(B.card('c2'));
+  await B.tick(2);
+  check('B6 自己负责的项目：详情可见现网信息', B.id('dCrmInfo').style.display === 'block',
+    B.id('dCrmInfo').style.display);
+  check('B7 自己负责的项目：详情可见技术信息', B.id('dCrmTech').style.display === 'block');
+  B.click(B.id('mineChips').querySelector('[data-mine="mine"]'));
+  await B.tick(4);
+  check('B8 「我负责的项目」只列本人负责的客户（2 家）', B.cards().length === 2,
+    String(B.cards().length) + '：' + B.cards().map(c => c.getAttribute('data-id')).join(','));
+  check('B9 登录后确实请求了 CRM 快照',
     B.w.__SRV__.calls.some(c => c.path === '/crm/data'),
     JSON.stringify(B.w.__SRV__.calls.filter(c => c.path.indexOf('crm') >= 0)));
 
@@ -270,6 +284,106 @@ function makeBoard(opts) {
   check('C14 进行中不使用完成态配色',
     C.id('crmProgFill').className.indexOf('done') < 0 && C.id('crmProgFill').className.indexOf('fail') < 0,
     C.id('crmProgFill').className);
+
+  /* ==================== C15-C26 区域统计（按战区汇总 CRM 全域项目） ==================== */
+  const STAT_ROWS = [
+    { projectName: '技术专用-A项目', customer: '客户甲', dept: '金融一部', sales: '张三', contractDate: '2024/10/01', contractName: '合同A', serialNo: 'SN-X', product: 'T6100', model: 'T6100', start: '2024/11/10', end: '2030/01/01', projects: ['技术专用-A项目'], customers: ['客户甲'] },
+    { projectName: '技术专用-A项目', customer: '客户甲', dept: '金融一部', sales: '张三', contractDate: '2024/10/01', contractName: '合同A', serialNo: 'SN-Y', product: 'T3110', model: 'T3110', start: '2024/11/10', end: '2028/05/05', projects: ['技术专用-A项目'], customers: ['客户甲'] },
+    { projectName: '技术专用-B项目', customer: '客户乙', dept: '金融二部', sales: '李四', contractDate: '2025/03/01', contractName: '合同B', serialNo: 'SN-Z', product: 'T6100', model: 'T6100', start: '2025/01/01', end: '2029/01/01', projects: ['技术专用-B项目'], customers: ['客户乙'] }
+  ];
+  const STAT_SUM = [
+    { model: 'T6100', count: 2, projects: ['技术专用-A项目', '技术专用-B项目'], customers: ['客户甲', '客户乙'] },
+    { model: 'T3110', count: 1, projects: ['技术专用-A项目'], customers: ['客户甲'] }
+  ];
+  const statData = (rows, sum) => ({
+    updatedAt: '2026-11-06T05:00:00.000Z',
+    stats: { projects: 2, devices: rows.length, models: sum.length },
+    rows: rows, summary: sum, projects: [], truncated: false
+  });
+  C.w.__SRV__.crmStat = {
+    regions: [{ name: '东部战区', count: 6253 }, { name: '金融行业部', count: 560 }],
+    cache: { '金融行业部': statData(STAT_ROWS, STAT_SUM) },
+    progress: null, region: ''
+  };
+  C.click(C.id('btnCrmRefresh'));
+  await C.tick(10);
+  check('C15 区域下拉列出 CRM 全域战区（含项目数）',
+    C.id('crmStatRegion').options.length === 2 && /金融行业部（560 个项目）/.test(C.id('crmStatRegion').options[1].textContent),
+    C.id('crmStatRegion').innerHTML.slice(0, 120));
+  check('C16 默认选中「金融行业部」', C.id('crmStatRegion').value === '金融行业部',
+    C.id('crmStatRegion').value);
+  check('C17 已有缓存时自动加载并显示台账数',
+    /3 台设备/.test(C.id('crmStatInfo').textContent), C.id('crmStatInfo').textContent);
+  const statHeads = [...C.d.querySelectorAll('#crmStatRowsWrap thead th')].map(x => x.textContent);
+  check('C18 明细表 11 列（项目/客户/部门/销售/合同/序列号/产品/型号/维保时间）',
+    statHeads.length === 11 && statHeads.indexOf('部门名称') >= 0 && statHeads.indexOf('所属销售') >= 0 &&
+    statHeads.indexOf('合同日期') >= 0 && statHeads.indexOf('合同名称') >= 0,
+    JSON.stringify(statHeads));
+  check('C19 明细内容包含部门与销售', /金融一部/.test(C.id('crmStatRowsWrap').textContent) &&
+    /张三/.test(C.id('crmStatRowsWrap').textContent));
+
+  /* 导出明细 CSV（jsdom 无 createObjectURL → 走可复制面板兜底） */
+  C.click(C.id('btnCrmStatCsvRows'));
+  await C.tick(2);
+  check('C20 导出明细 CSV：含表头与行',
+    /项目名称,客户名称,部门名称,所属销售,合同日期,合同名称,序列号,产品名称,产品型号,维保开始,维保结束/.test(C.id('exBox').value) &&
+    /SN-X/.test(C.id('exBox').value) && /CRM区域统计_金融行业部_明细\.csv/.test(C.id('exFile').textContent),
+    C.id('exFile').textContent + ' | ' + String(C.id('exBox').value).slice(0, 60));
+
+  /* 型号汇总：台数 + 下钻 */
+  C.click(C.d.querySelector('#crmStatTabs button[data-stat-tab="sum"]'));
+  await C.tick(2);
+  const sumRows = [...C.id('crmStatSumWrap').querySelectorAll('tbody tr')];
+  check('C21 汇总按产品型号计台数（T6100=2 / T3110=1 / 合计 3）',
+    sumRows.length === 3 && /T6100/.test(sumRows[0].textContent) && /2/.test(sumRows[0].children[1].textContent) &&
+    /合计/.test(sumRows[2].textContent) && /3/.test(sumRows[2].children[1].textContent),
+    sumRows.map(r => r.textContent.slice(0, 24)).join(' | '));
+  C.click(C.id('btnCrmStatCsvSum'));
+  await C.tick(2);
+  check('C22 导出型号汇总 CSV：含型号与台数、合计行',
+    /产品型号,台数,涉及项目数,涉及客户数/.test(C.id('exBox').value) &&
+    /T6100,2,2,2/.test(C.id('exBox').value), String(C.id('exBox').value).slice(0, 80));
+
+  C.click(C.id('crmStatSumWrap').querySelector('tr[data-model="T6100"]'));
+  await C.tick(3);
+  check('C23 点型号下钻回明细并显示筛选条件',
+    C.id('crmStatRowsWrap').style.display !== 'none' && /型号：/.test(C.id('crmStatFilter').textContent) &&
+    /共 2 台/.test(C.id('crmStatPager').textContent),
+    C.id('crmStatFilter').textContent + ' | ' + C.id('crmStatPager').textContent);
+  C.click(C.id('crmStatFilterClear'));
+  await C.tick(2);
+  check('C24 清除型号筛选恢复全部明细', /共 3 台/.test(C.id('crmStatPager').textContent),
+    C.id('crmStatPager').textContent);
+
+  /* 手动检索：POST /crm/stat/run + 独立进度条 */
+  C.click(C.id('btnCrmStatRun'));
+  await C.tick(6);
+  const statRunCall = C.w.__SRV__.calls.filter(c => c.path === '/crm/stat/run').pop();
+  check('C25 区域统计检索用 POST 且带区域名',
+    statRunCall && statRunCall.method === 'POST' && statRunCall.body.region === '金融行业部',
+    statRunCall ? JSON.stringify(statRunCall.body) : '(无请求)');
+  check('C26 统计进度条展开并显示项目进度（0/2）',
+    C.id('crmStatProg').style.display === 'block' && /0 \/ 2/.test(C.id('crmStatProgMeta').textContent),
+    C.id('crmStatProgMeta').textContent);
+
+  /* 完成：轮询到终态 → 自动重新加载结果 */
+  const STAT_ROWS2 = STAT_ROWS.concat([{
+    projectName: '技术专用-C项目', customer: '客户丙', dept: '金融二部', sales: '王五',
+    contractDate: '2025/05/01', contractName: '合同C', serialNo: 'SN-W', product: 'T6100', model: 'T6100',
+    start: '2025/01/01', end: '2029/01/01', projects: ['技术专用-C项目'], customers: ['客户丙']
+  }]);
+  C.w.__SRV__.crmStat.cache['金融行业部'] = statData(STAT_ROWS2, STAT_SUM);
+  C.w.__SRV__.crmStat.progress = {
+    running: false, ok: true, region: '金融行业部', stage: 'done',
+    message: '统计完成：2 个项目，4 台设备，2 个型号', done: 2, total: 2,
+    startedAt: new Date(Date.now() - 60000).toISOString(), finishedAt: new Date().toISOString(), error: ''
+  };
+  await new Promise(r => setTimeout(r, 1800));
+  await C.tick(8);
+  check('C27 统计完成后进度条转完成态并回填新结果',
+    C.id('crmStatProgFill').className.indexOf('done') >= 0 && /4 台设备/.test(C.id('crmStatInfo').textContent),
+    C.id('crmStatProgFill').className + ' | ' + C.id('crmStatInfo').textContent);
+
 
   /* ==================== D. 用户管理表单：中文名 + CRM 可见 ==================== */
   C.click(C.id('umUsers'));

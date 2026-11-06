@@ -670,10 +670,13 @@ export async function fetchMaintenance(session, recordId, deps) {
     }
     return -1;
   };
+  /* 区域统计（2026-11-06）还要「销售 / 合同日期 / 合同名称」三列，
+     现网表头实测：销售|合同日期|合同名称|序列号|产品名称|产品型号|维保开始时间|… */
   const ix = {
-    serial: colIdx(['序列号']), product: colIdx(['产品名称']), model: colIdx(['型号']),
+    serial: colIdx(['序列号']), product: colIdx(['产品名称']), model: colIdx(['产品型号', '型号']),
     start: colIdx(['维保开始']), end: colIdx(['维保结束']), os: colIdx(['操作系统']),
     ver: colIdx(['软件版本']),
+    sales: colIdx(['销售']), cdate: colIdx(['合同日期']), cname: colIdx(['合同名称']),
   };
   const devices = [];
   table.forEach(function (row) {
@@ -686,6 +689,7 @@ export async function fetchMaintenance(session, recordId, deps) {
     devices.push({
       serialNo: serial, product: cell(ix.product), model: cell(ix.model),
       start: cell(ix.start), end: cell(ix.end), os: cell(ix.os), version: cell(ix.ver),
+      sales: cell(ix.sales), contractDate: cell(ix.cdate), contractName: cell(ix.cname),
     });
   });
   return { ok: true, devices: devices, columns: headers.filter(Boolean) };
@@ -971,4 +975,200 @@ export async function runCrmSync(opts, deps) {
     if (i < opts.customerNames.length - 1) await sleep(300);
   }
   return { ok: true, session: session, stats: stats };
+}
+
+/* ---------------- 区域统计（按战区汇总全域项目与型号台数，2026-11-06 新增） ---------------- */
+/*
+ * 与台账同步的区别：范围是 CRM 全域商机（不限台账客户），
+ * 按「战区」过滤后逐个项目拉维保明细，输出「以项目为主体」的设备明细 + 按产品型号的台数汇总。
+ * 口径（与台账多项目聚合一致）：
+ *  - 设备按序列号去重（去空格、忽略大小写）；
+ *  - 同一台设备在多个项目出现时，保留维保结束时间最新的那条，项目/客户全部计入；
+ *  - 汇总按去重后的台数计。
+ */
+
+export function serialKey(s) {
+  return String(s == null ? '' : s).replace(/\s+/g, '').toUpperCase();
+}
+
+export function crmStatProgressText(p) {
+  const o = p || {};
+  if (o.stage === 'login') return '正在登录询盘云（销售易）…';
+  if (o.stage === 'opps') return '正在拉取 CRM 商机列表（全域）…';
+  if (o.stage === 'devices') {
+    const total = Number(o.total) || 0;
+    return '正在拉取项目维保（' + (Number(o.done) || 0) + '/' + total + '）：' + (o.current || '—');
+  }
+  if (o.stage === 'done') return '统计完成';
+  if (o.stage === 'error') return '统计失败';
+  return '处理中…';
+}
+
+/* projects = [{ id, name, customer, dept, owner, devices:[], error }] */
+export function buildRegionStat(projects) {
+  const src = Array.isArray(projects) ? projects : [];
+  const rows = [];
+  const bySerial = new Map();   /* serialKey → row */
+  let rawDevices = 0, withDevices = 0;
+
+  src.forEach(function (p) {
+    const devs = p.devices || [];
+    if (devs.length) withDevices++;
+    rawDevices += devs.length;
+    devs.forEach(function (dv) {
+      const row = {
+        projectId: p.id, projectName: p.name || '', customer: p.customer || '',
+        dept: p.dept || '', owner: p.owner || '',
+        sales: dv.sales || '', contractDate: dv.contractDate || '', contractName: dv.contractName || '',
+        serialNo: dv.serialNo || '', product: dv.product || '', model: dv.model || '',
+        start: dv.start || '', end: dv.end || '',
+        projects: p.name ? [p.name] : [], customers: p.customer ? [p.customer] : [],
+      };
+      const key = serialKey(row.serialNo);
+      if (!key) { rows.push(row); return; }        /* 没有序列号：不参与去重 */
+      const cur = bySerial.get(key);
+      if (!cur) { bySerial.set(key, row); rows.push(row); return; }
+      /* 同一台设备：合并项目/客户归属，保留维保结束时间最新的记录 */
+      row.projects.forEach(function (n) { if (n && cur.projects.indexOf(n) < 0) cur.projects.push(n); });
+      row.customers.forEach(function (n) { if (n && cur.customers.indexOf(n) < 0) cur.customers.push(n); });
+      const a = dateNum(row.end), b = dateNum(cur.end);
+      if (a !== null && (b === null || a > b)) {
+        const keepP = cur.projects, keepC = cur.customers;
+        Object.assign(cur, row);
+        cur.projects = keepP; cur.customers = keepC;
+      }
+    });
+  });
+
+  const cmp = function (a, b) {
+    return String(a || '').localeCompare(String(b || ''), 'zh-Hans-CN');
+  };
+  rows.sort(function (a, b) {
+    return cmp(a.customer, b.customer) || cmp(a.projectName, b.projectName) ||
+      cmp(a.model, b.model) || cmp(a.serialNo, b.serialNo);
+  });
+
+  const map = new Map();
+  rows.forEach(function (r) {
+    const k = String(r.model || '').trim() || '（未填型号）';
+    let it = map.get(k);
+    if (!it) { it = { model: k, count: 0, projects: [], customers: [] }; map.set(k, it); }
+    it.count++;
+    r.projects.forEach(function (n) { if (n && it.projects.indexOf(n) < 0) it.projects.push(n); });
+    r.customers.forEach(function (n) { if (n && it.customers.indexOf(n) < 0) it.customers.push(n); });
+  });
+  const summary = Array.from(map.values()).sort(function (a, b) {
+    return b.count - a.count || cmp(a.model, b.model);
+  });
+
+  const custSet = new Set();
+  rows.forEach(function (r) { r.customers.forEach(function (n) { if (n) custSet.add(n); }); });
+  const projSet = new Set();
+  rows.forEach(function (r) { r.projects.forEach(function (n) { if (n) projSet.add(n); }); });
+
+  return {
+    rows: rows,
+    summary: summary,
+    stats: {
+      projects: src.length, withDevices: withDevices, devices: rows.length,
+      rawDevices: rawDevices, models: summary.length,
+      customers: custSet.size, projectsWithDevices: projSet.size,
+    },
+  };
+}
+
+/*
+ * opts = { loginName, password, region, onProgress(p) }
+ * 返回 { ok, region, regions:[{name,count}], projects:[…精简], rows, summary, stats }
+ */
+export async function runRegionStat(opts, deps) {
+  const log = (deps && deps.log) || function () {};
+  const sleep = (deps && deps.sleep) || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  const onProgress = (opts && opts.onProgress) || function () {};
+  const region = String((opts && opts.region) || '').trim();
+  if (!region) return { ok: false, message: '请选择区域名称' };
+
+  async function report(p) {
+    const payload = Object.assign({ region: region, total: 0 }, p || {});
+    if (!payload.message) payload.message = crmStatProgressText(payload);
+    try { await onProgress(payload); } catch (e) { log('crm: 统计进度上报失败 ' + (e && e.message)); }
+  }
+
+  await report({ stage: 'login', done: 0 });
+  let lr = await xsyLogin(opts, deps);
+  if (!lr.ok) return { ok: false, code: lr.code, message: lr.message };
+  let session = lr.session;
+
+  async function loadOpps(sess) {
+    const labR = await fetchFieldLabels(sess, deps);
+    if (!labR.ok) return labR;
+    return fetchAllOpportunities(sess, Object.assign({}, deps, { labels: labR.labels }));
+  }
+
+  await report({ stage: 'opps', done: 0 });
+  let fr = await loadOpps(session);
+  if (!fr.ok) {
+    /* 会话失效：重登一次再试（与台账同步同策略） */
+    const lr2 = await xsyLogin(opts, deps);
+    if (!lr2.ok) return { ok: false, code: lr2.code, message: lr2.message };
+    session = lr2.session;
+    fr = await loadOpps(session);
+    if (!fr.ok) return { ok: false, code: fr.code, message: fr.message };
+  }
+  const recs = fr.records || [];
+
+  /* 顺带把全域战区分布算出来，前端下拉框直接用（避免再跑一次商机全量） */
+  const regMap = {};
+  recs.forEach(function (r) {
+    const k = String((r.f && r.f['战区']) || '').trim() || '（未填战区）';
+    regMap[k] = (regMap[k] || 0) + 1;
+  });
+  const regions = Object.keys(regMap)
+    .sort(function (a, b) { return regMap[b] - regMap[a]; })
+    .map(function (k) { return { name: k, count: regMap[k] }; });
+
+  const hits = recs.filter(function (r) {
+    return String((r.f && r.f['战区']) || '').trim() === region;
+  });
+  const total = hits.length;
+  log('crm: 区域统计 ' + region + '，项目 ' + total + ' 个（商机全量 ' + recs.length + '）');
+
+  const projects = [];
+  for (let i = 0; i < total; i++) {
+    const o = hits[i];
+    const pname = String((o.f && o.f['项目名称']) || '');
+    await report({ stage: 'devices', done: i, total: total, current: pname });
+    const proj = {
+      id: o.id, name: pname,
+      customer: String((o.f && o.f['客户名称']) || ''),
+      dept: String((o.f && o.f['所属部门']) || ''),
+      owner: String((o.f && o.f['项目所有人']) || ''),
+      devices: [], error: null,
+    };
+    try {
+      const wb = await fetchMaintenance(session, o.id, deps);
+      if (wb.ok) proj.devices = wb.devices || [];
+      else proj.error = wb.message || '维保查询失败';
+    } catch (e) {
+      proj.error = '维保查询异常：' + (e && e.message);
+    }
+    projects.push(proj);
+    if (i < total - 1) await sleep(250);
+  }
+
+  const built = buildRegionStat(projects);
+  await report({ stage: 'done', done: total, total: total });
+  log('crm: 区域统计完成 ' + region + '，设备 ' + built.stats.devices + ' 台 / 型号 ' + built.stats.models + ' 个');
+
+  return {
+    ok: true, region: region, regions: regions, truncated: !!fr.truncated,
+    projects: projects.map(function (p) {
+      return {
+        id: p.id, name: p.name, customer: p.customer, dept: p.dept, owner: p.owner,
+        deviceCount: (p.devices || []).length, error: p.error,
+      };
+    }),
+    rows: built.rows, summary: built.summary, stats: built.stats,
+    updatedAt: new Date().toISOString(),
+  };
 }

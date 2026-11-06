@@ -59,6 +59,7 @@ function installApiStub(window, opts) {
     servers: (opts.servers || []).slice(),  /* 认证服务器（远程用户用） */
     crmMatches: opts.crmMatches || {},      /* CRM 快照：{ 客户名: {status, opp, maintenance, warranty} } */
     crmProgress: opts.crmProgress || null,  /* 检索进度：{running, stage, done, total, ...}（进度条用例） */
+    crmStat: opts.crmStat || null,          /* 区域统计：{regions, cache:{region:{...}}, progress} */
     crmConfig: { loginName: '', password: '', intervalHours: 12 },
     calls: []                               /* 调用记录：{path, method, body}（断言请求方法用） */
   };
@@ -312,11 +313,48 @@ function installApiStub(window, opts) {
         progress: srv.crmProgress || null, items: [] });
     }
 
-    /* CRM 现网信息快照：与两版真实服务端同口径 —— 非超管且 crmVisible=0 时只回空表 */
-    if (p === '/crm/data' && method === 'GET') {
-      if (!auth.crmVisible && auth.role !== 'admin') {
-        return ok({ crmVisible: false, matches: {}, nameCn: auth.nameCn || '' });
+    /* 区域统计（超管）：战区列表 / 缓存结果 / 触发 / 进度 */
+    if (p.indexOf('/crm/stat/') === 0) {
+      if (auth.role !== 'admin') return bad('仅超级管理员可查看区域统计', 403);
+      if (!srv.crmStat) srv.crmStat = { regions: [], cache: {}, progress: null, region: '' };
+      const st = srv.crmStat;
+      const qs = p.split('?')[1] || '';
+      const pathOnly = p.split('?')[0];
+      const q = new URLSearchParams(qs);
+      if (pathOnly === '/crm/stat/meta' && method === 'GET') {
+        const cached = Object.keys(st.cache || {}).map(k => ({
+          region: k, updatedAt: st.cache[k].updatedAt || '', stats: st.cache[k].stats || null
+        }));
+        return ok({
+          regions: st.regions || [], cached: cached,
+          running: !!(st.progress && st.progress.running), region: st.region || '', progress: st.progress || null
+        });
       }
+      if (pathOnly === '/crm/stat/data' && method === 'GET') {
+        const region = q.get('region') || '';
+        const d = (st.cache || {})[region];
+        return ok(d ? Object.assign({ found: true, region: region }, d) : { found: false, region: region });
+      }
+      if (pathOnly === '/crm/stat/run' && method === 'POST') {
+        const region = String(body.region || '').trim();
+        if (!region) return bad('请选择区域名称');
+        st.region = region;
+        st.progress = {
+          running: true, region: region, stage: 'devices', message: '正在拉取项目维保（0/2）：A项目',
+          done: 0, total: 2, current: 'A项目', startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(), finishedAt: '', ok: null, error: ''
+        };
+        return ok({ started: true, progress: st.progress });
+      }
+      if (pathOnly === '/crm/stat/status' && method === 'GET') {
+        return ok({ running: !!(st.progress && st.progress.running), region: st.region || '', progress: st.progress || null });
+      }
+    }
+
+    /* CRM 现网信息快照：与两版真实服务端同口径 —— crm_visible=0 时只回「维护人A = 本人」的项目
+       （我负责的项目对全员开放，2026-11-06） */
+    if (p === '/crm/data' && method === 'GET') {
+      const mineOnly = !auth.crmVisible && auth.role !== 'admin';
       const all = srv.crmMatches || {};
       const matches = {};
       let allow = null;
@@ -324,11 +362,17 @@ function installApiStub(window, opts) {
         allow = {};
         ((srv.ledgers[dataOwner(auth.username)] || {}).customers || []).forEach(c => { if (c && c.name) allow[c.name] = true; });
       }
+      const myName = String(auth.nameCn || '').trim();
       Object.keys(all).forEach(k => {
         if (allow && !allow[k]) return;
-        matches[k] = all[k];
+        const m = all[k] || {};
+        if (mineOnly) {
+          const owner = String((m.opp && m.opp['维护人A']) || '').trim();
+          if (!myName || m.status !== 'ok' || owner !== myName) return;
+        }
+        matches[k] = m;
       });
-      return ok({ crmVisible: true, matches: matches, nameCn: auth.nameCn || '' });
+      return ok({ crmVisible: !mineOnly, mineOnly: mineOnly, matches: matches, nameCn: myName });
     }
 
     if (p === '/ledger' && method === 'GET') return ok(bundle(auth));

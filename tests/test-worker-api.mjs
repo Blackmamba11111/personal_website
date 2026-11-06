@@ -245,16 +245,20 @@ check('PATCH 保存 CRM 可见开关', r.ok && r.data.user.crmVisible === true);
 r = await api('/auth/login', { method: 'POST', body: { username: 'crmu', password: 'Crm@12345' } });
 const crk = r.data.token;
 check('登录 bundle 带 nameCn / crmVisible', r.data.user.nameCn === '潘超' && r.data.user.crmVisible === true);
-/* 给该账号建一家客户，并写入两条 CRM 快照（一条属于自己、一条属于别人） */
+/* 给该账号建两家客户，并写入三条 CRM 快照（自己负责 / 别人负责 / 别家客户） */
 r = await api('/ledger', { method: 'PUT', body: { scope: 'crmu', data: {
-  regions: [], visits: [], customers: [{ id: 'x1', name: '承德银行' }]
+  regions: [], visits: [], customers: [{ id: 'x1', name: '承德银行' }, { id: 'x2', name: '衡水银行' }]
 } } }, crk);
 check('CRM 测试账号台账写入成功', r.ok === true, JSON.stringify(r));
 db.prepare('INSERT INTO crm_matches (customer_name,status,record_id,level,multi,data,updated_at) VALUES (?,?,?,?,?,?,?)')
   .run('承德银行', 'ok', '2683492002290513', 1, 0,
-    JSON.stringify({ opp: { '项目名称': '技术专用-承德银行GSLB扩容', '客户名称': '承德银行', '维护人A': '季荣成' },
+    JSON.stringify({ opp: { '项目名称': '技术专用-承德银行GSLB扩容', '客户名称': '承德银行', '维护人A': '潘超' },
       maintenance: [{ serialNo: 'T5100S-001', end: '2025/11/09' }],
       warranty: { status: 'expired', total: 1, known: 1, expired: 1 } }), '2026-11-05T09:00:00.000Z');
+db.prepare('INSERT INTO crm_matches (customer_name,status,record_id,level,multi,data,updated_at) VALUES (?,?,?,?,?,?,?)')
+  .run('衡水银行', 'ok', '2690000000000001', 1, 0,
+    JSON.stringify({ opp: { '项目名称': '技术专用-衡水银行', '客户名称': '衡水银行', '维护人A': '季荣成' },
+      maintenance: [], warranty: null }), '2026-11-05T09:00:00.000Z');
 db.prepare('INSERT INTO crm_matches (customer_name,status,record_id,level,multi,data,updated_at) VALUES (?,?,?,?,?,?,?)')
   .run('别家客户', 'ok', '999', 2, 0, JSON.stringify({ opp: { '客户名称': '别家客户' }, maintenance: [], warranty: null }), '2026-11-05T09:00:00.000Z');
 
@@ -262,15 +266,18 @@ r = await api('/crm/data', { method: 'GET' }, crk);
 check('可见账号能读到 CRM 快照', r.ok && r.data.crmVisible === true, JSON.stringify(r.data));
 check('只下发自己台账里的客户（不能越权看到别家）',
   !!r.data.matches['承德银行'] && !r.data.matches['别家客户'], Object.keys(r.data.matches).join(','));
-check('快照含商机与维保三态', r.data.matches['承德银行'].opp['维护人A'] === '季荣成' &&
+check('快照含商机与维保三态', r.data.matches['承德银行'].opp['维护人A'] === '潘超' &&
   r.data.matches['承德银行'].warranty.status === 'expired');
 check('/crm/data 回传中文名（前端「我负责的项目」用）', r.data.nameCn === '潘超', r.data.nameCn);
 
-/* 关闭可见 → 服务端不再下发任何 CRM 数据（前端据此隐藏全部展示块） */
+/* 关闭可见 → 仍下发「维护人A = 本人」的项目（我负责的项目对全员开放），其余隐藏 */
 await api('/users/crmu', { method: 'PATCH', body: { crmVisible: false } }, tk);
 r = await api('/crm/data', { method: 'GET' }, crk);
-check('关闭可见后只回空表', r.ok && r.data.crmVisible === false && Object.keys(r.data.matches).length === 0,
-  JSON.stringify(r.data));
+check('关闭可见后仍回「我负责的项目」',
+  r.ok && r.data.crmVisible === false && r.data.mineOnly === true && !!r.data.matches['承德银行'],
+  JSON.stringify({ v: r.data.crmVisible, keys: Object.keys(r.data.matches) }));
+check('关闭可见后隐藏别人负责的项目',
+  !r.data.matches['衡水银行'] && !r.data.matches['别家客户'], Object.keys(r.data.matches).join(','));
 
 /* 2) 普通用户无权访问 CRM 管理接口 */
 r = await api('/crm/config', { method: 'GET' }, crk);
@@ -279,6 +286,10 @@ r = await api('/crm/config', { method: 'PUT', body: { loginName: 'x', password: 
 check('普通用户改 CRM 配置 → 403', r.ok === false && r.status === 403, String(r.status));
 r = await api('/crm/status', { method: 'GET' }, crk);
 check('普通用户看检索状态 → 403', r.ok === false && r.status === 403, String(r.status));
+r = await api('/crm/stat/meta', { method: 'GET' }, crk);
+check('普通用户看区域统计 → 403', r.ok === false && r.status === 403, String(r.status));
+r = await api('/crm/stat/run', { method: 'POST', body: { region: '金融行业部' } }, crk);
+check('普通用户触发区域统计 → 403', r.ok === false && r.status === 403, String(r.status));
 
 /* 3) 超管配置：密码只存不回显 */
 r = await api('/crm/config', { method: 'PUT', body: { loginName: '13800000000', password: 'Crm@12345', intervalHours: 6 } }, tk);
@@ -302,6 +313,15 @@ r = await api('/crm/data', { method: 'GET' }, tk);
 check('超管始终可见 CRM 数据', r.ok && r.data.crmVisible === true);
 check('超管可见所有客户快照', !!r.data.matches['承德银行'] && !!r.data.matches['别家客户'],
   Object.keys(r.data.matches).join(','));
+
+/* 6) 区域统计：超管可读元信息 / 未统计区域回 found=false / 缺区域名报错 */
+r = await api('/crm/stat/meta', { method: 'GET' }, tk);
+check('超管读区域统计元信息（战区列表 + 缓存）',
+  r.ok && Array.isArray(r.data.regions) && Array.isArray(r.data.cached), JSON.stringify(r.data));
+r = await api('/crm/stat/data?region=' + encodeURIComponent('金融行业部'), { method: 'GET' }, tk);
+check('未统计过的区域回 found=false', r.ok && r.data.found === false, JSON.stringify(r.data));
+r = await api('/crm/stat/run', { method: 'POST', body: { region: '' } }, tk);
+check('区域统计缺区域名 → 400', r.ok === false && r.status === 400, String(r.status));
 
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);

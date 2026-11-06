@@ -149,6 +149,13 @@ CREATE TABLE IF NOT EXISTS crm_matches (
   data        TEXT NOT NULL DEFAULT '{}',   -- {opp, maintenance, warranty, error}
   updated_at  TEXT NOT NULL
 );
+/* 区域统计缓存（2026-11-06）：按战区拉取 CRM 全域项目与维保，结果按战区各存一行。
+   data = { stats, rows, summary, projects, truncated } */
+CREATE TABLE IF NOT EXISTS crm_stat (
+  region      TEXT PRIMARY KEY,
+  updated_at  TEXT NOT NULL,
+  data        TEXT NOT NULL DEFAULT '{}'
+);
 `);
 
 /* 老库补列：attachments.ext（存盘真实扩展名）。SQLite 无 ADD COLUMN IF NOT EXISTS，先查 pragma */
@@ -444,6 +451,118 @@ async function doCrmSync(reason) {
   saveCrmConfig(cfg);
   console.log('[crm] 同步结束：' + JSON.stringify(cfg.lastResult));
   return cfg.lastResult;
+}
+
+/* ---------------- 区域统计（按战区汇总，2026-11-06） ----------------
+ * 与台账同步互斥（同一账号并发登录会互踢会话），结果按战区缓存到 crm_stat。
+ * 耗时量级：金融行业部 560 个项目 ≈ 5–6 分钟，必须走后台任务 + 进度轮询。 */
+let crmStatRunning = false;
+let crmStatRegion = '';
+let crmStatProgress = null;
+
+function crmStatProgressNew(region) {
+  const t = nowIso();
+  return {
+    running: true, region: region, stage: 'login', message: '正在登录询盘云（销售易）…',
+    done: 0, total: 0, current: '', startedAt: t, updatedAt: t, finishedAt: '', ok: null, error: '',
+  };
+}
+function crmStatProgressPatch(p) {
+  if (!crmStatProgress) return;
+  const src = p || {};
+  ['stage', 'message', 'done', 'total', 'current'].forEach(function (k) {
+    if (src[k] !== undefined) crmStatProgress[k] = src[k];
+  });
+  crmStatProgress.updatedAt = nowIso();
+}
+function crmStatProgressFinish(outcome) {
+  const p = crmStatProgress;
+  if (!p) return;
+  p.running = false;
+  p.finishedAt = nowIso();
+  p.updatedAt = p.finishedAt;
+  p.ok = !!(outcome && outcome.ok);
+  p.stage = p.ok ? 'done' : 'error';
+  p.error = p.ok ? '' : String((outcome && (outcome.message || outcome.code)) || '未知错误');
+  const st = (outcome && outcome.stats) || null;
+  p.message = p.ok
+    ? ('统计完成：' + (st ? st.projects : 0) + ' 个项目，' + (st ? st.devices : 0) + ' 台设备，' +
+      (st ? st.models : 0) + ' 个型号')
+    : ('统计失败：' + p.error);
+}
+
+function readStatRegions() {
+  const row = db.prepare("SELECT v FROM crm_config WHERE k = 'stat_regions'").get();
+  if (row) {
+    try {
+      const arr = JSON.parse(row.v);
+      if (Array.isArray(arr) && arr.length) return arr;
+    } catch (e) {}
+  }
+  /* 没有缓存时回退：用已同步快照里的战区聚合（只覆盖台账客户，聊胜于无） */
+  const map = {};
+  db.prepare('SELECT data FROM crm_matches').all().forEach(function (r) {
+    let opp = null;
+    try { opp = (JSON.parse(r.data || '{}') || {}).opp; } catch (e) {}
+    const k = String((opp && opp['战区']) || '').trim();
+    if (k) map[k] = (map[k] || 0) + 1;
+  });
+  return Object.keys(map).sort(function (a, b) { return map[b] - map[a]; })
+    .map(function (k) { return { name: k, count: map[k] }; });
+}
+
+async function doRegionStat(region) {
+  if (!crmConfigured()) return { ok: false, message: '未配置 CRM 账号' };
+  if (crmStatRunning) return { ok: false, message: '上一轮统计仍在进行中' };
+  if (crmSyncing) return { ok: false, message: '台账检索正在进行中，请稍后再试' };
+
+  const cfg = readCrmConfig();
+  crmStatRunning = true;
+  crmStatRegion = region;
+  crmStatProgress = crmStatProgressNew(region);
+  console.log('[crm:stat] 统计开始：' + region);
+  let outcome;
+  try {
+    const P = await loadCrm();
+    const res = await P.runRegionStat({
+      loginName: cfg.loginName, password: cfg.password, region: region,
+      onProgress: crmStatProgressPatch
+    }, { fetchImpl: fetch, log: function (m) { console.log('[crm:stat] ' + m); } });
+    if (!res.ok) {
+      outcome = { ok: false, code: res.code, message: res.message };
+    } else {
+      db.prepare('INSERT INTO crm_stat (region, updated_at, data) VALUES (?, ?, ?) ' +
+        'ON CONFLICT(region) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data')
+        .run(region, nowIso(), JSON.stringify({
+          stats: res.stats, rows: res.rows, summary: res.summary,
+          projects: res.projects, truncated: !!res.truncated,
+        }));
+      if (res.regions && res.regions.length) {
+        db.prepare("INSERT INTO crm_config (k, v) VALUES ('stat_regions', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+          .run(JSON.stringify(res.regions));
+      }
+      outcome = { ok: true, stats: res.stats };
+    }
+  } catch (e) {
+    outcome = { ok: false, code: 'exception', message: '统计异常：' + (e && e.message) };
+  } finally {
+    crmStatRunning = false;
+  }
+  crmStatProgressFinish(outcome);
+  console.log('[crm:stat] 统计结束：' + JSON.stringify(outcome));
+  return outcome;
+}
+
+function readStatCache(region) {
+  const row = db.prepare('SELECT * FROM crm_stat WHERE region = ?').get(region);
+  if (!row) return null;
+  let d = {};
+  try { d = JSON.parse(row.data || '{}') || {}; } catch (e) {}
+  return {
+    region: region, updatedAt: row.updated_at,
+    stats: d.stats || null, rows: d.rows || [], summary: d.summary || [],
+    projects: d.projects || [], truncated: !!d.truncated,
+  };
 }
 
 /* 定时调度：每分钟检查一次「上次运行 + 间隔」是否到期（配置齐全才跑） */
@@ -1364,20 +1483,28 @@ async function handleApi(req, res, url) {
     });
   }
   if (p === '/api/crm/data' && method === 'GET') {
-    /* 普通用户读 CRM 快照：受 crm_visible 开关控制；只返回自己台账里的客户 */
-    /* 注意：me 已由 mapUser 转成驼峰字段（crmVisible / nameCn），不要再读下划线列名 */
-    if (!me.crmVisible && me.role !== 'admin') return ok(res, { crmVisible: false, matches: {}, nameCn: me.nameCn || '' });
+    /* 普通用户读 CRM 快照：只返回自己台账里的客户。
+       crm_visible 只管「非我负责的现网信息」；「我负责的项目」（维护人A = 本人中文名）
+       对全员开放，关闭开关也要回，否则「我负责的项目」会被误判成空（2026-11-06 调整）。
+       注意：me 已由 mapUser 转成驼峰字段（crmVisible / nameCn），不要再读下划线列名 */
+    const mineOnly = !me.crmVisible && me.role !== 'admin';
     let allow = null;
     if (me.role !== 'admin') {
       allow = {};
       const d = readLedger(dataOwner(me.username));
       (d && Array.isArray(d.customers) ? d.customers : []).forEach(function (c) { if (c && c.name) allow[c.name] = true; });
     }
+    const myName = String(me.nameCn || '').trim();
     const matches = {};
     db.prepare('SELECT * FROM crm_matches').all().forEach(function (r) {
       if (allow && !allow[r.customer_name]) return;
       let data = {};
       try { data = JSON.parse(r.data || '{}') || {}; } catch (e) {}
+      if (mineOnly) {
+        /* 只放行「维护人A = 自己」的命中；没填中文名则无从比对，回空 */
+        const owner = String((data.opp && data.opp['维护人A']) || '').trim();
+        if (!myName || r.status !== 'ok' || owner !== myName) return;
+      }
       matches[r.customer_name] = {
         status: r.status, recordId: r.record_id, level: r.level, multi: !!r.multi,
         opp: data.opp || null, maintenance: data.maintenance || [],
@@ -1385,7 +1512,47 @@ async function handleApi(req, res, url) {
         warranty: data.warranty || null, updatedAt: r.updated_at
       };
     });
-    return ok(res, { crmVisible: true, matches: matches, nameCn: me.nameCn || '' });
+    return ok(res, {
+      crmVisible: !mineOnly, mineOnly: mineOnly, matches: matches, nameCn: myName
+    });
+  }
+
+  /* --- 区域统计（按战区聚合 CRM 全域项目 / 型号台数） --- */
+  if (p === '/api/crm/stat/meta' && method === 'GET') {
+    if (!isAdmin) return bad(res, '仅超级管理员可查看区域统计', 403);
+    const cached = db.prepare('SELECT region, updated_at, data FROM crm_stat').all().map(function (r) {
+      let d = {};
+      try { d = JSON.parse(r.data || '{}') || {}; } catch (e) {}
+      return { region: r.region, updatedAt: r.updated_at, stats: d.stats || null };
+    });
+    return ok(res, {
+      regions: readStatRegions(), cached: cached,
+      running: crmStatRunning, region: crmStatRegion, progress: crmStatProgress
+    });
+  }
+  if (p === '/api/crm/stat/data' && method === 'GET') {
+    if (!isAdmin) return bad(res, '仅超级管理员可查看区域统计', 403);
+    const region = String(url.searchParams.get('region') || '').trim();
+    if (!region) return bad(res, '缺少区域名称');
+    const d = readStatCache(region);
+    return ok(res, d ? Object.assign({ found: true }, d) : { region: region, found: false });
+  }
+  if (p === '/api/crm/stat/run' && method === 'POST') {
+    if (!isAdmin) return bad(res, '仅超级管理员可触发区域统计', 403);
+    if (!crmConfigured()) return bad(res, '请先保存 CRM 账号配置');
+    const region = String(body.region || '').trim();
+    if (!region) return bad(res, '请选择区域名称');
+    if (crmStatRunning) {
+      return ok(res, { started: false, message: '上一轮统计仍在进行中', progress: crmStatProgress });
+    }
+    doRegionStat(region).catch(function (e) {
+      console.error('[crm:stat] 后台任务异常：' + (e && e.message));
+    });
+    return ok(res, { started: true, progress: crmStatProgress });
+  }
+  if (p === '/api/crm/stat/status' && method === 'GET') {
+    if (!isAdmin) return bad(res, '仅超级管理员可查看区域统计', 403);
+    return ok(res, { running: crmStatRunning, region: crmStatRegion, progress: crmStatProgress });
   }
 
   if (p === '/api/users' && method === 'GET') {
