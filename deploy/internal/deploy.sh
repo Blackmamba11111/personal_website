@@ -55,7 +55,7 @@ consistency_check() {
       echo "    ✗ ${DST_FILES[$i]}  git=$want  内网=$got"; rc=1
     fi
   done
-  $SSH "cd $REMOTE_DIR/assets 2>/dev/null && find . -type f -print0 | sort -z | xargs -0 md5sum" </dev/null \
+  $SSH "cd $REMOTE_DIR/assets 2>/dev/null && find . -type f ! -name '._*' ! -name '.DS_Store' -print0 | sort -z | xargs -0 md5sum" </dev/null \
     | awk '{print $2"\t"$1}' | sort > /tmp/cons-remote-assets
   git -C "$REPO_ROOT" ls-tree -r --name-only HEAD assets | while IFS= read -r f; do
     printf '%s\t%s\n' ".${f#assets}" "$(git -C "$REPO_ROOT" show "HEAD:$f" | md5_of_stdin)"
@@ -118,7 +118,7 @@ for i in "${!SRC_FILES[@]}"; do
 done
 
 echo "==> 同步 assets/ 静态资源（favicon / 省界数据等，整目录覆盖）"
-tar -C "$REPO_ROOT" -czf /tmp/deploy-assets.tgz assets
+tar -C "$REPO_ROOT" --exclude='._*' --exclude='.DS_Store' -czf /tmp/deploy-assets.tgz assets
 $SCP /tmp/deploy-assets.tgz "root@$HOST:/tmp/deploy-assets.tgz" >/dev/null
 $SSH "mkdir -p $REMOTE_DIR/assets && cd $REMOTE_DIR && tar -xzf /tmp/deploy-assets.tgz && rm -f /tmp/deploy-assets.tgz" </dev/null
 echo "    assets/ 已同步"
