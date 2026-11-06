@@ -85,6 +85,7 @@ function makeBoard(opts) {
   ];
   users[1].nameCn = (opts.nameCn === undefined) ? '潘超' : opts.nameCn;
   users[1].crmVisible = !!opts.demoCrmVisible;
+  users[1].statVisible = !!opts.demoStatVisible;
   const errors = [];
   let w, d;
   const dom = new JSDOM(html, {
@@ -305,8 +306,13 @@ function makeBoard(opts) {
     cache: { '金融行业部': statData(STAT_ROWS, STAT_SUM) },
     progress: null, region: ''
   };
-  C.click(C.id('btnCrmRefresh'));
+  C.click(C.id('btnCrmStatPage'));
   await C.tick(10);
+  check('C14b 区域统计是独立页面（CRM 页退出、统计页进入）',
+    C.id('statView').classList.contains('on') && !C.id('crmView').classList.contains('on'),
+    'statView=' + C.id('statView').className + ' crmView=' + C.id('crmView').className);
+  check('C14c 从 CRM 进入时返回按钮回 CRM 页', C.id('btnStatBack').textContent.indexOf('返回 CRM') >= 0,
+    C.id('btnStatBack').textContent);
   check('C15 区域下拉列出 CRM 全域战区（含项目数）',
     C.id('crmStatRegion').options.length === 2 && /金融行业部（560 个项目）/.test(C.id('crmStatRegion').options[1].textContent),
     C.id('crmStatRegion').innerHTML.slice(0, 120));
@@ -393,17 +399,22 @@ function makeBoard(opts) {
   check('D1 用户表单有「中文姓名」输入', !!C.id('uNameCn'));
   check('D2 用户表单有「CRM 可见」开关', !!C.id('uCrmVisible'));
   check('D3 CRM 可见默认关闭', C.id('uCrmVisible').checked === false);
+  check('D3b 用户表单有「可见区域统计」开关且默认关闭',
+    !!C.id('uStatVisible') && C.id('uStatVisible').checked === false);
 
   C.id('uUsername').value = 'crmuser1';
   C.id('uName').value = '河北片区';
   C.id('uNameCn').value = '潘超';
   C.id('uPwd').value = 'Crm@12345';
   C.id('uCrmVisible').checked = true;
+  C.id('uStatVisible').checked = true;
   C.click(C.id('btnSaveUser'));
   await C.tick(6);
   const nu = C.w.__SRV__.users.filter(u => u.username === 'crmuser1')[0];
   check('D4 新建用户保存中文名', nu && nu.nameCn === '潘超', nu ? JSON.stringify(nu.nameCn) : '(未创建)');
   check('D5 新建用户保存 CRM 可见开关', nu && nu.crmVisible === true, nu ? String(nu.crmVisible) : '(未创建)');
+  check('D5b 新建用户保存区域统计可见开关', nu && nu.statVisible === true,
+    nu ? String(nu.statVisible) : '(未创建)');
 
   /* 默认不勾选 → 服务端存 false */
   C.click(C.id('btnNewUser'));
@@ -416,6 +427,8 @@ function makeBoard(opts) {
   const nu2 = C.w.__SRV__.users.filter(u => u.username === 'crmuser2')[0];
   check('D6 未勾选时 CRM 可见默认为关', nu2 && nu2.crmVisible === false,
     nu2 ? String(nu2.crmVisible) : '(未创建)');
+  check('D6b 未勾选时区域统计可见默认为关', nu2 && nu2.statVisible === false,
+    nu2 ? String(nu2.statVisible) : '(未创建)');
   check('D7 中文名留空允许保存', nu2 && nu2.nameCn === '', nu2 ? JSON.stringify(nu2.nameCn) : '(未创建)');
   /* 表单里直接列出 CRM 出现过的维护人姓名，避免手填错字导致「我负责的项目」永远空 */
   C.click(C.id('btnNewUser'));
@@ -500,9 +513,52 @@ function makeBoard(opts) {
     /农行数据中心 GSLB 扩容/.test(G.id('dCrmSrc').textContent),
     G.id('dCrmSrc').textContent);
 
+  /* ==================== H. 区域统计独立页：按账号授权（只读） ==================== */
+  const AU = makeBoard({ demoCrmVisible: false, demoStatVisible: true, crmMatches: MATCHES });
+  await AU.waitReady();
+  await AU.tick(6);
+  AU.w.__SRV__.crmStat = {
+    regions: [{ name: '金融行业部', count: 560 }],
+    cache: { '金融行业部': statData(STAT_ROWS, STAT_SUM) },
+    progress: null, region: ''
+  };
+  check('H1 授权账号在账号菜单看到「区域统计」入口',
+    AU.id('umCrm').style.display !== 'none' && /区域统计/.test(AU.id('umCrm').textContent),
+    AU.id('umCrm').style.display + ' | ' + AU.id('umCrm').textContent);
+  AU.click(AU.id('umCrm'));
+  await AU.tick(10);
+  check('H2 点入口直接落到统计页，不进 CRM 配置页',
+    AU.id('statView').classList.contains('on') && !AU.id('crmView').classList.contains('on'),
+    AU.id('statView').className + ' / ' + AU.id('crmView').className);
+  check('H3 返回按钮指向看板', /返回看板/.test(AU.id('btnStatBack').textContent), AU.id('btnStatBack').textContent);
+  check('H4 只读账号「检索」按钮禁用', AU.id('btnCrmStatRun').disabled === true);
+  check('H5 显示只读提示', AU.id('crmStatReadOnly').style.display !== 'none');
+  check('H6 授权账号仍能看到已有结果', /3 台设备/.test(AU.id('crmStatInfo').textContent),
+    AU.id('crmStatInfo').textContent);
+  const runBefore = AU.w.__SRV__.calls.filter(c => c.path.indexOf('/crm/stat/run') >= 0).length;
+  AU.click(AU.id('btnCrmStatRun'));
+  await AU.tick(3);
+  check('H7 只读账号点检索不发请求',
+    AU.w.__SRV__.calls.filter(c => c.path.indexOf('/crm/stat/run') >= 0).length === runBefore);
+  AU.click(AU.id('btnStatBack'));
+  await AU.tick(2);
+  check('H8 返回后回到看板', !AU.id('statView').classList.contains('on'));
+  /* 只读账号导出：纯前端生成，不写服务端，应当可用 */
+  AU.click(AU.id('btnCrmStatCsvRows'));
+  await AU.tick(2);
+  check('H9 只读账号仍可导出明细 CSV', /SN-X/.test(AU.id('exBox').value),
+    String(AU.id('exBox').value).slice(0, 40));
+
+  /* 未授权账号：入口隐藏 */
+  const NA = makeBoard({ demoCrmVisible: true, crmMatches: MATCHES });
+  await NA.waitReady();
+  await NA.tick(6);
+  check('H10 未授权账号看不到区域统计入口', NA.id('umCrm').style.display === 'none',
+    NA.id('umCrm').style.display);
+
   check('F1 运行期无 JS 异常', A.errors.length === 0 && B.errors.length === 0 && C.errors.length === 0 &&
-    E.errors.length === 0 && G.errors.length === 0,
-    A.errors.concat(B.errors, C.errors, E.errors, G.errors).slice(0, 3).join(' / '));
+    E.errors.length === 0 && G.errors.length === 0 && AU.errors.length === 0 && NA.errors.length === 0,
+    A.errors.concat(B.errors, C.errors, E.errors, G.errors, AU.errors, NA.errors).slice(0, 3).join(' / '));
 
   console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
   process.exit(fail ? 1 : 0);

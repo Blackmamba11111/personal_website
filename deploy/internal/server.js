@@ -180,7 +180,8 @@ try {
     ['session_mins', 'ALTER TABLE users ADD COLUMN session_mins INTEGER NOT NULL DEFAULT 30'],
     ['hide_sensitive', 'ALTER TABLE users ADD COLUMN hide_sensitive INTEGER NOT NULL DEFAULT 0'],
     ['name_cn', "ALTER TABLE users ADD COLUMN name_cn TEXT NOT NULL DEFAULT ''"],
-    ['crm_visible', 'ALTER TABLE users ADD COLUMN crm_visible INTEGER NOT NULL DEFAULT 0']
+    ['crm_visible', 'ALTER TABLE users ADD COLUMN crm_visible INTEGER NOT NULL DEFAULT 0'],
+    ['stat_visible', 'ALTER TABLE users ADD COLUMN stat_visible INTEGER NOT NULL DEFAULT 0']
   ];
   add.forEach(function (pair) {
     if (ucols.indexOf(pair[0]) < 0) {
@@ -239,7 +240,8 @@ function mapUser(row, srvMap) {
     sessionMins: normSessionMins(row.session_mins != null ? row.session_mins : row.sessionMins),
     hideSensitive: row.hide_sensitive != null ? !!row.hide_sensitive : !!row.hideSensitive,
     nameCn: row.name_cn != null ? row.name_cn : (row.nameCn || ''),
-    crmVisible: row.crm_visible != null ? !!row.crm_visible : !!row.crmVisible
+    crmVisible: row.crm_visible != null ? !!row.crm_visible : !!row.crmVisible,
+    statVisible: row.stat_visible != null ? !!row.stat_visible : !!row.statVisible
   };
 }
 
@@ -720,9 +722,9 @@ function ensureServerInput(body, base) {
 /* ---------------- 数据访问 ---------------- */
 const stmtSessionJoin =
   'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login, ' +
-  'u.source, u.perm, u.server_id, u.session_mins, u.hide_sensitive, u.name_cn, u.crm_visible ' +
+  'u.source, u.perm, u.server_id, u.session_mins, u.hide_sensitive, u.name_cn, u.crm_visible, u.stat_visible ' +
   'FROM sessions s JOIN users u ON u.username = s.username WHERE s.token = ?';
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible';
 
 /* 登录超时（分钟）：按用户配置，默认 30，范围 5 ~ 43200（30 天）。
    会话为滑动过期：每次通过鉴权的请求都会把过期时间顺延到 now + session_mins。 */
@@ -1517,9 +1519,10 @@ async function handleApi(req, res, url) {
     });
   }
 
-  /* --- 区域统计（按战区聚合 CRM 全域项目 / 型号台数） --- */
+  /* --- 区域统计（按战区聚合 CRM 全域项目 / 型号台数） ---
+     读：超管 + 被授予 stat_visible 的账号；触发检索：仅超管（全量拉取耗时长，避免多人重复跑） */
   if (p === '/api/crm/stat/meta' && method === 'GET') {
-    if (!isAdmin) return bad(res, '仅超级管理员可查看区域统计', 403);
+    if (!isAdmin && !me.statVisible) return bad(res, '没有区域统计的查看权限', 403);
     const cached = db.prepare('SELECT region, updated_at, data FROM crm_stat').all().map(function (r) {
       let d = {};
       try { d = JSON.parse(r.data || '{}') || {}; } catch (e) {}
@@ -1531,14 +1534,14 @@ async function handleApi(req, res, url) {
     });
   }
   if (p === '/api/crm/stat/data' && method === 'GET') {
-    if (!isAdmin) return bad(res, '仅超级管理员可查看区域统计', 403);
+    if (!isAdmin && !me.statVisible) return bad(res, '没有区域统计的查看权限', 403);
     const region = String(url.searchParams.get('region') || '').trim();
     if (!region) return bad(res, '缺少区域名称');
     const d = readStatCache(region);
     return ok(res, d ? Object.assign({ found: true }, d) : { region: region, found: false });
   }
   if (p === '/api/crm/stat/run' && method === 'POST') {
-    if (!isAdmin) return bad(res, '仅超级管理员可触发区域统计', 403);
+    if (!isAdmin) return bad(res, '仅超级管理员可触发区域统计检索', 403);
     if (!crmConfigured()) return bad(res, '请先保存 CRM 账号配置');
     const region = String(body.region || '').trim();
     if (!region) return bad(res, '请选择区域名称');
@@ -1551,7 +1554,7 @@ async function handleApi(req, res, url) {
     return ok(res, { started: true, progress: crmStatProgress });
   }
   if (p === '/api/crm/stat/status' && method === 'GET') {
-    if (!isAdmin) return bad(res, '仅超级管理员可查看区域统计', 403);
+    if (!isAdmin && !me.statVisible) return bad(res, '没有区域统计的查看权限', 403);
     return ok(res, { running: crmStatRunning, region: crmStatRegion, progress: crmStatProgress });
   }
 
@@ -1619,9 +1622,9 @@ async function handleApi(req, res, url) {
     }
 
     db.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0);
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0);
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
     return ok(res, {
@@ -1671,8 +1674,8 @@ async function handleApi(req, res, url) {
         return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
-      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ? WHERE username = ?')
-        .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), body.nameCn == null ? (row.name_cn || '') : String(body.nameCn).trim(), body.crmVisible == null ? (row.crm_visible ? 1 : 0) : (body.crmVisible ? 1 : 0), target);
+      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ?, stat_visible = ? WHERE username = ?')
+        .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), body.nameCn == null ? (row.name_cn || '') : String(body.nameCn).trim(), body.crmVisible == null ? (row.crm_visible ? 1 : 0) : (body.crmVisible ? 1 : 0), body.statVisible == null ? (row.stat_visible ? 1 : 0) : (body.statVisible ? 1 : 0), target);
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad(res, '密码至少 6 位');

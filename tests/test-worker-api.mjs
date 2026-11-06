@@ -291,6 +291,20 @@ check('普通用户看区域统计 → 403', r.ok === false && r.status === 403,
 r = await api('/crm/stat/run', { method: 'POST', body: { region: '金融行业部' } }, crk);
 check('普通用户触发区域统计 → 403', r.ok === false && r.status === 403, String(r.status));
 
+/* 2b) 授予「可见区域统计」：能读，但仍不能触发检索（只读） */
+await api('/users/crmu', { method: 'PATCH', body: { statVisible: true } }, tk);
+r = await api('/crm/stat/meta', { method: 'GET' }, crk);
+check('授权后可读区域统计 meta', r.ok === true, r.ok ? '' : r.error);
+r = await api('/crm/stat/data?region=' + encodeURIComponent('金融行业部'), { method: 'GET' }, crk);
+check('授权后可读区域统计明细', r.ok === true, r.ok ? '' : r.error);
+r = await api('/crm/stat/status', { method: 'GET' }, crk);
+check('授权后可读区域统计进度', r.ok === true, r.ok ? '' : r.error);
+r = await api('/crm/stat/run', { method: 'POST', body: { region: '金融行业部' } }, crk);
+check('授权账号仍不能触发检索 → 403', r.ok === false && r.status === 403, String(r.status));
+await api('/users/crmu', { method: 'PATCH', body: { statVisible: false } }, tk);
+r = await api('/crm/stat/meta', { method: 'GET' }, crk);
+check('收回授权后区域统计 → 403', r.ok === false && r.status === 403, String(r.status));
+
 /* 3) 超管配置：密码只存不回显 */
 r = await api('/crm/config', { method: 'PUT', body: { loginName: '13800000000', password: 'Crm@12345', intervalHours: 6 } }, tk);
 check('超管保存 CRM 配置', r.ok && r.data.configured === true, JSON.stringify(r));

@@ -1242,6 +1242,7 @@
     <h2>CRM 台账关联</h2>
     <span class="sub" id="crmSub">询盘云（销售易）</span>
     <div class="spacer"></div>
+    <button type="button" class="btn" id="btnCrmStatPage">区域统计</button>
     <button type="button" class="btn" id="btnCrmRefresh">刷新状态</button>
     <button type="button" class="btn primary" id="btnCrmSyncNow">立即检索</button>
   </div>
@@ -1284,19 +1285,34 @@
       <div id="crmStatusWrap"><div class="empty">加载中…</div></div>
     </div>
 
-    <!-- 区域统计（2026-11-06）：按「战区」汇总 CRM 全域项目，输出设备明细与型号台数 -->
-    <div class="ucard" style="margin-top:12px;" id="crmStatCard">
-      <div class="m-caption">区域统计（按「战区」汇总 CRM 全部项目，含台账外客户；设备按序列号去重）</div>
+    <p class="hint" style="margin:12px 2px 0;">
+      匹配规则：先按 CRM「客户名称」精确匹配，失败后按「项目名称」包含式匹配，最后按名称归一（去「有限公司/股份有限公司」等后缀）兜底；
+      同一客户命中多个项目时，维保明细按序列号聚合展示。
+      登录密码只保存在服务端，页面上不回显。检索失败时（如登录失效）状态列表会标红提示重新测试连通性。
+    </p>
+  </div>
+</div>
+
+<!-- ==================== V6：区域统计页（超管 + 按账号授权，2026-11-06） ==================== -->
+<div class="page" id="statView">
+  <div class="page-head">
+    <button type="button" class="btn" id="btnStatBack">← 返回 CRM</button>
+    <h2>区域统计</h2>
+    <span class="sub" id="statSub">按「战区」汇总 CRM 全域项目，含台账外客户</span>
+    <div class="spacer"></div>
+    <button type="button" class="btn" id="btnCrmStatCsvRows">导出明细 CSV</button>
+    <button type="button" class="btn" id="btnCrmStatCsvSum">导出型号汇总 CSV</button>
+  </div>
+  <div class="page-body">
+    <div class="ucard">
       <div class="crm-stat-bar">
         <label for="crmStatRegion">区域名称</label>
         <select id="crmStatRegion" style="min-width:150px;width:auto;">
           <option value="">加载中…</option>
         </select>
         <button type="button" class="btn primary" id="btnCrmStatRun">检索</button>
+        <span class="hint" id="crmStatReadOnly" style="display:none;">只读：检索需超级管理员操作</span>
         <span class="hint" id="crmStatInfo">尚未检索</span>
-        <div class="spacer"></div>
-        <button type="button" class="btn" id="btnCrmStatCsvRows">导出明细 CSV</button>
-        <button type="button" class="btn" id="btnCrmStatCsvSum">导出型号汇总 CSV</button>
       </div>
       <div class="crm-prog" id="crmStatProg" style="display:none;padding-left:0;padding-right:0;background:transparent;border-bottom:0;">
         <div class="crm-prog-top">
@@ -1316,11 +1332,9 @@
       <div id="crmStatSumWrap" style="display:none;"></div>
       <div class="crm-stat-pager" id="crmStatPager"></div>
     </div>
-
     <p class="hint" style="margin:12px 2px 0;">
-      匹配规则：先按 CRM「客户名称」精确匹配，失败后按「项目名称」包含式匹配，最后按名称归一（去「有限公司/股份有限公司」等后缀）兜底；
-      同一客户命中多个项目时，维保明细按序列号聚合展示。
-      登录密码只保存在服务端，页面上不回显。检索失败时（如登录失效）状态列表会标红提示重新测试连通性。
+      以项目为主体展示 CRM 商机与维保设备：部门取「所属部门」，所属销售取维保明细的「销售」，合同日期为维保合同签订日。
+      台数按序列号去重（同一台设备跨项目只算 1 台）。结果由超级管理员触发检索后缓存，打开即可查看与导出。
     </p>
   </div>
 </div>
@@ -1420,6 +1434,10 @@
       <div class="field">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uCrmVisible"> 可见 CRM 现网信息</label>
         <div class="hint">开启后该账号在客户详情能看到询盘云匹配到的「客户现网信息 / 产品与技术信息」、列表上的维保到期徽标。关闭时只保留「维护人A = 本人中文名」的项目（我负责的项目），其余 CRM 数据不下发。</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uStatVisible"> 可见区域统计</label>
+        <div class="hint">开启后账号菜单里出现「区域统计」：可按战区查看项目设备明细（部门 / 销售 / 合同 / 序列号 / 型号 / 维保起止）、按型号汇总台数并导出 CSV。只读，检索仍由超级管理员触发。</div>
       </div>
       <div class="field" id="uPwdField">
         <label for="uPwd">初始密码 <span class="req">*</span></label>
@@ -1530,6 +1548,14 @@
           <option value="0">仅我负责 — 只显示维护人A 为本人的项目</option>
         </select>
         <div class="hint">「我负责的项目」对全员开放，不受此开关影响；关闭后只隐藏其他人负责的项目。与单个用户弹窗里的「可见 CRM 现网信息」是同一开关。</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bStatOn"> 应用区域统计可见性</label>
+        <select id="bStatVisible">
+          <option value="0">关闭 — 账号菜单不显示「区域统计」</option>
+          <option value="1">开启 — 只能查看已有结果与导出 CSV，不能触发检索</option>
+        </select>
+        <div class="hint">与单个用户弹窗里的「可见区域统计」是同一开关。</div>
       </div>
     </div>
     <div class="modal-foot">
@@ -5899,7 +5925,10 @@
       roleText(u) + ' · ' + permText(u) + ' · ' + esc(srcTxt) + ' · 我的台账 ' + cnt.customers + ' 家客户' +
       (u.lastLogin ? '<br>上次登录 ' + esc(u.lastLogin) : '');
     document.getElementById('umUsers').style.display = isAdmin() ? 'block' : 'none';
-    document.getElementById('umCrm').style.display = isAdmin() ? 'block' : 'none';
+    /* CRM 页只给超管；被授权区域统计的账号看到的是「区域统计」入口，点了直达统计页 */
+    var crmBtn = document.getElementById('umCrm');
+    crmBtn.style.display = (isAdmin() || canViewStat()) ? 'block' : 'none';
+    crmBtn.textContent = isAdmin() ? 'CRM 台账关联' : '区域统计';
   }
   function renderScopeSelect() {
     var wrap = document.getElementById('umScopeWrap');
@@ -6119,9 +6148,17 @@
   }
 
   /* ---------- CRM 台账关联（询盘云/销售易，超级管理员） ---------- */
+  /* 区域统计页权限：超管，或被授予「可见区域统计」的账号 */
+  function canViewStat() { return isAdmin() || !!(AUTH.user && AUTH.user.statVisible); }
+
   function openCrmPage() {
-    if (!isAdmin()) { toast('仅超级管理员可访问 CRM 台账关联'); return; }
     document.getElementById('userMenu').classList.remove('on');
+    /* 非超管不能进 CRM 配置页：已授权的直接落到区域统计页，未授权的拒绝 */
+    if (!isAdmin()) {
+      if (canViewStat()) { openStatPage('board'); return; }
+      toast('仅超级管理员可访问 CRM 台账关联');
+      return;
+    }
     document.getElementById('crmTestOut').style.display = 'none';
     document.getElementById('crmLogin').value = '';
     document.getElementById('crmPwd').value = '';
@@ -6135,7 +6172,33 @@
     });
     document.getElementById('crmView').classList.add('on');
     renderCrmStatusIfOpen();
+  }
+
+  /* ---------- 区域统计（独立页面） ----------
+     from='crm'：超管从 CRM 页点进来，返回回 CRM；from='board'：授权账号直达，返回回看板 */
+  var STAT_BACK_TO = 'crm';
+  function openStatPage(from) {
+    if (!canViewStat()) { toast('没有区域统计的查看权限'); return; }
+    STAT_BACK_TO = from || (isAdmin() ? 'crm' : 'board');
+    document.getElementById('crmView').classList.remove('on');
+    document.getElementById('statView').classList.add('on');
+    var back = document.getElementById('btnStatBack');
+    back.textContent = STAT_BACK_TO === 'crm' ? '← 返回 CRM' : '← 返回看板';
+    /* 被授权账号只读：能看缓存、能导出，不能触发全量检索 */
+    var runBtn = document.getElementById('btnCrmStatRun');
+    runBtn.disabled = !isAdmin();
+    runBtn.title = isAdmin() ? '' : '仅超级管理员可触发检索';
+    document.getElementById('crmStatReadOnly').style.display = isAdmin() ? 'none' : 'inline';
     loadCrmStatMeta();
+  }
+  function closeStatPage() {
+    document.getElementById('statView').classList.remove('on');
+    if (CRM_STAT.timer) { clearTimeout(CRM_STAT.timer); CRM_STAT.timer = null; }
+    if (STAT_BACK_TO === 'crm' && isAdmin()) {
+      document.getElementById('crmView').classList.add('on');
+      renderCrmStatusIfOpen();
+    }
+    /* 回看板：没有任何 .page 处于 on 状态即为看板 */
   }
   function crmConfigPayload() {
     var p = {
@@ -6610,7 +6673,7 @@
           return;
         }
         CRM_STAT.timer = null;
-        crmStatEl('btnCrmStatRun').disabled = false;
+        crmStatEl('btnCrmStatRun').disabled = !isAdmin();
         if (p.ok) {
           if (p.region && p.region !== CRM_STAT.region) {
             CRM_STAT.region = p.region;
@@ -6627,6 +6690,7 @@
   }
 
   function runCrmStat() {
+    if (!isAdmin()) { toast('仅超级管理员可触发区域统计检索'); return; }
     var sel = crmStatEl('crmStatRegion');
     var region = sel ? sel.value : '';
     if (!region) { toast('请选择区域名称'); return; }
@@ -7214,7 +7278,7 @@
     var selfIn = targets.some(function (u) { return u.id === AUTH.user.id; });
     document.getElementById('batchUserTitle').textContent =
       '批量编辑用户（已选 ' + targets.length + ' 个' + (selfIn ? '，含当前登录账号' : '') + '）';
-    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn', 'bHideSensOn', 'bCrmOn'].forEach(function (id) {
+    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn', 'bHideSensOn', 'bCrmOn', 'bStatOn'].forEach(function (id) {
       document.getElementById(id).checked = false;
     });
     document.getElementById('bRole').value = 'user';
@@ -7225,6 +7289,7 @@
     document.getElementById('bName').value = '';
     document.getElementById('bHideSens').value = '0';
     document.getElementById('bCrmVisible').value = '1';
+    document.getElementById('bStatVisible').value = '0';
     /* 账号类型 / 认证服务器下拉（与新建用户弹窗同一套数据源） */
     document.getElementById('bSourceType').value = 'local';
     document.getElementById('bSourcePwd').value = '';
@@ -7273,6 +7338,8 @@
       basePatch.hideSensitive = document.getElementById('bHideSens').value === '1';
     if (document.getElementById('bCrmOn').checked)
       basePatch.crmVisible = document.getElementById('bCrmVisible').value === '1';
+    if (document.getElementById('bStatOn').checked)
+      basePatch.statVisible = document.getElementById('bStatVisible').value === '1';
     if (document.getElementById('bMinsOn').checked) {
       var minsRaw = document.getElementById('bSessionMins').value.trim();
       var mins = Number(minsRaw);
@@ -7562,6 +7629,7 @@
     document.getElementById('uSessionMins').value = u ? (u.sessionMins || 30) : 30;
     document.getElementById('uHideSens').checked = u ? !!u.hideSensitive : false;
     document.getElementById('uCrmVisible').checked = u ? !!u.crmVisible : false;
+    document.getElementById('uStatVisible').checked = u ? !!u.statVisible : false;
     document.getElementById('uNote').value = u ? (u.note || '') : '';
     document.getElementById('uPwd').value = '';
 
@@ -7596,6 +7664,7 @@
         document.getElementById('uSessionMins').value = cloneFrom.sessionMins || 30;
         document.getElementById('uHideSens').checked = !!cloneFrom.hideSensitive;
         document.getElementById('uCrmVisible').checked = !!cloneFrom.crmVisible;
+        document.getElementById('uStatVisible').checked = !!cloneFrom.statVisible;
         document.getElementById('uNote').value = cloneFrom.note || '';
         var cRemote = (cloneFrom.source || 'local') !== 'local';
         document.getElementById('uSourceType').value = cRemote ? 'remote' : 'local';
@@ -7659,6 +7728,7 @@
     var name = document.getElementById('uName').value.trim();
     var nameCn = document.getElementById('uNameCn').value.trim();
     var crmVisible = document.getElementById('uCrmVisible').checked;
+    var statVisible = document.getElementById('uStatVisible').checked;
     var role = document.getElementById('uRole').value === 'admin' ? 'admin' : 'user';
     var perm = document.getElementById('uPerm').value === 'ro' ? 'ro' : 'rw';
     var note = document.getElementById('uNote').value.trim();
@@ -7680,7 +7750,7 @@
         toast('至少需要保留一个超级管理员，无法降级'); return;
       }
       var wasRemote = (target.source || 'local') !== 'local';
-      var patch = { name: name, nameCn: nameCn, crmVisible: crmVisible, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins,
+      var patch = { name: name, nameCn: nameCn, crmVisible: crmVisible, statVisible: statVisible, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins,
         hideSensitive: document.getElementById('uHideSens').checked };
       /* 远程 → 本地：必须补一个本地初始密码，否则该账号无法再登录 */
       if (wasRemote && !remote) {
@@ -7732,7 +7802,7 @@
     initDataP.then(function (initData) {
       if (!initData) return;
       var payload = {
-        username: username, name: name, nameCn: nameCn, crmVisible: crmVisible,
+        username: username, name: name, nameCn: nameCn, crmVisible: crmVisible, statVisible: statVisible,
         role: role, note: note, perm: perm, sessionMins: mins,
         hideSensitive: document.getElementById('uHideSens').checked
       };
@@ -7870,9 +7940,10 @@
     document.getElementById('btnCrmSyncNow').addEventListener('click', syncCrmNow);
     document.getElementById('btnCrmRefresh').addEventListener('click', function () {
       renderCrmStatusIfOpen();
-      loadCrmStatMeta();
     });
-    /* 区域统计 */
+    /* 区域统计（独立页） */
+    document.getElementById('btnCrmStatPage').addEventListener('click', function () { openStatPage('crm'); });
+    document.getElementById('btnStatBack').addEventListener('click', closeStatPage);
     document.getElementById('btnCrmStatRun').addEventListener('click', runCrmStat);
     document.getElementById('btnCrmStatCsvRows').addEventListener('click', exportCrmStatRows);
     document.getElementById('btnCrmStatCsvSum').addEventListener('click', exportCrmStatSum);

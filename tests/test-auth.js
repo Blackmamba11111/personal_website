@@ -946,6 +946,19 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     await tick(80);
     const vv4 = usersOf(w).filter(u => u.username === 'vv')[0];
     check('批量可反向关闭 CRM 现网信息', vv4.crmVisible === false, JSON.stringify(vv4.crmVisible));
+
+    /* 批量编辑：区域统计可见性（只读权限，2026-11-06 补） */
+    const rowV5 = [...d.querySelectorAll('#usersTableWrap tbody tr')]
+      .filter(r => r.textContent.indexOf('vv') >= 0)[0];
+    const cbV5 = rowV5.querySelector('input[data-uchk]');
+    cbV5.checked = true; fire(w, cbV5, 'change');
+    click(w, id('btnUsersBatchEdit'));
+    check('批量弹窗含「应用区域统计可见性」开关', !!id('bStatOn') && !!id('bStatVisible'));
+    id('bStatOn').checked = true; id('bStatVisible').value = '1';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const vv5 = usersOf(w).filter(u => u.username === 'vv')[0];
+    check('批量应用后账号可查看区域统计', vv5.statVisible === true, JSON.stringify(vv5.statVisible));
     w.close();
   }
 

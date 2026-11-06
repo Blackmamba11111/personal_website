@@ -41,7 +41,8 @@ function userView(u) {
     sessionMins: Number(u.sessionMins) > 0 ? Number(u.sessionMins) : 30,
     hideSensitive: !!u.hideSensitive,
     nameCn: u.nameCn || '',
-    crmVisible: !!u.crmVisible
+    crmVisible: !!u.crmVisible,
+    statVisible: !!u.statVisible
   };
 }
 
@@ -313,9 +314,15 @@ function installApiStub(window, opts) {
         progress: srv.crmProgress || null, items: [] });
     }
 
-    /* 区域统计（超管）：战区列表 / 缓存结果 / 触发 / 进度 */
+    /* 区域统计：读 = 超管 + stat_visible 账号；触发检索 = 仅超管 */
     if (p.indexOf('/crm/stat/') === 0) {
-      if (auth.role !== 'admin') return bad('仅超级管理员可查看区域统计', 403);
+      const canRead = auth.role === 'admin' || !!auth.statVisible;
+      const pathOnly0 = p.split('?')[0];
+      if (pathOnly0 === '/crm/stat/run') {
+        if (auth.role !== 'admin') return bad('仅超级管理员可触发区域统计检索', 403);
+      } else if (!canRead) {
+        return bad('没有区域统计的查看权限', 403);
+      }
       if (!srv.crmStat) srv.crmStat = { regions: [], cache: {}, progress: null, region: '' };
       const st = srv.crmStat;
       const qs = p.split('?')[1] || '';
@@ -499,7 +506,8 @@ function installApiStub(window, opts) {
           ? Math.min(43200, Math.max(5, Math.round(Number(body.sessionMins)))) : 30,
         hideSensitive: !!body.hideSensitive,
         nameCn: String(body.nameCn || '').trim(),
-        crmVisible: !!body.crmVisible
+        crmVisible: !!body.crmVisible,
+        statVisible: !!body.statVisible
       };
       srv.users.push(nu);
       if (!shareFrom && body.data) srv.ledgers[un] = body.data;
@@ -521,6 +529,7 @@ function installApiStub(window, opts) {
         if (body.hideSensitive !== undefined) t.hideSensitive = !!body.hideSensitive;
         if (body.nameCn !== undefined) t.nameCn = String(body.nameCn || '').trim();
         if (body.crmVisible !== undefined) t.crmVisible = !!body.crmVisible;
+        if (body.statVisible !== undefined) t.statVisible = !!body.statVisible;
         /* 登录超时（分钟）：与 Worker 版 normSessionMins 同口径（5–43200，非法回退 30） */
         if (body.sessionMins !== undefined) {
           const n = Math.round(Number(body.sessionMins));
