@@ -680,19 +680,40 @@ export async function fetchMaintenance(session, recordId, deps) {
   };
   const devices = [];
   table.forEach(function (row) {
-    const cell = function (i) { return (i >= 0 && row && row[i] !== undefined && row[i] !== null) ? String(row[i]) : ''; };
+    const cell = function (i) {
+      return crmBlank((i >= 0 && row && row[i] !== undefined && row[i] !== null) ? row[i] : '');
+    };
     const serial = cell(ix.serial);
     if (!serial || /^台\/?套?数/.test(serial)) return;   /* 合计行 */
+    const product = cell(ix.product);
     /* 配件（产品名称形如「配件-光模块」）不进设备清单，也不参与维保三态：
        配件维保口径与整机不同，混进来会把「全部到期」算成「部分到期」（2026-11-06 确认） */
-    if (/^配件/.test(cell(ix.product).trim())) return;
+    if (/^配件/.test(product)) return;
     devices.push({
-      serialNo: serial, product: cell(ix.product), model: cell(ix.model),
+      serialNo: serial, product: product,
+      /* 型号：CRM 未填（--）时从产品名称里识别（「ZDNS T5100」→ T5100），识别不到留空 */
+      model: cell(ix.model) || modelFromProduct(product),
       start: cell(ix.start), end: cell(ix.end), os: cell(ix.os), version: cell(ix.ver),
       sales: cell(ix.sales), contractDate: cell(ix.cdate), contractName: cell(ix.cname),
     });
   });
   return { ok: true, devices: devices, columns: headers.filter(Boolean) };
+}
+
+/* CRM 维保表里的空值占位：'--' / '—' / '-' 一律当未填（型号、操作系统、软件版本常见）。
+   2026-11-06 发现：泰康 12 台设备的「产品型号」在 CRM 里就是 '--'，直接展示会看着像取数失败。 */
+export function crmBlank(v) {
+  const s = String(v == null ? '' : v).trim();
+  return (!s || s === '--' || s === '—' || s === '-' || s === '——') ? '' : s;
+}
+
+/* 型号回退：CRM「产品型号」未填时，从产品名称里识别型号（「ZDNS T5100」→ T5100）。
+   只认 T/S + 4 位数字（可带一位字母/数字后缀），软件类产品名（红枫…V3.0 / 标准DNS-8万QPS）识别不到，留空。 */
+export function modelFromProduct(product) {
+  const s = crmBlank(product);
+  if (!s) return '';
+  const m = /(?:^|[^A-Za-z0-9])([TS]\d{4}[A-Z]?\d?)(?![0-9])/i.exec(s);
+  return m ? m[1].toUpperCase() : '';
 }
 
 /* 维保日期归一：'2026/11/06' / '2026-11-06' / '2026.11.6' → 20261106；不可解析 → null */
@@ -1020,7 +1041,9 @@ export function buildRegionStat(projects) {
         projectId: p.id, projectName: p.name || '', customer: p.customer || '',
         dept: p.dept || '', owner: p.owner || '',
         sales: dv.sales || '', contractDate: dv.contractDate || '', contractName: dv.contractName || '',
-        serialNo: dv.serialNo || '', product: dv.product || '', model: dv.model || '',
+        serialNo: dv.serialNo || '', product: dv.product || '',
+        /* 兼容旧缓存：历史行可能存了 '--'，这里统一归一，型号为空再按产品名兜底 */
+        model: crmBlank(dv.model) || modelFromProduct(dv.product),
         start: dv.start || '', end: dv.end || '',
         projects: p.name ? [p.name] : [], customers: p.customer ? [p.customer] : [],
       };
@@ -1050,7 +1073,7 @@ export function buildRegionStat(projects) {
 
   const map = new Map();
   rows.forEach(function (r) {
-    const k = String(r.model || '').trim() || '（未填型号）';
+    const k = crmBlank(r.model) || '（未填型号）';
     let it = map.get(k);
     if (!it) { it = { model: k, count: 0, projects: [], customers: [] }; map.set(k, it); }
     it.count++;

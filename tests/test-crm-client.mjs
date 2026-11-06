@@ -13,7 +13,7 @@ import {
   xsyLogin, fetchFieldLabels, fetchAllOpportunities, fetchMaintenance,
   warrantyStatus, matchForCustomer, normCompanyName, translateRecord, runCrmSync, mergeMaintenance,
   crmProgressText, OPP_FIELDS, XSY_HOSTS,
-  runRegionStat, buildRegionStat, crmStatProgressText, serialKey
+  runRegionStat, buildRegionStat, crmStatProgressText, serialKey, crmBlank, modelFromProduct
 } from '../worker/crm-client.mjs';
 
 let pass = 0, fail = 0;
@@ -265,6 +265,23 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
 
   const empty = await fetchMaintenance(SESSION, '1', { fetchImpl: async () => json({ data: {} }) });
   check('无明细时返回空数组（不算失败）', empty.ok === true && empty.devices.length === 0);
+
+  /* 泰康案例（2026-11-06）：型号列在 CRM 里就是 --，产品名称里有的带型号有的不带 */
+  const cells2 = WB_HEADERS.map((h, i) => ({ type: 1, row: 0, col: i, value: h }));
+  const tk1 = ['郭滦', '2020/09/04', '2020年泰康人寿更新设备合同', '15-1911E-2023', '标准DNS-12万QPS', '--', '2026/10/01', '2027/09/30', '364', '--', '--'];
+  const tk2 = ['郭滦', '2020/09/04', '2020年泰康人寿更新设备合同', '05-1504E-127', 'ZDNS T5100', '--', '2026/10/01', '2027/09/30', '364', '--', '--'];
+  tk1.forEach((v, i) => cells2.push({ type: 0, row: 1, col: i, value: v }));
+  tk2.forEach((v, i) => cells2.push({ type: 0, row: 2, col: i, value: v }));
+  const r2 = await fetchMaintenance(SESSION, '2683492012071757', {
+    fetchImpl: async () => json({ data: { result: { grid: cells2 } } })
+  });
+  check('型号为 -- 且产品名识别不到 → 型号留空（前端显示「未填」）',
+    r2.devices[0].model === '', JSON.stringify(r2.devices[0]));
+  check('型号为 -- 但产品名带型号 → 自动补 T5100',
+    r2.devices[1].model === 'T5100', JSON.stringify(r2.devices[1]));
+  check('操作系统 / 软件版本为 -- 时归一为空串',
+    r2.devices[0].os === '' && r2.devices[0].version === '',
+    JSON.stringify([r2.devices[0].os, r2.devices[0].version]));
 }
 
 /* ---------------- 6. 维保三态 ---------------- */
@@ -605,6 +622,35 @@ void KEY_BYTES;
   const empty = buildRegionStat([]);
   check('区域统计：空项目也不报错',
     empty.rows.length === 0 && empty.summary.length === 0 && empty.stats.projects === 0);
+
+  /* 11.1b 型号为空（CRM 填 --）：先按产品名称识别，识别不到归「（未填型号）」（泰康案例，2026-11-06） */
+  check('空值归一：-- / — / - 都当未填，正常值去空格',
+    crmBlank('--') === '' && crmBlank('—') === '' && crmBlank('-') === '' && crmBlank(' T5100 ') === 'T5100',
+    JSON.stringify([crmBlank('--'), crmBlank('—'), crmBlank('-'), crmBlank(' T5100 ')]));
+  check('型号回退：产品名称里能识别的型号',
+    modelFromProduct('ZDNS T5100') === 'T5100' &&
+    modelFromProduct('核心网络服务设备 T5100S') === 'T5100S' &&
+    modelFromProduct('标准DDI-T6100H') === 'T6100H',
+    JSON.stringify([modelFromProduct('ZDNS T5100'), modelFromProduct('核心网络服务设备 T5100S'),
+      modelFromProduct('标准DDI-T6100H')]));
+  check('型号回退：软件类 / 非整机产品识别不到就留空',
+    modelFromProduct('红枫下一代互联网域名服务软件V3.0') === '' &&
+    modelFromProduct('标准DNS-8万QPS') === '' && modelFromProduct('售后延保服务（整机/T51系列）') === '',
+    JSON.stringify([modelFromProduct('红枫下一代互联网域名服务软件V3.0'),
+      modelFromProduct('标准DNS-8万QPS'), modelFromProduct('售后延保服务（整机/T51系列）')]));
+  const blankModel = buildRegionStat([
+    { id: 9, name: 'C项目', customer: '客户丙', dept: '金融一部',
+      devices: [{ serialNo: 'SN-W', model: '--', product: '标准DNS-8万QPS', end: '2028/01/01' }] },
+    { id: 10, name: 'D项目', customer: '客户丁', dept: '金融一部',
+      devices: [{ serialNo: 'SN-V', model: '--', product: 'ZDNS T5100', end: '2028/01/01' }] }
+  ]);
+  const bm = blankModel.summary.filter(x => x.model === '（未填型号）')[0];
+  check('区域统计：型号为 -- 时先用产品名补（ZDNS T5100 → T5100）',
+    blankModel.rows.filter(r => r.model === 'T5100').length === 1,
+    JSON.stringify(blankModel.rows.map(r => [r.serialNo, r.model])));
+  check('区域统计：补不到型号的归入「（未填型号）」且不再出现裸 --',
+    !!bm && bm.count === 1 && blankModel.rows.every(r => r.model !== '--'),
+    JSON.stringify(blankModel.summary));
 
   /* 11.2 进度文案 */
   const st1 = crmStatProgressText({ stage: 'devices', done: 3, total: 560, current: 'A项目' });

@@ -354,12 +354,82 @@ function makeBoard(opts) {
   await C.tick(3);
   check('C23 点型号下钻回明细并显示筛选条件',
     C.id('crmStatRowsWrap').style.display !== 'none' && /型号：/.test(C.id('crmStatFilter').textContent) &&
-    /共 2 台/.test(C.id('crmStatPager').textContent),
+    /筛选后 2 台/.test(C.id('crmStatPager').textContent),
     C.id('crmStatFilter').textContent + ' | ' + C.id('crmStatPager').textContent);
   C.click(C.id('crmStatFilterClear'));
   await C.tick(2);
   check('C24 清除型号筛选恢复全部明细', /共 3 台/.test(C.id('crmStatPager').textContent),
     C.id('crmStatPager').textContent);
+
+  /* ---------- C24b–C24h：明细四项筛选（2026-11-06） ---------- */
+  const typeQ = async (id, val) => {
+    const el = C.id(id);
+    el.value = val;
+    el.dispatchEvent(new C.w.Event('input', { bubbles: true }));
+    await C.tick(2);
+    await new Promise(r => setTimeout(r, 240));   /* 等 180ms 防抖 */
+    await C.tick(2);
+  };
+  check('C24b 明细有四个筛选框（项目名称 / 客户名称 / 销售 / 型号）',
+    !!C.id('crmStatQProject') && !!C.id('crmStatQCustomer') &&
+    !!C.id('crmStatQSales') && !!C.id('crmStatQModel'));
+  await typeQ('crmStatQCustomer', '客户乙');
+  check('C24c 按客户名称筛选：客户乙 → 1 台',
+    /筛选后 1 台/.test(C.id('crmStatPager').textContent) &&
+    !/客户甲/.test(C.id('crmStatRowsWrap').textContent),
+    C.id('crmStatPager').textContent);
+  await typeQ('crmStatQCustomer', '');
+  await typeQ('crmStatQSales', '张三');
+  check('C24d 按销售筛选：张三 → 2 台',
+    /筛选后 2 台/.test(C.id('crmStatPager').textContent), C.id('crmStatPager').textContent);
+  await typeQ('crmStatQSales', '');
+  await typeQ('crmStatQModel', 't61');
+  check('C24e 按型号筛选不区分大小写：t61 → 2 台',
+    /筛选后 2 台/.test(C.id('crmStatPager').textContent), C.id('crmStatPager').textContent);
+  await typeQ('crmStatQModel', '');
+  await typeQ('crmStatQProject', 'B项目');
+  await typeQ('crmStatQModel', 'T6100');
+  check('C24f 项目名称 + 型号可叠加：只剩 B 项目 1 台',
+    /筛选后 1 台/.test(C.id('crmStatPager').textContent), C.id('crmStatPager').textContent);
+  C.click(C.id('btnCrmStatCsvRows'));
+  await C.tick(3);
+  check('C24g 导出明细 CSV 走当前筛选结果',
+    /SN-Z/.test(C.id('exBox').value) && !/SN-X/.test(C.id('exBox').value),
+    String(C.id('exBox').value).split('\r\n').slice(1, 3).join(' / '));
+  C.click(C.id('crmStatQClear'));
+  await C.tick(3);
+  check('C24h 清除筛选恢复全部 3 台', /共 3 台/.test(C.id('crmStatPager').textContent) &&
+    C.id('crmStatQProject').value === '' && C.id('crmStatQModel').value === '',
+    C.id('crmStatPager').textContent);
+
+  /* ---------- C24i–C24k：型号为空（CRM 填 --）时的展示 ---------- */
+  const savedStatCache = C.w.__SRV__.crmStat.cache;
+  C.w.__SRV__.crmStat.cache = {
+    '金融行业部': statData(
+      [{ projectName: '技术专用-C项目', customer: '客户丙', dept: '金融一部', sales: '王五',
+        contractDate: '2025/01/01', contractName: '合同C', serialNo: 'SN-W', product: '标准DNS-8万QPS',
+        model: '--', start: '2025/01/01', end: '2028/01/01',
+        projects: ['技术专用-C项目'], customers: ['客户丙'] }],
+      [{ model: '（未填型号）', count: 1, projects: ['技术专用-C项目'], customers: ['客户丙'] }])
+  };
+  C.id('crmStatRegion').dispatchEvent(new C.w.Event('change', { bubbles: true }));
+  await C.tick(8);
+  const blankRow = C.id('crmStatRowsWrap').textContent;
+  check('C24i 型号为 -- 时明细显示「未填」而不是 --',
+    /未填/.test(blankRow) && !/--/.test(blankRow), blankRow.slice(0, 120));
+  C.click(C.d.querySelector('#crmStatTabs button[data-stat-tab="sum"]'));
+  await C.tick(3);
+  check('C24j 型号汇总把空型号归到「（未填型号）」',
+    /（未填型号）/.test(C.id('crmStatSumWrap').textContent), C.id('crmStatSumWrap').textContent.slice(0, 80));
+  C.click(C.d.querySelector('#crmStatTabs button[data-stat-tab="rows"]'));
+  await C.tick(2);
+  C.click(C.id('btnCrmStatCsvRows'));
+  await C.tick(2);
+  check('C24k 空型号导出 CSV 写「（未填型号）」',
+    /（未填型号）/.test(C.id('exBox').value), String(C.id('exBox').value).slice(0, 120));
+  C.w.__SRV__.crmStat.cache = savedStatCache;
+  C.id('crmStatRegion').dispatchEvent(new C.w.Event('change', { bubbles: true }));
+  await C.tick(8);
 
   /* 手动检索：POST /crm/stat/run + 独立进度条 */
   C.click(C.id('btnCrmStatRun'));
