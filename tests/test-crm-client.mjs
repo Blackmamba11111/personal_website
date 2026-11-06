@@ -11,8 +11,8 @@
 import crypto from 'node:crypto';
 import {
   xsyLogin, fetchFieldLabels, fetchAllOpportunities, fetchMaintenance,
-  warrantyStatus, matchForCustomer, translateRecord, runCrmSync, mergeMaintenance,
-  crmProgressText, XSY_HOSTS
+  warrantyStatus, matchForCustomer, normCompanyName, translateRecord, runCrmSync, mergeMaintenance,
+  crmProgressText, OPP_FIELDS, XSY_HOSTS
 } from '../worker/crm-client.mjs';
 
 let pass = 0, fail = 0;
@@ -149,14 +149,63 @@ const SESSION = { cookies: [{ name: 'JSESSIONID', value: 'abc', domain: 'crm-ten
     const b = JSON.parse(init.body);
     pages.push(b);
     if (b.page.pageNo === 1) return json({ data: { records: Array.from({ length: 200 }, (_, i) => mkRec(i)) } });
-    return json({ data: { records: [mkRec(200)] } });
+    if (b.page.pageNo === 2) return json({ data: { records: [mkRec(200)] } });
+    return json({ data: { records: [] } });
   };
   const r = await fetchAllOpportunities(SESSION, { fetchImpl, pageSize: 200 });
   check('分页拉全量商机', r.ok && r.records.length === 201, String(r.records && r.records.length));
-  check('第一页满 200 条 → 继续第二页', pages.length === 2, String(pages.length));
+  check('第一页满 200 条 → 继续第二页，末页不足则再探一次空页收尾',
+    pages.length === 3 && pages[1].page.pageNo === 2, String(pages.length));
   check('使用约定数据视图 opportunity_view_225', pages[0].dataView === 'opportunity_view_225', pages[0].dataView);
   check('conditions 传空数组（服务端会忽略筛选）', Array.isArray(pages[0].conditions) && pages[0].conditions.length === 0);
   check('请求带 xsy-tenant-id / xsy-client-type 头', true);
+}
+
+/* 3b. 分页上限与字段精简（2026-11-06：CRM 现网 1.6 万条，旧 200×8 只覆盖 1600 条） */
+{
+  const pages2 = [];
+  const fetchImpl2 = async (url, init) => {
+    const b = JSON.parse(init.body);
+    pages2.push(b);
+    if (b.page.pageNo === 1) return json({ data: { records: [{ id: 7, accountId: { name: '某客户' }, opportunityName: '项目A', updatedAt: 1 }] } });
+    return json({ data: { records: [] } });
+  };
+  const r2 = await fetchAllOpportunities(SESSION, { fetchImpl: fetchImpl2 });
+  check('默认按大页拉取（pageSize 1000），不再停在 200 条/页',
+    pages2[0].page.pageSize === 1000, String(pages2[0].page && pages2[0].page.pageSize));
+  check('未提供 labels 时仍返回原始记录（连通性测试依赖）',
+    r2.ok && r2.translated === false && Array.isArray(r2.records) && r2.records[0].id === 7);
+  check('遇到空页才停止翻页（不足一页也会再探一次）', pages2.length === 2, String(pages2.length));
+
+  /* 复用旧会话的实测形态：第 1 页 1000、第 2 页 344、第 3 页 0。
+     若按「不足一页即停」会停在 1344，正是中银三星等客户漏匹配的原因 */
+  const p3 = [];
+  const fetchImplTrunc = async (url, init) => {
+    const b = JSON.parse(init.body);
+    p3.push(b);
+    const n = b.page.pageNo;
+    const cnt = n === 1 ? 1000 : (n === 2 ? 344 : 0);
+    return json({ data: { records: Array.from({ length: cnt }, (_, i) => ({ id: n * 100000 + i })) } });
+  };
+  const rTrunc = await fetchAllOpportunities(SESSION, { fetchImpl: fetchImplTrunc });
+  check('中途返回不足一页不会提前停止（旧会话只回 1344 条的场景）',
+    p3.length === 3 && rTrunc.records.length === 1344, JSON.stringify({ pages: p3.length, n: rTrunc.records.length }));
+
+  const labels = { accountId: { label: '客户名称' }, opportunityName: { label: '项目名称' } };
+  const fetchImpl3 = async () => json({ data: { records: [{
+    id: 8, accountId: { name: '甲客户' }, opportunityName: '项目B',
+    customItem999__c: '占地方的无关字段', updatedAt: 123,
+  }] } });
+  const r3 = await fetchAllOpportunities(SESSION, { fetchImpl: fetchImpl3, labels });
+  const row = r3.records[0];
+  check('提供 labels 时边拉边精简为白名单字段',
+    r3.translated === true && row.f['客户名称'] === '甲客户' && row.f['项目名称'] === '项目B',
+    JSON.stringify(row.f));
+  check('无关字段被丢弃（避免公网 Worker 内存超限）',
+    row.f.customItem999__c === undefined && Object.keys(row.f).length <= OPP_FIELDS.length,
+    JSON.stringify(Object.keys(row.f)));
+  check('精简后保留 id / updatedAt', row.id === 8 && row.updatedAt === 123,
+    JSON.stringify({ id: row.id, u: row.updatedAt }));
 }
 
 /* ---------------- 4. 字段标签化 ---------------- */
@@ -255,6 +304,23 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
 
   check('完全匹配不到 → miss', matchForCustomer('不存在银行', translated).status === 'miss');
   check('空客户名 → miss', matchForCustomer('', translated).status === 'miss');
+
+  /* 三级兜底：企业类型后缀差异（台账「有限公司」vs CRM「有限责任公司」） */
+  const t3 = translated.concat([
+    { id: 5, updatedAt: '2026-07-01', f: { '项目名称': '技术专用-瑞众人寿保险有限责任公司', '客户名称': '瑞众人寿保险有限责任公司' } }
+  ]);
+  const m4 = matchForCustomer('瑞众人寿保险有限公司', t3);
+  check('第三级：去掉企业类型后缀后精确相等即命中',
+    m4.status === 'ok' && m4.level === 3 && m4.opp.id === 5, JSON.stringify({ s: m4.status, l: m4.level, id: m4.opp && m4.opp.id }));
+  check('三级命中不影响已有的一级/二级结果',
+    matchForCustomer('承德银行', t3).level === 1 && matchForCustomer('农行数据中心', t3).level === 2);
+  check('归一化剥离「有限责任公司」「（集团）公司」等后缀',
+    normCompanyName('瑞众人寿保险有限责任公司') === '瑞众人寿保险' &&
+    normCompanyName('中国人寿保险（集团）公司') === '中国人寿保险' &&
+    normCompanyName('衡水银行股份有限公司') === '衡水银行',
+    normCompanyName('瑞众人寿保险有限责任公司') + ' / ' + normCompanyName('中国人寿保险（集团）公司'));
+  check('归一化后过短的名字不参与三级匹配（避免误配）',
+    matchForCustomer('银行', [{ id: 9, f: { '客户名称': '中国银行', '项目名称': '无关项目' } }]).status === 'miss');
 }
 
 /* ---------------- 8. runCrmSync 端到端 ---------------- */
@@ -288,7 +354,12 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
         { apiKey: 'customItem101__c', label: '维护人A' }
       ] } });
     }
-    if (u.indexOf('/neoui/table/search') >= 0) return json({ data: { records: opps } });
+    if (u.indexOf('/neoui/table/search') >= 0) {
+      /* 只第一页有数据，第二页返回空 → 触发正常结束（分页改为「空页才停」） */
+      const b = JSON.parse(String((init && init.body) || '{}'));
+      const pn = (b.page && b.page.pageNo) || 1;
+      return json({ data: { records: pn === 1 ? opps : [] } });
+    }
     if (u.indexOf('/neobi/v2.0/query/query') >= 0) {
       maintenanceCalls++;
       wbCalls.push({ url: u, body: String((init && init.body) || ''), ctype: String(((init && init.headers) || {})['Content-Type'] || '') });
@@ -393,7 +464,12 @@ void KEY_BYTES;
         { apiKey: 'customItem101__c', label: '维护人A' }
       ] } });
     }
-    if (u.indexOf('/neoui/table/search') >= 0) return json({ data: { records: opps } });
+    if (u.indexOf('/neoui/table/search') >= 0) {
+      /* 只第一页有数据，第二页返回空 → 触发正常结束（分页改为「空页才停」） */
+      const b = JSON.parse(String((init && init.body) || '{}'));
+      const pn = (b.page && b.page.pageNo) || 1;
+      return json({ data: { records: pn === 1 ? opps : [] } });
+    }
     if (u.indexOf('/neobi/v2.0/query/query') >= 0) {
       const flt = new URLSearchParams(String(init.body)).get('filter') || '';
       const rid = Number((/"val":(\d+)/.exec(flt) || [])[1]);

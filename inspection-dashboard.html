@@ -6283,7 +6283,8 @@
         var stTag = it.status === 'ok'
           ? '<span class="tag active">获取成功</span>' +
             (it.hitCount > 1 ? ' <span class="tag user">聚合 ' + it.hitCount + ' 个项目</span>' : '') +
-            (it.level === 2 ? ' <span class="tag user">按项目名匹配</span>' : '')
+            (it.level === 2 ? ' <span class="tag user">按项目名匹配</span>' : '') +
+            (it.level === 3 ? ' <span class="tag user">按名称后缀匹配</span>' : '')
           : (it.status === 'miss' ? '<span class="tag disabled">未匹配</span>' : '<span class="tag">待检索</span>');
         var pjNames = (it.projects || []).filter(Boolean);
         var pjCell = pjNames.length

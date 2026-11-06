@@ -554,13 +554,34 @@ export async function fetchFieldLabels(session, deps) {
   return { ok: true, labels: labels };
 }
 
-/* 拉全量「所有技术专用项目」商机（conditions 被服务端忽略，只能全量分页） */
+/* 前端详情实际读取的商机字段白名单。
+   全量商机有 1.6 万条记录、每条 40+ 字段，原样保留会撑爆公网 Worker 内存，
+   因此分页拉取时边拉边翻译，只留这些字段（2026-11-06 修正分页截断时加入） */
+export const OPP_FIELDS = [
+  '客户名称', '项目名称', '维护人A', '维护人B', '客户级别', '一级行业', '二级行业',
+  '战区', '所属部门', '项目所有人', 'GSLB台数', '总采购数量', '主要使用功能',
+  '操作系统版本', '现网软件版本', '高可靠架构',
+];
+
+function pickOpp(f, fields) {
+  const o = {};
+  (fields || OPP_FIELDS).forEach(function (k) { if (f[k] !== undefined && f[k] !== '') o[k] = f[k]; });
+  return o;
+}
+
+/* 拉全量商机（conditions 被服务端忽略，只能全量分页）。
+   CRM 现网 1.6 万+ 条，原「pageSize 200 × maxPages 8」只覆盖最新 1600 条，
+   导致大量老项目永远匹配不到（2026-11-06 中银三星即因此未匹配）。
+   现改为大页 + 拉到取完为止；deps.labels 提供时边拉边精简字段。 */
 export async function fetchAllOpportunities(session, deps) {
   const log = (deps && deps.log) || function () {};
-  const maxPages = (deps && deps.maxPages) || 8;
-  const pageSize = (deps && deps.pageSize) || 200;
+  const maxPages = (deps && deps.maxPages) || 30;
+  const pageSize = (deps && deps.pageSize) || 1000;
+  const labels = (deps && deps.labels) || null;
+  const fields = (deps && deps.fields) || OPP_FIELDS;
   const url = XSY_HOSTS.crm + '/rest/bff/v3.0/neoui/table/search?entityApiKey=opportunity&skipTotalSize=true';
   const all = [];
+  let truncated = false;
   for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
     const r = await xsyJson(session, url, {
       method: 'POST',
@@ -575,11 +596,21 @@ export async function fetchAllOpportunities(session, deps) {
     }, deps);
     if (!r.ok) return r;
     const recs = (r.json.data && r.json.data.records) || [];
-    all.push.apply(all, recs);
-    log('crm: 商机分页 ' + pageNo + '，本页 ' + recs.length + ' 条');
-    if (recs.length < pageSize) break;
+    if (labels) {
+      for (let i = 0; i < recs.length; i++) {
+        const t = translateRecord(recs[i], labels);
+        all.push({ id: t.id, f: pickOpp(t.f, fields), updatedAt: t.updatedAt });
+      }
+    } else {
+      all.push.apply(all, recs);
+    }
+    log('crm: 商机分页 ' + pageNo + '，本页 ' + recs.length + ' 条，累计 ' + all.length);
+    /* 只有空页才算取完：CRM 在某些会话下会中途返回不足一页（实测复用旧会话第 2 页只回 344 条），
+       若按「不足一页即停」会漏掉后面大量商机（2026-11-06） */
+    if (!recs.length) break;
+    if (pageNo === maxPages) truncated = true;
   }
-  return { ok: true, records: all };
+  return { ok: true, records: all, translated: !!labels, truncated: truncated };
 }
 
 /* 商机字段中文标签化：把 record 翻译成 {id, f: {中文标签: 值文本}} */
@@ -731,6 +762,28 @@ export function mergeMaintenance(projects) {
  * 第二级：CRM「项目名称」含巡检客户名（去「技术专用-」前缀后双向包含）
  * 多条命中：取最新修改日（updatedAt 最大）一条，并标记 multi=true
  */
+/* 企业名称归一化：剥离括号注释与企业类型后缀，用于「三级兜底」比对。
+   例：瑞众人寿保险有限责任公司 → 瑞众人寿保险；瑞众人寿保险有限公司 → 瑞众人寿保险
+   只在精确匹配与项目名包含都失败后才启用，避免影响已有命中（2026-11-06）。 */
+const NAME_SUFFIX = ['股份有限公司', '有限责任公司', '有限公司', '集团公司', '股份公司', '公司', '集团'];
+
+export function normCompanyName(s) {
+  let n = String(s || '').replace(/[\s　]/g, '').replace(/[（(][^）)]*[）)]/g, '');
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < NAME_SUFFIX.length; i++) {
+      const suf = NAME_SUFFIX[i];
+      if (n.length > suf.length && n.slice(-suf.length) === suf) {
+        n = n.slice(0, n.length - suf.length);
+        changed = true;
+      }
+    }
+  }
+  return n;
+}
+
+/* 客户匹配：一级客户名称精确 → 二级项目名称包含 → 三级去后缀后精确相等 */
 export function matchForCustomer(custName, translated) {
   if (!custName) return { status: 'miss' };
   const name = String(custName).trim();
@@ -742,6 +795,14 @@ export function matchForCustomer(custName, translated) {
       return pn.indexOf(name) >= 0 || name.indexOf(pn.replace(/^技术专用-/, '')) >= 0;
     });
     if (hits.length) level = 2;
+  }
+  if (!hits.length) {
+    /* 三级：客户名称与企业类型后缀无关（台账写「有限公司」而 CRM 写「有限责任公司」） */
+    const key = normCompanyName(name);
+    if (key.length >= 4) {
+      hits = translated.filter(function (t) { return normCompanyName(t.f['客户名称'] || '') === key; });
+      if (hits.length) level = 3;
+    }
   }
   if (!hits.length) return { status: 'miss' };
   /* 「取最新一条」要兼容两种时间形态：毫秒时间戳（数字）与 ISO 字符串 */
@@ -812,23 +873,33 @@ export async function runCrmSync(opts, deps) {
   }
   await report({ stage: 'opps', done: 0 });
 
-  const fr = await fetchAllOpportunities(session, deps);
+  /* 先取字段标签再拉商机：分页时即可边拉边精简字段。
+     CRM 现网 1.6 万条商机，原始记录全量驻留会超出公网 Worker 内存（2026-11-06）。 */
+  let labR = await fetchFieldLabels(session, deps);
+  if (!labR.ok) {
+    const lrL = await xsyLogin(opts, deps);
+    if (!lrL.ok) return { ok: false, code: lrL.code, message: lrL.message, session: null };
+    session = lrL.session;
+    labR = await fetchFieldLabels(session, deps);
+    if (!labR.ok) return { ok: false, code: labR.code, message: labR.message, session: session };
+  }
+  const labels = labR.labels;
+  const fetchDeps = Object.assign({}, deps, { labels: labels });
+
+  let fr = await fetchAllOpportunities(session, fetchDeps);
   if (fr.ok && fr.code === 'authexpire') return { ok: false, code: 'authexpire', message: 'CRM 会话失效，请重新测试连通性', session: null };
   if (!fr.ok) {
     /* 会话失效：重登一次再试 */
     const lr2 = await xsyLogin(opts, deps);
     if (!lr2.ok) return { ok: false, code: lr2.code, message: lr2.message, session: null };
     session = lr2.session;
-    const fr2 = await fetchAllOpportunities(session, deps);
+    const fr2 = await fetchAllOpportunities(session, fetchDeps);
     if (!fr2.ok) return { ok: false, code: fr2.code, message: fr2.message, session: session };
-    fr.records = fr2.records;
+    fr = fr2;
   }
+  if (fr.truncated) log('crm: 商机分页达到上限，结果可能不完整');
 
-  const labR = await fetchFieldLabels(session, deps);
-  if (!labR.ok) return { ok: false, code: labR.code, message: labR.message, session: session };
-  const labels = labR.labels;
-
-  const translated = fr.records.map(function (rec) { return translateRecord(rec, labels); });
+  const translated = fr.translated ? fr.records : fr.records.map(function (rec) { return translateRecord(rec, labels); });
   log('crm: 商机共 ' + translated.length + ' 条，待匹配客户 ' + opts.customerNames.length + ' 个');
 
   const stats = { matched: 0, missed: 0, failed: 0, total: totalCustomers };

@@ -420,7 +420,7 @@ async function upsertCrmMatch(env, name, r) {
   await env.DB.prepare(
     'INSERT INTO crm_matches (customer_name, status, record_id, level, multi, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
     'ON CONFLICT(customer_name) DO UPDATE SET status = excluded.status, record_id = excluded.record_id, level = excluded.level, multi = excluded.multi, data = excluded.data, updated_at = excluded.updated_at'
-  ).bind(name, 'ok', String(r.opp.id || ''), r.level === 2 ? 2 : 1, r.multi ? 1 : 0,
+  ).bind(name, 'ok', String(r.opp.id || ''), r.level || 1, r.multi ? 1 : 0,
     JSON.stringify({
       opp: r.opp.f, projects: r.projects || [], maintenance: r.maintenance || [],
       warranty: r.warranty || null, error: r.error || null,
@@ -491,8 +491,10 @@ async function doCrmSync(env, reason) {
   crmProgressWriteAt = 0;
   let outcome;
   try {
+    /* 不复用 cfg.session：复用旧会话时 CRM 分页会中途截断（实测只回 1344 条），
+       每轮重新登录只多几秒，换取商机全量（2026-11-06） */
     outcome = await CRM_P.runCrmSync({
-      loginName: cfg.loginName, password: cfg.password, session: cfg.session,
+      loginName: cfg.loginName, password: cfg.password,
       customerNames: names,
       onMatch: async function (n, r) { await upsertCrmMatch(env, n, r); },
       onProgress: async function (p) {
@@ -1115,7 +1117,7 @@ async function route(request, env) {
     if (!loginName || !password) return bad('请先填写 CRM 账号与密码');
     const lr = await CRM_P.xsyLogin({ loginName: loginName, password: password }, { fetchImpl: fetch });
     if (!lr.ok) return ok({ ok: false, stage: 'login', code: lr.code, message: lr.message });
-    const fr = await CRM_P.fetchAllOpportunities(lr.session, { fetchImpl: fetch, maxPages: 1 });
+    const fr = await CRM_P.fetchAllOpportunities(lr.session, { fetchImpl: fetch, maxPages: 1, pageSize: 200 });
     if (!fr.ok) return ok({ ok: false, stage: 'fetch', code: fr.code, message: fr.message });
     return ok({ ok: true, oppCount: fr.records.length, message: '连通正常：登录成功，拉取到 ' + fr.records.length + ' 条商机' });
   }

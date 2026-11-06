@@ -359,7 +359,7 @@ function upsertCrmMatch(name, r) {
   }
   db.prepare('INSERT INTO crm_matches (customer_name, status, record_id, level, multi, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
     'ON CONFLICT(customer_name) DO UPDATE SET status = excluded.status, record_id = excluded.record_id, level = excluded.level, multi = excluded.multi, data = excluded.data, updated_at = excluded.updated_at')
-    .run(name, 'ok', String(r.opp.id || ''), r.level === 2 ? 2 : 1, r.multi ? 1 : 0,
+    .run(name, 'ok', String(r.opp.id || ''), r.level || 1, r.multi ? 1 : 0,
       JSON.stringify({
         opp: r.opp.f, projects: r.projects || [], maintenance: r.maintenance || [],
         warranty: r.warranty || null, error: r.error || null,
@@ -420,10 +420,12 @@ async function doCrmSync(reason) {
   let outcome;
   try {
     const P = await loadCrm();
+    /* 不复用 cfg.session：实测复用旧会话时 CRM 分页会中途截断
+       （第 2 页只回 344 条，累计 1344 条，导致大量客户匹配不到）。
+       每轮重新登录只多 3~5 秒，换取商机全量（2026-11-06）。 */
     outcome = await P.runCrmSync({
       loginName: cfg.loginName,
       password: cfg.password,
-      session: cfg.session,
       customerNames: names,
       onMatch: upsertCrmMatch,
       onProgress: crmProgressPatch
@@ -1327,7 +1329,7 @@ async function handleApi(req, res, url) {
     });
     if (!lr.ok) return ok(res, { ok: false, stage: 'login', code: lr.code, message: lr.message });
     const fr = await P.fetchAllOpportunities(lr.session, {
-      fetchImpl: fetch, maxPages: 1, log: function (m) { console.log('[crm:test] ' + m); }
+      fetchImpl: fetch, maxPages: 1, pageSize: 200, log: function (m) { console.log('[crm:test] ' + m); }
     });
     if (!fr.ok) return ok(res, { ok: false, stage: 'fetch', code: fr.code, message: fr.message });
     return ok(res, { ok: true, oppCount: fr.records.length, message: '连通正常：登录成功，拉取到 ' + fr.records.length + ' 条商机' });
