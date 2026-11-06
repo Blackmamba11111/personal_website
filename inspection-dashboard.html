@@ -896,7 +896,7 @@
         <div class="m-caption">客户现网信息 <span class="sub2" id="dCrmSrc"></span></div>
         <div id="dCrmBase" class="crm-kv"></div>
         <div style="margin-top:10px;" id="dCrmHwWrap">
-          <div class="m-caption">硬件清单（共 <b id="dCrmHwCount">0</b> 台，维保到期以各条目服务时间为准）</div>
+          <div class="m-caption">硬件清单（共 <b id="dCrmHwCount">0</b> 台，维保到期以各条目服务时间为准）<span class="sub2" id="dCrmHwNote"></span></div>
           <div class="scroll-x" style="width:100%;">
             <table class="mini" id="dCrmHwTable">
               <thead><tr><th>序列号</th><th>产品 / 型号</th><th>维保服务时间</th><th>操作系统</th><th>软件版本</th></tr></thead>
@@ -1336,7 +1336,7 @@
         <div class="hint">开启后该账号看到的客户详细地址与联系人电话一律打码显示：服务端直接下发打码数据，列表、详情、地图弹窗、导出均拿不到明文，也无法展开查看。</div>
       </div>
       <div class="field">
-        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uCrmVisible"> 可见 CRM 现网信息（默认关闭）</label>
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uCrmVisible"> 可见 CRM 现网信息</label>
         <div class="hint">开启后该账号在客户详情能看到询盘云匹配到的「客户现网信息 / 产品与技术信息」、列表上的维保到期徽标，并可用「我负责的项目」筛选。关闭时服务端不下发任何 CRM 数据。</div>
       </div>
       <div class="field" id="uPwdField">
@@ -1440,6 +1440,14 @@
           <option value="1">隐藏 — 打码显示（服务端下发打码数据，无法展开）</option>
         </select>
         <div class="hint">敏感字段指客户详细地址与联系人电话；隐藏后列表 / 详情 / 导出全部打码。</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bCrmOn"> 应用 CRM 现网信息可见性</label>
+        <select id="bCrmVisible">
+          <option value="1">可见 — 显示询盘云现网信息、维保到期徽标与「我负责的项目」</option>
+          <option value="0">不可见 — 隐藏全部 CRM 相关展示</option>
+        </select>
+        <div class="hint">关闭时服务端不下发该账号任何 CRM 数据；与单个用户弹窗里的「可见 CRM 现网信息」是同一开关。</div>
       </div>
     </div>
     <div class="modal-foot">
@@ -4096,8 +4104,17 @@
         return '<div class="crm-kv-row"><span class="k">' + esc(label) + '</span><span class="v">' + esc(val || '—') + '</span></div>';
       };
       crmBox.style.display = 'block';
+      /* 多项目聚合口径（2026-11-06）：命中几条商机就拉几个项目的维保，
+         按序列号去重合并，设备行标注所属项目 */
+      var pjs = cm.projects || [];
+      var pnames = pjs.length
+        ? pjs.map(function (pj) { return pj.name || '（未命名项目）'; })
+        : [f['项目名称'] || '—'];
+      var multiProj = pnames.length > 1;
       document.getElementById('dCrmSrc').textContent =
-        '· ' + (f['项目名称'] || '—') + (cm.multi ? '（多条命中，取最新一条）' : '') +
+        (multiProj
+          ? '· 命中 ' + pnames.length + ' 个项目，维保已按序列号聚合：' + pnames.join(' / ')
+          : '· ' + pnames[0]) +
         ' · 更新 ' + ((cm.updatedAt || '').replace('T', ' ').slice(0, 16));
       document.getElementById('dCrmBase').innerHTML =
         kvRow('项目名称', f['项目名称']) + kvRow('客户名称', f['客户名称']) +
@@ -4111,16 +4128,37 @@
         return !/^配件/.test(String((dv && dv.product) || '').trim());
       });
       document.getElementById('dCrmHwCount').textContent = devs.length;
+      document.getElementById('dCrmHwNote').textContent = multiProj
+        ? '（按序列号去重，同一台设备保留维保结束时间最新的记录）' : '';
+      document.querySelector('#dCrmHwTable thead tr').innerHTML =
+        '<th>序列号</th><th>产品 / 型号</th>' + (multiProj ? '<th>所属项目</th>' : '') +
+        '<th>维保服务时间</th><th>操作系统</th><th>软件版本</th>';
       document.querySelector('#dCrmHwTable tbody').innerHTML = devs.map(function (dv) {
+        var pn = (dv.projectNames && dv.projectNames.length)
+          ? dv.projectNames : (dv.projectName ? [dv.projectName] : []);
         return '<tr><td style="font-family:monospace;">' + esc(dv.serialNo || '—') + '</td>' +
           '<td>' + esc((dv.product || '') + (dv.model ? ' · ' + dv.model : '')) + '</td>' +
+          (multiProj ? '<td>' + esc(pn.join(' / ') || '—') + '</td>' : '') +
           '<td>' + esc((dv.start || '—') + ' ~ ' + (dv.end || '—')) + '</td>' +
           '<td>' + esc(dv.os || '—') + '</td><td>' + esc(dv.version || '—') + '</td></tr>';
-      }).join('') || '<tr><td colspan="5" class="sub2">CRM 维保明细为空</td></tr>';
+      }).join('') || '<tr><td colspan="' + (multiProj ? 6 : 5) + '" class="sub2">CRM 维保明细为空</td></tr>';
       var wb = warrantyBadgeOf(c);
-      document.getElementById('dCrmWarranty').innerHTML = wb
-        ? '<span class="tag ' + (wb.cls === 'expired' ? 'disabled' : (wb.cls === 'partial' ? 'user' : 'active')) + '">维保：' + esc(wb.text) + '</span>'
-        : '<span class="sub2">维保状态：无服务时间数据</span>';
+      /* 多项目时额外列出每个项目各自的三态，便于核对聚合结果 */
+      var projChips = multiProj ? pjs.map(function (pj) {
+        var w2 = pj.warranty || {};
+        var lbl = w2.status === 'expired' ? '全部到期'
+          : w2.status === 'partial' ? '部分到期'
+            : w2.status === 'ok' ? '未到期'
+              : (pj.error ? '查询失败' : '无服务时间数据');
+        var cls = w2.status === 'expired' ? 'disabled' : (w2.status === 'ok' ? 'active' : 'user');
+        return '<span class="tag ' + cls + '" style="margin:0 5px 4px 0;">' +
+          esc(pj.name || '—') + '：' + esc(lbl) + '</span>';
+      }).join('') : '';
+      document.getElementById('dCrmWarranty').innerHTML =
+        (wb
+          ? '<span class="tag ' + (wb.cls === 'expired' ? 'disabled' : (wb.cls === 'partial' ? 'user' : 'active')) + '">维保：' + esc(wb.text) + '</span>'
+          : '<span class="sub2">维保状态：无服务时间数据</span>') +
+        (projChips ? '<div class="sub2" style="margin-top:6px;">按项目：' + projChips + '</div>' : '');
       crmTech.style.display = 'block';
       document.getElementById('dCrmTechBody').innerHTML =
         kvRow('主要使用功能', f['主要使用功能']) +
@@ -6057,15 +6095,21 @@
           else if (wb) wbTxt = '<span class="tag active">未到期</span>';
         }
         var stTag = it.status === 'ok'
-          ? '<span class="tag active">获取成功</span>' + (it.multi ? ' <span class="tag user">多条命中</span>' : '') +
+          ? '<span class="tag active">获取成功</span>' +
+            (it.hitCount > 1 ? ' <span class="tag user">聚合 ' + it.hitCount + ' 个项目</span>' : '') +
             (it.level === 2 ? ' <span class="tag user">按项目名匹配</span>' : '')
           : (it.status === 'miss' ? '<span class="tag disabled">未匹配</span>' : '<span class="tag">待检索</span>');
-        return '<tr><td style="font-weight:600;">' + esc(it.name) + '</td><td>' + stTag + '</td><td>' + wbTxt + '</td>' +
+        var pjNames = (it.projects || []).filter(Boolean);
+        var pjCell = pjNames.length
+          ? '<td class="sub2" title="' + esc(pjNames.join('\n')) + '">' +
+            esc(pjNames.length > 2 ? pjNames.slice(0, 2).join(' / ') + ' 等 ' + pjNames.length + ' 个' : pjNames.join(' / ')) + '</td>'
+          : '<td class="sub2">—</td>';
+        return '<tr><td style="font-weight:600;">' + esc(it.name) + '</td><td>' + stTag + '</td><td>' + wbTxt + '</td>' + pjCell +
           '<td class="sub2" style="white-space:nowrap;">' + esc((it.updatedAt || '').replace('T', ' ').slice(0, 19) || '—') + '</td>' +
           (it.error ? '<td class="sub2" style="color:var(--danger,#c0392b);">' + esc(it.error) + '</td>' : '<td class="sub2">—</td>') + '</tr>';
       }).join('');
       wrap.innerHTML =
-        '<table class="utable"><thead><tr><th>客户名称</th><th>匹配状态</th><th>维保</th><th>更新时间</th><th>错误信息</th>' +
+        '<table class="utable"><thead><tr><th>客户名称</th><th>匹配状态</th><th>维保</th><th>命中项目</th><th>更新时间</th><th>错误信息</th>' +
         '</tr></thead><tbody>' + rows + '</tbody></table>';
       /* 检索进行中：每 5s 轮询一次状态直到结束 */
       if (d.running) {
@@ -6599,7 +6643,7 @@
     var selfIn = targets.some(function (u) { return u.id === AUTH.user.id; });
     document.getElementById('batchUserTitle').textContent =
       '批量编辑用户（已选 ' + targets.length + ' 个' + (selfIn ? '，含当前登录账号' : '') + '）';
-    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn', 'bHideSensOn'].forEach(function (id) {
+    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn', 'bHideSensOn', 'bCrmOn'].forEach(function (id) {
       document.getElementById(id).checked = false;
     });
     document.getElementById('bRole').value = 'user';
@@ -6609,6 +6653,7 @@
     document.getElementById('bNote').value = '';
     document.getElementById('bName').value = '';
     document.getElementById('bHideSens').value = '0';
+    document.getElementById('bCrmVisible').value = '1';
     /* 账号类型 / 认证服务器下拉（与新建用户弹窗同一套数据源） */
     document.getElementById('bSourceType').value = 'local';
     document.getElementById('bSourcePwd').value = '';
@@ -6655,6 +6700,8 @@
       basePatch.note = document.getElementById('bNote').value.trim();
     if (document.getElementById('bHideSensOn').checked)
       basePatch.hideSensitive = document.getElementById('bHideSens').value === '1';
+    if (document.getElementById('bCrmOn').checked)
+      basePatch.crmVisible = document.getElementById('bCrmVisible').value === '1';
     if (document.getElementById('bMinsOn').checked) {
       var minsRaw = document.getElementById('bSessionMins').value.trim();
       var mins = Number(minsRaw);

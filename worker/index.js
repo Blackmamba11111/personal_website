@@ -421,7 +421,10 @@ async function upsertCrmMatch(env, name, r) {
     'INSERT INTO crm_matches (customer_name, status, record_id, level, multi, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
     'ON CONFLICT(customer_name) DO UPDATE SET status = excluded.status, record_id = excluded.record_id, level = excluded.level, multi = excluded.multi, data = excluded.data, updated_at = excluded.updated_at'
   ).bind(name, 'ok', String(r.opp.id || ''), r.level === 2 ? 2 : 1, r.multi ? 1 : 0,
-    JSON.stringify({ opp: r.opp.f, maintenance: r.maintenance || [], warranty: r.warranty || null, error: r.error || null }), at).run();
+    JSON.stringify({
+      opp: r.opp.f, projects: r.projects || [], maintenance: r.maintenance || [],
+      warranty: r.warranty || null, error: r.error || null,
+    }), at).run();
 }
 /* 跑一轮完整同步（Cron scheduled 或手动触发）；Workers 单次执行有时长上限，
    客户数多时靠 12 小时间隔自然分摊，这里不做跨请求断点续跑。 */
@@ -1076,6 +1079,8 @@ async function route(request, env) {
         return {
           name: n, status: row ? row.status : 'pending', level: row ? row.level : 0,
           multi: row ? !!row.multi : false, updatedAt: row ? row.updated_at : '',
+          hitCount: (data.projects || []).length || (data.maintenance && data.maintenance.length ? 1 : 0),
+          projects: (data.projects || []).map(function (pj) { return pj.name || ''; }),
           error: data.error || null, warranty: data.warranty || null
         };
       })
@@ -1099,6 +1104,7 @@ async function route(request, env) {
       matches[row.customer_name] = {
         status: row.status, recordId: row.record_id, level: row.level, multi: !!row.multi,
         opp: data.opp || null, maintenance: data.maintenance || [],
+        projects: data.projects || [], hitCount: (data.projects || []).length || 1,
         warranty: data.warranty || null, updatedAt: row.updated_at
       };
     });

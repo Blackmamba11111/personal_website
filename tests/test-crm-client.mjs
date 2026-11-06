@@ -3,6 +3,7 @@
  * 覆盖：账密登录（RSA PKCS1-v1_5 加密 / 跳转跟随 / Cookie 提取 userId+tenantId）/
  *       商机全量分页 / 字段中文标签化 / NeoBI 维保明细解析（含合计行丢弃）/
  *       维保三态 / 客户两级匹配（精确 → 项目名包含，多条取最新）/
+ *       多项目维保聚合（按序列号去重、保留最新维保时间、标注所属项目）/
  *       runCrmSync 端到端（登录→商机→匹配→维保→回调）。
  * 全部走注入的假 fetch，不访问真实 CRM。
  * 运行：node tests/test-crm-client.mjs
@@ -10,7 +11,7 @@
 import crypto from 'node:crypto';
 import {
   xsyLogin, fetchFieldLabels, fetchAllOpportunities, fetchMaintenance,
-  warrantyStatus, matchForCustomer, translateRecord, runCrmSync, XSY_HOSTS
+  warrantyStatus, matchForCustomer, translateRecord, runCrmSync, mergeMaintenance, XSY_HOSTS
 } from '../worker/crm-client.mjs';
 
 let pass = 0, fail = 0;
@@ -331,6 +332,115 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
   check('返回可复用 session', !!r.session && Array.isArray(r.session.cookies) && r.session.cookies.some(c => c.name === 'JSESSIONID'));
 }
 void KEY_BYTES;
+
+/* ---------------- 9. 多项目维保聚合（同一客户命中多条商机） ---------------- */
+{
+  const now = new Date('2026-11-05T00:00:00Z');
+
+  /* 9.1 纯函数：去重键 = 序列号（去空格 / 忽略大小写），保留维保结束时间最新的一条 */
+  const merged = mergeMaintenance([
+    { name: '项目一', devices: [
+      { serialNo: 'SN-A', end: '2024/01/01', product: 'T5100S' },
+      { serialNo: 'sn-b ', end: '2028/12/31', product: 'T5100S' }
+    ] },
+    { name: '项目二', devices: [
+      { serialNo: 'SN-B', end: '2030/12/31', product: 'T5100S' },
+      { serialNo: 'SN-C', end: '2024/05/05', product: 'T5100S' }
+    ] }
+  ]);
+  check('聚合按序列号去重：3 台（SN-B 跨项目只算 1 台）', merged.length === 3, String(merged.length));
+  const snb = merged.filter(d => String(d.serialNo).toUpperCase().trim() === 'SN-B')[0];
+  check('同序列号保留维保结束时间最新的记录', !!snb && snb.end === '2030/12/31', snb && snb.end);
+  check('保留记录所属项目作为主项目', !!snb && snb.projectName === '项目二', snb && snb.projectName);
+  check('projectNames 记录全部所属项目（项目一 + 项目二）',
+    !!snb && snb.projectNames.length === 2 && snb.projectNames.indexOf('项目一') >= 0,
+    JSON.stringify(snb && snb.projectNames));
+  const sna = merged.filter(d => d.serialNo === 'SN-A')[0];
+  check('只出现在一个项目的设备也带项目名',
+    !!sna && sna.projectName === '项目一' && sna.projectNames.length === 1, JSON.stringify(sna));
+  const mw = warrantyStatus(merged, now);
+  check('三态按聚合后清单重算（3 台中 2 台到期 → partial）',
+    mw.status === 'partial' && mw.total === 3 && mw.expired === 2, JSON.stringify(mw));
+
+  /* 9.2 端到端：同一客户命中 2 条商机 → 2 次维保请求 + 合并为一份清单 */
+  const { publicKey: pk3 } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
+  const pub3 = pk3.export({ type: 'spki', format: 'der' }).toString('base64');
+  const opps = [
+    { id: 201, opportunityName: '承德银行GSLB一期', accountId: { name: '承德银行' }, customItem101__c: '季荣成', updatedAt: '2026-11-02' },
+    { id: 202, opportunityName: '承德银行GSLB二期', accountId: { name: '承德银行' }, customItem101__c: '许占升', updatedAt: '2026-10-01' }
+  ];
+  const devRow = (sn, start, end) => ['张三', '2024/10/01', '合同A', sn, 'T5100S', 'T5100S', start, end, '-1', 'Kylin V10', 'V6.2.1'];
+  const wbBody = (rows) => {
+    const cells = WB_HEADERS.map((h, i) => ({ type: 1, row: 0, col: i, value: h }));
+    rows.forEach((r, idx) => r.forEach((v, i) => cells.push({ type: 0, row: idx + 1, col: i, value: v })));
+    return json({ data: { grid: cells } });
+  };
+  const cellsByRec = {
+    201: [devRow('SN-A', '2024/11/10', '2024/01/01'), devRow('SN-B', '2024/11/10', '2028/12/31')],
+    202: [devRow('SN-B', '2024/11/10', '2030/12/31'), devRow('SN-C', '2024/11/10', '2024/05/05')]
+  };
+  const hitCalls = [];
+  const mkFetch = (failRec) => async (url, init) => {
+    const u = String(url);
+    if (u.indexOf('/auc/passport/password-key') >= 0) return json({ scode: '200', result: pub3 });
+    if (u.indexOf('/auc/login') >= 0) return new Response('', { status: 302, headers: { location: XSY_HOSTS.crm + '/cb' } });
+    if (u.indexOf('/cb') >= 0) return new Response('ok', { status: 200, headers: { 'set-cookie': 'JSESSIONID=zzz; Path=/' } });
+    if (u.indexOf('/neoui/table/initData1') >= 0) {
+      return json({ data: { items: [
+        { apiKey: 'opportunityName', label: '项目名称' },
+        { apiKey: 'accountId', label: '客户名称' },
+        { apiKey: 'customItem101__c', label: '维护人A' }
+      ] } });
+    }
+    if (u.indexOf('/neoui/table/search') >= 0) return json({ data: { records: opps } });
+    if (u.indexOf('/neobi/v2.0/query/query') >= 0) {
+      const flt = new URLSearchParams(String(init.body)).get('filter') || '';
+      const rid = Number((/"val":(\d+)/.exec(flt) || [])[1]);
+      hitCalls.push(rid);
+      if (failRec && rid === failRec) return json({ message: 'boom' }, 400);
+      return wbBody(cellsByRec[rid] || []);
+    }
+    return json({}, 404);
+  };
+
+  const got = {};
+  const r = await runCrmSync({
+    loginName: 'a', password: 'b', customerNames: ['承德银行'],
+    onMatch: (n, res) => { got[n] = res; }
+  }, { fetchImpl: mkFetch(null), sleep: async () => {} });
+  const res = got['承德银行'];
+  check('同一客户两条命中 → 逐个项目各查一次维保', hitCalls.length === 2 && hitCalls.indexOf(201) >= 0 && hitCalls.indexOf(202) >= 0,
+    JSON.stringify(hitCalls));
+  check('结果带 2 个项目明细（名称 + 各自三态）',
+    !!res && res.projects.length === 2 && res.projects[0].name === '承德银行GSLB一期' &&
+    res.projects[0].warranty.status === 'partial' && res.projects[1].warranty.status === 'partial',
+    JSON.stringify(res && res.projects.map(p => [p.name, p.warranty && p.warranty.status])));
+  check('跨项目重复设备合并后为 3 台', !!res && res.maintenance.length === 3, String(res && res.maintenance.length));
+  const devB = res && res.maintenance.filter(d => d.serialNo === 'SN-B')[0];
+  check('合并后设备标注所属项目（两个项目都在）',
+    !!devB && devB.projectNames.length === 2 && devB.projectName === '承德银行GSLB二期',
+    JSON.stringify(devB && { p: devB.projectName, all: devB.projectNames }));
+  check('主商机仍取最新修改的一条', !!res && res.opp.id === 201, String(res && res.opp.id));
+  check('整体三态按聚合清单计算（3 台 2 到期 → partial）',
+    !!res && res.warranty.status === 'partial' && res.warranty.total === 3,
+    JSON.stringify(res && res.warranty));
+  check('同步统计计 1 户命中', r.ok && r.stats.matched === 1, JSON.stringify(r.stats));
+
+  /* 9.3 容错：单个项目维保查失败，不拖垮整户 */
+  hitCalls.length = 0;
+  const got2 = {};
+  await runCrmSync({
+    loginName: 'a', password: 'b', customerNames: ['承德银行'],
+    onMatch: (n, res2) => { got2[n] = res2; }
+  }, { fetchImpl: mkFetch(202), sleep: async () => {} });
+  const res2 = got2['承德银行'];
+  check('单项目失败仍算匹配成功，且不带整体错误',
+    !!res2 && res2.status === 'ok' && res2.error === null, JSON.stringify(res2 && res2.error));
+  check('失败项目记自己的错误与空设备', !!res2 && !!res2.projects[1].error && res2.projects[1].devices.length === 0,
+    JSON.stringify(res2 && res2.projects[1] && res2.projects[1].error));
+  check('成功项目的设备仍进入合并清单（2 台）', !!res2 && res2.maintenance.length === 2,
+    String(res2 && res2.maintenance.length));
+}
 
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);

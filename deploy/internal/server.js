@@ -360,7 +360,10 @@ function upsertCrmMatch(name, r) {
   db.prepare('INSERT INTO crm_matches (customer_name, status, record_id, level, multi, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
     'ON CONFLICT(customer_name) DO UPDATE SET status = excluded.status, record_id = excluded.record_id, level = excluded.level, multi = excluded.multi, data = excluded.data, updated_at = excluded.updated_at')
     .run(name, 'ok', String(r.opp.id || ''), r.level === 2 ? 2 : 1, r.multi ? 1 : 0,
-      JSON.stringify({ opp: r.opp.f, maintenance: r.maintenance || [], warranty: r.warranty || null, error: r.error || null }), at);
+      JSON.stringify({
+        opp: r.opp.f, projects: r.projects || [], maintenance: r.maintenance || [],
+        warranty: r.warranty || null, error: r.error || null,
+      }), at);
 }
 
 let crmSyncing = false;
@@ -1306,6 +1309,8 @@ async function handleApi(req, res, url) {
         return {
           name: n, status: r ? r.status : 'pending', level: r ? r.level : 0,
           multi: r ? !!r.multi : false, updatedAt: r ? r.updated_at : '',
+          hitCount: (data.projects || []).length || (data.maintenance && data.maintenance.length ? 1 : 0),
+          projects: (data.projects || []).map(function (pj) { return pj.name || ''; }),
           error: data.error || null, warranty: data.warranty || null
         };
       })
@@ -1329,6 +1334,7 @@ async function handleApi(req, res, url) {
       matches[r.customer_name] = {
         status: r.status, recordId: r.record_id, level: r.level, multi: !!r.multi,
         opp: data.opp || null, maintenance: data.maintenance || [],
+        projects: data.projects || [], hitCount: (data.projects || []).length || 1,
         warranty: data.warranty || null, updatedAt: r.updated_at
       };
     });

@@ -287,6 +287,8 @@ function makeBoard(opts) {
   await C.tick(3);
   check('D8 中文名下方列出 CRM 可选姓名', /季荣成/.test(C.id('uNameCnTip').textContent),
     C.id('uNameCnTip').textContent.slice(0, 80));
+  check('D9 单个用户开关文案不再写「默认关闭」', C.d.body.textContent.indexOf('可见 CRM 现网信息（默认关闭）') < 0,
+    '仍存在「（默认关闭）」后缀');
 
   /* ==================== E. 账号没填中文名 → 「我负责的项目」给出明确提示 ==================== */
   const E = makeBoard({ demoCrmVisible: true, crmMatches: MATCHES, nameCn: '' });
@@ -298,8 +300,58 @@ function makeBoard(opts) {
   check('E1 未设中文名时列表为空', E.cards().length === 0, String(E.cards().length));
   check('E2 空结果提示「未设置中文姓名」而不是笼统的无结果', /未设置「中文姓名」/.test(emptyTxt), emptyTxt.slice(0, 100));
 
-  check('F1 运行期无 JS 异常', A.errors.length === 0 && B.errors.length === 0 && C.errors.length === 0 && E.errors.length === 0,
-    A.errors.concat(B.errors, C.errors, E.errors).slice(0, 3).join(' / '));
+  /* ==================== G. 多项目聚合（同一客户命中多条商机） ==================== */
+  /* 聚合后维护字段：设备带 projectName（保留记录所属项目）与 projectNames（全部所属项目） */
+  const AGG_DEV = (sn, end, proj, all) => ({
+    serialNo: sn, product: 'T5100S', model: 'T5100S', start: '2024/11/10', end,
+    os: 'Kylin V10', version: 'V6.2.1', projectName: proj, projectNames: all
+  });
+  const P1 = '技术专用-承德银行GSLB一期';
+  const P2 = '技术专用-承德银行GSLB二期';
+  const AGG_MATCHES = Object.assign({}, MATCHES, {
+    '承德银行': {
+      status: 'ok', level: 1, multi: true, hitCount: 2, updatedAt: '2026-11-05T09:00:00.000Z',
+      opp: OPP_CD,
+      maintenance: [AGG_DEV('SN-A', '2024/01/01', P1, [P1]), AGG_DEV('SN-B', '2030/12/31', P2, [P1, P2]), AGG_DEV('SN-C', '2024/05/05', P2, [P2])],
+      projects: [
+        { id: 101, name: P1, updatedAt: '2026-11-02', warranty: { status: 'partial', total: 2, known: 2, expired: 1 } },
+        { id: 102, name: P2, updatedAt: '2026-10-01', warranty: { status: 'partial', total: 2, known: 2, expired: 1 } }
+      ],
+      warranty: { status: 'partial', total: 3, known: 3, expired: 2 }
+    }
+  });
+  const G = makeBoard({ demoCrmVisible: true, crmMatches: AGG_MATCHES });
+  await G.waitReady();
+  await G.tick(6);
+  check('G1 聚合后列表维保徽标按合并清单显示「部分到期」',
+    /维保部分到期/.test([...G.card('c1').querySelectorAll('.badge')].map(x => x.textContent).join('|')),
+    [...G.card('c1').querySelectorAll('.badge')].map(x => x.textContent).join('|'));
+  G.click(G.card('c1'));
+  await G.tick(2);
+  const src = G.id('dCrmSrc').textContent;
+  check('G2 来源行标注命中项目数与全部项目名',
+    /命中 2 个项目/.test(src) && src.indexOf(P1) >= 0 && src.indexOf(P2) >= 0, src);
+  check('G3 硬件清单表头新增「所属项目」列', /所属项目/.test(G.id('dCrmHwTable').textContent),
+    G.id('dCrmHwTable').querySelector('thead').textContent);
+  check('G4 台数按序列号去重后为 3 台', G.id('dCrmHwCount').textContent === '3', G.id('dCrmHwCount').textContent);
+  const rowsG = [...G.d.querySelectorAll('#dCrmHwTable tbody tr')];
+  const rowB = rowsG.filter(tr => /SN-B/.test(tr.textContent))[0];
+  check('G5 跨项目设备行同时标出两个项目', !!rowB && rowB.textContent.indexOf(P1) >= 0 && rowB.textContent.indexOf(P2) >= 0,
+    rowB ? rowB.textContent : '(无 SN-B 行)');
+  check('G6 去重说明与项目级三态可见',
+    /按序列号去重/.test(G.id('dCrmHwNote').textContent) && /按项目：/.test(G.id('dCrmWarranty').textContent),
+    G.id('dCrmHwNote').textContent + ' | ' + G.id('dCrmWarranty').textContent.slice(0, 80));
+  /* 兼容旧快照：multi=true 但没有 projects 字段 → 退化为单项目展示，不出现「所属项目」列 */
+  G.click(G.card('c3'));
+  await G.tick(2);
+  check('G7 旧快照（无 projects）退化为单项目展示',
+    !/所属项目/.test(G.id('dCrmHwTable').querySelector('thead').textContent) &&
+    /农行数据中心 GSLB 扩容/.test(G.id('dCrmSrc').textContent),
+    G.id('dCrmSrc').textContent);
+
+  check('F1 运行期无 JS 异常', A.errors.length === 0 && B.errors.length === 0 && C.errors.length === 0 &&
+    E.errors.length === 0 && G.errors.length === 0,
+    A.errors.concat(B.errors, C.errors, E.errors, G.errors).slice(0, 3).join(' / '));
 
   console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
   process.exit(fail ? 1 : 0);

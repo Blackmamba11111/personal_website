@@ -921,6 +921,31 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     await tick(80);
     const vv2 = usersOf(w).filter(u => u.username === 'vv')[0];
     check('批量应用后账号敏感字段变为隐藏', vv2.hideSensitive === true, JSON.stringify(vv2.hideSensitive));
+
+    /* 批量编辑：CRM 现网信息可见性（与单个用户弹窗同一开关，2026-11-06 补） */
+    const rowV3 = [...d.querySelectorAll('#usersTableWrap tbody tr')]
+      .filter(r => r.textContent.indexOf('vv') >= 0)[0];
+    const cbV3 = rowV3.querySelector('input[data-uchk]');
+    cbV3.checked = true; fire(w, cbV3, 'change');
+    click(w, id('btnUsersBatchEdit'));
+    check('批量弹窗含「应用 CRM 现网信息可见性」开关', !!id('bCrmOn') && !!id('bCrmVisible'));
+    id('bCrmOn').checked = true; id('bCrmVisible').value = '1';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const vv3 = usersOf(w).filter(u => u.username === 'vv')[0];
+    check('批量应用后账号可查看 CRM 现网信息', vv3.crmVisible === true, JSON.stringify(vv3.crmVisible));
+
+    /* 保存后会清空勾选并重绘列表，重新勾选才能再开弹窗 */
+    const rowV4 = [...d.querySelectorAll('#usersTableWrap tbody tr')]
+      .filter(r => r.textContent.indexOf('vv') >= 0)[0];
+    const cbV4 = rowV4.querySelector('input[data-uchk]');
+    cbV4.checked = true; fire(w, cbV4, 'change');
+    click(w, id('btnUsersBatchEdit'));
+    id('bCrmOn').checked = true; id('bCrmVisible').value = '0';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const vv4 = usersOf(w).filter(u => u.username === 'vv')[0];
+    check('批量可反向关闭 CRM 现网信息', vv4.crmVisible === false, JSON.stringify(vv4.crmVisible));
     w.close();
   }
 

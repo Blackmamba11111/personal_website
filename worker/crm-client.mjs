@@ -660,25 +660,69 @@ export async function fetchMaintenance(session, recordId, deps) {
   return { ok: true, devices: devices, columns: headers.filter(Boolean) };
 }
 
+/* 维保日期归一：'2026/11/06' / '2026-11-06' / '2026.11.6' → 20261106；不可解析 → null */
+function dateNum(s) {
+  const mm = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(String(s || ''));
+  return mm ? Number(mm[1] + String(mm[2]).padStart(2, '0') + String(mm[3]).padStart(2, '0')) : null;
+}
+
 /* 维保三态判定（全部到期 / 部分到期 / 未到期），口径 2026-11-05 确认 */
 export function warrantyStatus(devices, now) {
   const today = now || new Date();
   const y = today.getFullYear(), m = today.getMonth() + 1, d = today.getDate();
   const todayStr = y + '/' + String(m).padStart(2, '0') + '/' + String(d).padStart(2, '0');
-  const parse = function (s) {
-    const mm = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(String(s || ''));
-    return mm ? Number(mm[1] + String(mm[2]).padStart(2, '0') + String(mm[3]).padStart(2, '0')) : null;
-  };
-  const t = parse(todayStr);
+  const t = dateNum(todayStr);
   let known = 0, expired = 0;
   devices.forEach(function (dv) {
-    const e = parse(dv.end);
+    const e = dateNum(dv.end);
     if (e === null) return;
     known++;
     if (e < t) expired++;
   });
   const status = known === 0 ? 'unknown' : (expired === known ? 'expired' : (expired > 0 ? 'partial' : 'ok'));
   return { status: status, total: devices.length, known: known, expired: expired };
+}
+
+/* ---------------- 多项目维保聚合（口径 2026-11-06 确认） ---------------- */
+/*
+ * 同一客户命中多条商机时，各项目的维保明细合并为一份清单：
+ *  - 设备去重键＝序列号（去空格、忽略大小写），同一台设备只计 1 台；
+ *  - 重复出现时保留「维保结束时间最新」的那条记录（解析失败退化为字符串比较）；
+ *  - 该设备所属项目全部记入 projectNames，projectName 为保留记录所属的项目。
+ * projects = [{ id, name, devices, updatedAt, error }]
+ */
+export function mergeMaintenance(projects) {
+  const out = [], idx = {};
+  (projects || []).forEach(function (p) {
+    const pname = String((p && p.name) || '');
+    const devs = (p && p.devices) || [];
+    devs.forEach(function (dv) {
+      const key = String(dv.serialNo || '').trim().toUpperCase();
+      if (!key) return;
+      const cur = idx[key];
+      if (!cur) {
+        const copy = {};
+        Object.keys(dv).forEach(function (k) { copy[k] = dv[k]; });
+        copy.projectName = pname;
+        copy.projectNames = pname ? [pname] : [];
+        idx[key] = copy;
+        out.push(copy);
+        return;
+      }
+      if (pname && cur.projectNames.indexOf(pname) < 0) cur.projectNames.push(pname);
+      const a = dateNum(cur.end), b = dateNum(dv.end);
+      const better = (a === null && b !== null) ? true
+        : (a !== null && b !== null) ? b > a
+          : (a === null && b === null) ? String(dv.end || '') > String(cur.end || '')
+            : false;
+      if (!better) return;
+      const names = cur.projectNames;
+      Object.keys(dv).forEach(function (k) { cur[k] = dv[k]; });
+      cur.projectNames = names;
+      cur.projectName = pname;
+    });
+  });
+  return out;
 }
 
 /* ---------------- 客户匹配（两级，口径 2026-11-05 确认） ---------------- */
@@ -707,7 +751,9 @@ export function matchForCustomer(custName, translated) {
     return isNaN(t) ? 0 : t;
   };
   hits.sort(function (a, b) { return ts(b.updatedAt) - ts(a.updatedAt); });
-  return { status: 'ok', level: level, multi: hits.length > 1, hitCount: hits.length, opp: hits[0] };
+  /* opps = 全部命中（按修改时间倒序）。opp 保留为「主商机」＝最新一条，
+     其余字段（维护人A / 客户级别等）仍取主商机；维保明细则按 opps 全量聚合 */
+  return { status: 'ok', level: level, multi: hits.length > 1, hitCount: hits.length, opp: hits[0], opps: hits };
 }
 
 /* ---------------- 一轮完整同步 ---------------- */
@@ -757,28 +803,42 @@ export async function runCrmSync(opts, deps) {
       await onMatch(cname, { status: 'miss' });
       continue;
     }
-    let result = {
-      status: 'ok', level: m.level, multi: m.multi, hitCount: m.hitCount,
-      opp: m.opp, maintenance: null, warranty: null, error: null,
-    };
-    try {
-      const wb = await fetchMaintenance(session, m.opp.id, deps);
-      if (wb.ok) {
-        result.maintenance = wb.devices;
-        result.warranty = warrantyStatus(wb.devices);
-      } else {
-        result.error = wb.message;
-        stats.failed++;
-        await onMatch(cname, result);
-        continue;
+    /* 命中多条：逐个商机拉维保，最后按序列号聚合（2026-11-06 口径）。
+       单个项目失败不拖垮整户——只要有一条拉成功就算匹配成功，失败信息记在该项目上 */
+    const hits = (m.opps && m.opps.length) ? m.opps : [m.opp];
+    const projects = [];
+    let lastErr = null;
+    for (let k = 0; k < hits.length; k++) {
+      const o = hits[k];
+      const proj = {
+        id: o.id, name: String((o.f && o.f['项目名称']) || ''), updatedAt: o.updatedAt || '',
+        devices: [], warranty: null, error: null,
+      };
+      try {
+        const wb = await fetchMaintenance(session, o.id, deps);
+        if (wb.ok) {
+          proj.devices = wb.devices;
+          proj.warranty = warrantyStatus(wb.devices);
+        } else {
+          proj.error = wb.message;
+          lastErr = wb.message;
+        }
+      } catch (e) {
+        proj.error = '维保查询异常：' + (e && e.message);
+        lastErr = proj.error;
       }
-    } catch (e) {
-      result.error = '维保查询异常：' + (e && e.message);
-      stats.failed++;
-      await onMatch(cname, result);
-      continue;
+      projects.push(proj);
+      if (k < hits.length - 1) await sleep(300);
     }
-    stats.matched++;
+    const okCount = projects.filter(function (p) { return !p.error; }).length;
+    const merged = mergeMaintenance(projects);
+    const result = {
+      status: 'ok', level: m.level, multi: m.multi, hitCount: m.hitCount,
+      opp: m.opp, projects: projects, maintenance: merged,
+      warranty: okCount ? warrantyStatus(merged) : null,
+      error: okCount ? null : (lastErr || '维保查询失败'),
+    };
+    if (okCount) stats.matched++; else stats.failed++;
     await onMatch(cname, result);
     if (i < opts.customerNames.length - 1) await sleep(300);
   }
