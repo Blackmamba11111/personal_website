@@ -966,6 +966,15 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     const permCellAfter = rowV5b.children[4] ? rowV5b.children[4].textContent : '';
     check('授权前「权限」列没有区域统计徽标', permCellBefore.indexOf('区域统计') < 0, permCellBefore);
     check('授权后「权限」列显示「区域统计」徽标', permCellAfter.indexOf('区域统计') >= 0, permCellAfter);
+
+    /* 超管：默认具备全部权限，权限列不再逐项罗列 */
+    const adminRow = [...d.querySelectorAll('#usersTableWrap tbody tr')]
+      .filter(r => r.textContent.indexOf('admin') >= 0 || r.textContent.indexOf('超级管理员') >= 0)[0];
+    const adminPermCell = adminRow && adminRow.children[4] ? adminRow.children[4].textContent : '';
+    check('超管「权限」列只显示「全部权限」',
+      adminPermCell.indexOf('全部权限') >= 0 && adminPermCell.indexOf('读写') < 0 &&
+      adminPermCell.indexOf('区域统计') < 0 && adminPermCell.indexOf('CRM可见') < 0,
+      adminPermCell);
     w.close();
   }
 
