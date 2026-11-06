@@ -308,14 +308,16 @@ function makeBoard(opts) {
   });
   const P1 = '技术专用-承德银行GSLB一期';
   const P2 = '技术专用-承德银行GSLB二期';
+  const P3 = '技术专用-承德银行灾备三期';        /* 该项目无维保记录 */
   const AGG_MATCHES = Object.assign({}, MATCHES, {
     '承德银行': {
-      status: 'ok', level: 1, multi: true, hitCount: 2, updatedAt: '2026-11-05T09:00:00.000Z',
+      status: 'ok', level: 1, multi: true, hitCount: 3, updatedAt: '2026-11-05T09:00:00.000Z',
       opp: OPP_CD,
       maintenance: [AGG_DEV('SN-A', '2024/01/01', P1, [P1]), AGG_DEV('SN-B', '2030/12/31', P2, [P1, P2]), AGG_DEV('SN-C', '2024/05/05', P2, [P2])],
       projects: [
-        { id: 101, name: P1, updatedAt: '2026-11-02', warranty: { status: 'partial', total: 2, known: 2, expired: 1 } },
-        { id: 102, name: P2, updatedAt: '2026-10-01', warranty: { status: 'partial', total: 2, known: 2, expired: 1 } }
+        { id: 101, name: P1, updatedAt: '2026-11-02', devices: [{ serialNo: 'SN-A' }, { serialNo: 'SN-B' }], warranty: { status: 'partial', total: 2, known: 2, expired: 1 } },
+        { id: 102, name: P2, updatedAt: '2026-10-01', devices: [{ serialNo: 'SN-B' }, { serialNo: 'SN-C' }], warranty: { status: 'partial', total: 2, known: 2, expired: 1 } },
+        { id: 103, name: P3, updatedAt: '2026-09-01', devices: [], warranty: { status: 'unknown', total: 0, known: 0, expired: 0 } }
       ],
       warranty: { status: 'partial', total: 3, known: 3, expired: 2 }
     }
@@ -329,8 +331,14 @@ function makeBoard(opts) {
   G.click(G.card('c1'));
   await G.tick(2);
   const src = G.id('dCrmSrc').textContent;
-  check('G2 来源行标注命中项目数与全部项目名',
-    /命中 2 个项目/.test(src) && src.indexOf(P1) >= 0 && src.indexOf(P2) >= 0, src);
+  check('G2 来源行标注命中项目数与「有维保记录」个数',
+    /命中 3 个项目/.test(src) && /2 个有维保记录/.test(src), src);
+  const wbTxt = G.id('dCrmWarranty').textContent;
+  const tagTxt = [...G.d.querySelectorAll('#dCrmWarranty .tag')].map(x => x.textContent).join('|');
+  check('G2b 项目级标签只列有维保记录的项目',
+    tagTxt.indexOf(P1) >= 0 && tagTxt.indexOf(P2) >= 0 && tagTxt.indexOf(P3) < 0, tagTxt);
+  check('G2c 无维保记录的项目合并成一行小字',
+    /无维保记录 1 个项目/.test(wbTxt) && new RegExp(P3).test(wbTxt), wbTxt.slice(-120));
   check('G3 硬件清单表头新增「所属项目」列', /所属项目/.test(G.id('dCrmHwTable').textContent),
     G.id('dCrmHwTable').querySelector('thead').textContent);
   check('G4 台数按序列号去重后为 3 台', G.id('dCrmHwCount').textContent === '3', G.id('dCrmHwCount').textContent);

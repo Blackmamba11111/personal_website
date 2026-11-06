@@ -4111,9 +4111,13 @@
         ? pjs.map(function (pj) { return pj.name || '（未命名项目）'; })
         : [f['项目名称'] || '—'];
       var multiProj = pnames.length > 1;
+      /* CRM 里同一客户常挂多个项目，其中多数没有维保记录（实测中国人寿 9 个项目只有 1 个有设备）：
+         有记录的逐条列三态，无记录的合并成一行小字，避免详情面板被空项目刷屏 */
+      var pjWithData = pjs.filter(function (pj) { return (pj.devices && pj.devices.length) || pj.error; });
+      var pjNoData = pjs.filter(function (pj) { return !((pj.devices && pj.devices.length) || pj.error); });
       document.getElementById('dCrmSrc').textContent =
         (multiProj
-          ? '· 命中 ' + pnames.length + ' 个项目，维保已按序列号聚合：' + pnames.join(' / ')
+          ? '· 命中 ' + pjs.length + ' 个项目，维保已按序列号聚合（' + pjWithData.length + ' 个有维保记录）'
           : '· ' + pnames[0]) +
         ' · 更新 ' + ((cm.updatedAt || '').replace('T', ' ').slice(0, 16));
       document.getElementById('dCrmBase').innerHTML =
@@ -4143,8 +4147,8 @@
           '<td>' + esc(dv.os || '—') + '</td><td>' + esc(dv.version || '—') + '</td></tr>';
       }).join('') || '<tr><td colspan="' + (multiProj ? 6 : 5) + '" class="sub2">CRM 维保明细为空</td></tr>';
       var wb = warrantyBadgeOf(c);
-      /* 多项目时额外列出每个项目各自的三态，便于核对聚合结果 */
-      var projChips = multiProj ? pjs.map(function (pj) {
+      /* 多项目时额外列出每个项目各自的三态（只列有维保记录的项目） */
+      var projChips = multiProj ? pjWithData.map(function (pj) {
         var w2 = pj.warranty || {};
         var lbl = w2.status === 'expired' ? '全部到期'
           : w2.status === 'partial' ? '部分到期'
@@ -4154,11 +4158,15 @@
         return '<span class="tag ' + cls + '" style="margin:0 5px 4px 0;">' +
           esc(pj.name || '—') + '：' + esc(lbl) + '</span>';
       }).join('') : '';
+      var noDataTxt = (multiProj && pjNoData.length)
+        ? '<div class="sub2" style="margin-top:2px;">无维保记录 ' + pjNoData.length + ' 个项目：' +
+          esc(pjNoData.map(function (pj) { return pj.name || '（未命名）'; }).join(' / ')) + '</div>'
+        : '';
       document.getElementById('dCrmWarranty').innerHTML =
         (wb
           ? '<span class="tag ' + (wb.cls === 'expired' ? 'disabled' : (wb.cls === 'partial' ? 'user' : 'active')) + '">维保：' + esc(wb.text) + '</span>'
           : '<span class="sub2">维保状态：无服务时间数据</span>') +
-        (projChips ? '<div class="sub2" style="margin-top:6px;">按项目：' + projChips + '</div>' : '');
+        (projChips ? '<div class="sub2" style="margin-top:6px;">按项目：' + projChips + '</div>' : '') + noDataTxt;
       crmTech.style.display = 'block';
       document.getElementById('dCrmTechBody').innerHTML =
         kvRow('主要使用功能', f['主要使用功能']) +
