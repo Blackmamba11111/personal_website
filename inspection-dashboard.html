@@ -1298,7 +1298,7 @@
       <div class="field">
         <label for="uNameCn">中文姓名</label>
         <input type="text" id="uNameCn" autocomplete="off" placeholder="如：张三">
-        <div class="hint">登录名是拼音时，这里填对应的中文姓名。CRM「我负责的项目」按该中文名与询盘云的<b>维护人A</b>比对，留空则该账号只能看全部项目。</div>
+        <div class="hint">登录名是拼音时，这里填对应的中文姓名。CRM「我负责的项目」按该中文名与询盘云的<b>维护人A</b>比对，留空则该账号只能看全部项目。<span id="uNameCnTip"></span></div>
       </div>
       <div class="field">
         <label for="uSourceType">账号类型</label>
@@ -2233,8 +2233,16 @@
 
     var box = document.getElementById('custList');
     if (!arr.length) {
-      box.innerHTML = '<div class="empty">' +
-        (DB.customers.length ? '没有符合筛选条件的客户' : '暂无客户，点击右上角「新增客户」开始录入') + '</div>';
+      var emptyMsg;
+      if (mineMode) {
+        /* 最常见的「点了没反应」其实是账号没填中文名，直接说清楚，别让人以为是功能坏了 */
+        emptyMsg = CRM_DATA.nameCn
+          ? '没有维护人A 为「' + esc(CRM_DATA.nameCn) + '」的客户'
+          : '当前账号未设置「中文姓名」，无法与 CRM 的维护人A 比对。请管理员在用户管理里填写该账号的中文姓名';
+      } else {
+        emptyMsg = DB.customers.length ? '没有符合筛选条件的客户' : '暂无客户，点击右上角「新增客户」开始录入';
+      }
+      box.innerHTML = '<div class="empty">' + emptyMsg + '</div>';
       return;
     }
 
@@ -2255,9 +2263,10 @@
         var wb = warrantyBadgeOf(c);
         html += '<div class="card-cust s-' + s.status + (state.selectedId === c.id ? ' sel' : '') +
           '" data-id="' + c.id + '">' +
+          /* 顺序：名称 → 维保徽标 → 巡检状态。巡检状态固定在最右（2026-11-06 要求） */
           '<div class="cc-row1"><span class="cc-name">' + esc(c.name) + '</span>' +
-          '<span class="badge ' + s.status + '">' + statusText(c, s) + '</span>' +
-          (wb ? '<span class="badge wb-' + wb.cls + '">' + esc(wb.text) + '</span>' : '') + '</div>' +
+          (wb ? '<span class="badge wb-' + wb.cls + '">' + esc(wb.text) + '</span>' : '') +
+          '<span class="badge ' + s.status + '">' + statusText(c, s) + '</span></div>' +
           '<div class="cc-row2"><span>' + esc(c.province || '') +
           (c.city ? ' · ' + esc(c.city) : '') + '</span><span class="sep">|</span>' +
           '<span>' + s.freq.label + '</span><span class="sep">|</span>' +
@@ -4096,7 +4105,11 @@
         kvRow('战区 / 部门', [f['战区'], f['所属部门']].filter(Boolean).join(' / ')) +
         kvRow('项目所有人', f['项目所有人']) +
         kvRow('项目技术负责人（维护人A）', f['维护人A']) + kvRow('维护人B', f['维护人B']);
-      var devs = cm.maintenance || [];
+      /* 配件（产品名称以「配件」开头）不展示，也不计入台数：
+         历史快照里可能还留着配件行，这里再兜一次底，避免等下一轮检索才生效 */
+      var devs = (cm.maintenance || []).filter(function (dv) {
+        return !/^配件/.test(String((dv && dv.product) || '').trim());
+      });
       document.getElementById('dCrmHwCount').textContent = devs.length;
       document.querySelector('#dCrmHwTable tbody').innerHTML = devs.map(function (dv) {
         return '<tr><td style="font-family:monospace;">' + esc(dv.serialNo || '—') + '</td>' +
@@ -6893,6 +6906,30 @@
     }
   }
 
+  /* CRM 快照里出现过的维护人姓名（超管能看到全部客户，直接本地汇总，不用额外接口） */
+  function crmStaffNames() {
+    var seen = {};
+    var ms = (CRM_DATA && CRM_DATA.matches) || {};
+    Object.keys(ms).forEach(function (k) {
+      var o = ms[k] && ms[k].opp;
+      if (!o) return;
+      ['维护人A', '维护人B'].forEach(function (f) {
+        var v = String(o[f] || '').trim();
+        if (v) seen[v] = 1;
+      });
+    });
+    return Object.keys(seen).sort(function (a, b) { return a.localeCompare(b, 'zh-CN'); });
+  }
+  /* 中文名输入框下方的「可选姓名」提示：填错了「我负责的项目」就会一直空 */
+  function renderNameCnTip() {
+    var tip = document.getElementById('uNameCnTip');
+    if (!tip) return;
+    var names = crmStaffNames();
+    tip.innerHTML = names.length
+      ? '<br>CRM 里出现过的姓名（可直接抄）：<b>' + esc(names.slice(0, 12).join('、')) + '</b>' + (names.length > 12 ? ' 等 ' + names.length + ' 人' : '')
+      : '';
+  }
+
   function openUserModal(u, cloneFrom) {
     editingUserId = u ? u.id : null;
     document.getElementById('userModalTitle').textContent = u ? '编辑用户'
@@ -6901,6 +6938,7 @@
     document.getElementById('uUsername').disabled = !!u;
     document.getElementById('uName').value = u ? u.name : '';
     document.getElementById('uNameCn').value = u ? (u.nameCn || '') : '';
+    renderNameCnTip();
     document.getElementById('uRole').value = u ? u.role : 'user';
     document.getElementById('uPerm').value = u ? (u.perm === 'ro' ? 'ro' : 'rw') : 'rw';
     document.getElementById('uSessionMins').value = u ? (u.sessionMins || 30) : 30;

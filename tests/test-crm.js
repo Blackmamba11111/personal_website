@@ -30,7 +30,9 @@ const OPP_CD = {
 };
 const MAINT_CD = [
   { serialNo: 'T5100S-001', product: 'T5100S', model: 'T5100S', start: '2024/11/10', end: '2025/11/09', os: 'Kylin V10', version: 'V6.2.1' },
-  { serialNo: 'T5100S-002', product: 'T5100S', model: 'T5100S', start: '2024/11/10', end: '2025/11/09', os: 'Kylin V10', version: 'V6.2.1' }
+  { serialNo: 'T5100S-002', product: 'T5100S', model: 'T5100S', start: '2024/11/10', end: '2025/11/09', os: 'Kylin V10', version: 'V6.2.1' },
+  /* 配件行：不进清单、不计台数（2026-11-06 需求） */
+  { serialNo: 'ACC-001', product: '配件-光模块', model: '--', start: '2024/11/10', end: '2025/11/09', os: '--', version: '--' }
 ];
 const MATCHES = {
   '承德银行': {
@@ -81,7 +83,7 @@ function makeBoard(opts) {
     mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
     mkUser({ username: 'demo', name: '河北片区', role: 'user', password: 'demo888' })
   ];
-  users[1].nameCn = opts.nameCn || '潘超';
+  users[1].nameCn = (opts.nameCn === undefined) ? '潘超' : opts.nameCn;
   users[1].crmVisible = !!opts.demoCrmVisible;
   const errors = [];
   let w, d;
@@ -149,6 +151,13 @@ function makeBoard(opts) {
   check('A5 未匹配客户不显示维保徽标', !/维保/.test(badgeText('c4')), badgeText('c4'));
   check('A6 维保徽标使用专用配色类', !!A.card('c1').querySelector('.badge.wb-expired') &&
     !!A.card('c2').querySelector('.badge.wb-partial') && !!A.card('c3').querySelector('.badge.wb-ok'));
+  /* 顺序：名称 → 维保 → 巡检状态（巡检固定最右，2026-11-06 要求） */
+  const badges1 = [...A.card('c1').querySelectorAll('.cc-row1 .badge')];
+  check('A6b 维保徽标排在巡检状态左侧', badges1.length === 2 &&
+    /wb-/.test(badges1[0].className) && /wb-/.test(badges1[1].className) === false,
+    badges1.map(b => b.className).join(' | '));
+  check('A6c 巡检状态固定在最右', /巡检|未巡检|已完成|部分/.test(badges1[badges1.length - 1].textContent),
+    badges1[badges1.length - 1].textContent);
 
   /* 客户详情：客户现网信息 + 产品与技术信息 */
   A.click(A.card('c1'));
@@ -163,6 +172,9 @@ function makeBoard(opts) {
     String(A.d.querySelectorAll('#dCrmHwTable tbody tr').length));
   check('A12 硬件行含序列号与服务时间', /T5100S-001/.test(A.id('dCrmHwTable').textContent) &&
     /2024\/11\/10/.test(A.id('dCrmHwTable').textContent));
+  check('A12b 配件行不出现在硬件清单', !/配件-光模块/.test(A.id('dCrmHwTable').textContent) &&
+    !/ACC-001/.test(A.id('dCrmHwTable').textContent), A.id('dCrmHwTable').textContent.slice(0, 120));
+  check('A12c 台数不计配件', A.id('dCrmHwCount').textContent === '2', A.id('dCrmHwCount').textContent);
   check('A13 详情维保徽标为全部到期', /维保全部到期/.test(A.id('dCrmWarranty').textContent),
     A.id('dCrmWarranty').textContent);
   check('A14 详情显示「产品与技术信息」块', A.id('dCrmTech').style.display === 'block');
@@ -270,9 +282,24 @@ function makeBoard(opts) {
   check('D6 未勾选时 CRM 可见默认为关', nu2 && nu2.crmVisible === false,
     nu2 ? String(nu2.crmVisible) : '(未创建)');
   check('D7 中文名留空允许保存', nu2 && nu2.nameCn === '', nu2 ? JSON.stringify(nu2.nameCn) : '(未创建)');
+  /* 表单里直接列出 CRM 出现过的维护人姓名，避免手填错字导致「我负责的项目」永远空 */
+  C.click(C.id('btnNewUser'));
+  await C.tick(3);
+  check('D8 中文名下方列出 CRM 可选姓名', /季荣成/.test(C.id('uNameCnTip').textContent),
+    C.id('uNameCnTip').textContent.slice(0, 80));
 
-  check('E1 运行期无 JS 异常', A.errors.length === 0 && B.errors.length === 0 && C.errors.length === 0,
-    A.errors.concat(B.errors, C.errors).slice(0, 3).join(' / '));
+  /* ==================== E. 账号没填中文名 → 「我负责的项目」给出明确提示 ==================== */
+  const E = makeBoard({ demoCrmVisible: true, crmMatches: MATCHES, nameCn: '' });
+  await E.waitReady();
+  await E.tick(6);
+  E.click(E.id('mineChips').querySelector('[data-mine="mine"]'));
+  await E.tick(4);
+  const emptyTxt = E.id('custList').textContent;
+  check('E1 未设中文名时列表为空', E.cards().length === 0, String(E.cards().length));
+  check('E2 空结果提示「未设置中文姓名」而不是笼统的无结果', /未设置「中文姓名」/.test(emptyTxt), emptyTxt.slice(0, 100));
+
+  check('F1 运行期无 JS 异常', A.errors.length === 0 && B.errors.length === 0 && C.errors.length === 0 && E.errors.length === 0,
+    A.errors.concat(B.errors, C.errors, E.errors).slice(0, 3).join(' / '));
 
   console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
   process.exit(fail ? 1 : 0);

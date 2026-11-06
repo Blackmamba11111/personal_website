@@ -268,6 +268,9 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
     ['张三', '2024/10/01', '合同A', sn, 'T5100S', 'T5100S', '2024/11/10', '2025/11/09', '-361', 'Kylin V10', 'V6.2.1']
       .forEach((v, i) => devCells.push({ type: 0, row: idx + 1, col: i, value: v }));
   });
+  /* 第 3 行是配件：不进设备清单，也不参与维保三态 */
+  ['张三', '2024/10/01', '合同A', 'ACC-001', '配件-光模块', '--', '2024/11/10', '2025/11/09', '-361', '--', '--']
+    .forEach((v, i) => devCells.push({ type: 0, row: 3, col: i, value: v }));
 
   let maintenanceCalls = 0;
   const wbCalls = [];
@@ -310,6 +313,9 @@ const WB_HEADERS = ['销售', '合同日期', '合同名称', '序列号', '产�
     JSON.stringify(got['承德银行'] && got['承德银行'].warranty));
   check('命中客户带回 2 台设备', got['承德银行'] && got['承德银行'].maintenance.length === 2,
     String(got['承德银行'] && got['承德银行'].maintenance.length));
+  check('配件行被剔除（产品名称以「配件」开头）',
+    got['承德银行'] && got['承德银行'].maintenance.every(d => !/^配件/.test(d.product)),
+    JSON.stringify((got['承德银行'] && got['承德银行'].maintenance || []).map(d => d.product)));
   check('未命中客户标 miss 且不查维保', got['不存在银行'].status === 'miss');
   check('每家命中客户各查一次维保', maintenanceCalls === 2, String(maintenanceCalls));
   /* 维保请求体照抄网页抓包：少一个固定字段服务端就返回空表（2026-11-05 实测） */

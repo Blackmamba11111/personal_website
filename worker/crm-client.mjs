@@ -649,6 +649,9 @@ export async function fetchMaintenance(session, recordId, deps) {
     const cell = function (i) { return (i >= 0 && row && row[i] !== undefined && row[i] !== null) ? String(row[i]) : ''; };
     const serial = cell(ix.serial);
     if (!serial || /^台\/?套?数/.test(serial)) return;   /* 合计行 */
+    /* 配件（产品名称形如「配件-光模块」）不进设备清单，也不参与维保三态：
+       配件维保口径与整机不同，混进来会把「全部到期」算成「部分到期」（2026-11-06 确认） */
+    if (/^配件/.test(cell(ix.product).trim())) return;
     devices.push({
       serialNo: serial, product: cell(ix.product), model: cell(ix.model),
       start: cell(ix.start), end: cell(ix.end), os: cell(ix.os), version: cell(ix.ver),
