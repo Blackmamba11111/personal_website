@@ -580,9 +580,13 @@ export async function fetchAllOpportunities(session, deps) {
   const labels = (deps && deps.labels) || null;
   const fields = (deps && deps.fields) || OPP_FIELDS;
   const url = XSY_HOSTS.crm + '/rest/bff/v3.0/neoui/table/search?entityApiKey=opportunity&skipTotalSize=true';
+  const shouldStop = (deps && deps.shouldStop) || function () { return false; };
   const all = [];
   let truncated = false;
+  let cancelled = false;
   for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
+    /* 用户点「停止」：商机清单扫到一半就退出（2026-11-06） */
+    if (shouldStop()) { cancelled = true; break; }
     const r = await xsyJson(session, url, {
       method: 'POST',
       body: JSON.stringify({
@@ -610,7 +614,7 @@ export async function fetchAllOpportunities(session, deps) {
     if (!recs.length) break;
     if (pageNo === maxPages) truncated = true;
   }
-  return { ok: true, records: all, translated: !!labels, truncated: truncated };
+  return { ok: true, records: all, translated: !!labels, truncated: truncated, cancelled: cancelled };
 }
 
 /* 商机字段中文标签化：把 record 翻译成 {id, f: {中文标签: 值文本}} */
@@ -1015,10 +1019,15 @@ export function serialKey(s) {
 export function crmStatProgressText(p) {
   const o = p || {};
   if (o.stage === 'login') return '正在登录询盘云（销售易）…';
-  if (o.stage === 'opps') return '正在拉取 CRM 商机列表（全域）…';
+  if (o.stage === 'opps') return '正在按区域名称检索 CRM 商机（全域）…';
   if (o.stage === 'devices') {
     const total = Number(o.total) || 0;
-    return '正在拉取项目维保（' + (Number(o.done) || 0) + '/' + total + '）：' + (o.current || '—');
+    const dev = Number(o.devices) || 0;
+    return '正在拉取项目维保（' + (Number(o.done) || 0) + '/' + total + '）' +
+      (dev ? '·已发现 ' + dev + ' 台设备' : '') + '：' + (o.current || '—');
+  }
+  if (o.stage === 'stopped') {
+    return '已停止：已扫 ' + (Number(o.done) || 0) + '/' + (Number(o.total) || 0) + ' 个项目（部分结果）';
   }
   if (o.stage === 'done') return '统计完成';
   if (o.stage === 'error') return '统计失败';
@@ -1127,6 +1136,7 @@ export async function runRegionStat(opts, deps) {
   const log = (deps && deps.log) || function () {};
   const sleep = (deps && deps.sleep) || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
   const onProgress = (opts && opts.onProgress) || function () {};
+  const shouldStop = (opts && opts.shouldStop) || function () { return false; };
   const region = String((opts && opts.region) || '').trim();
   if (!region) return { ok: false, message: '请选择区域名称' };
 
@@ -1144,7 +1154,7 @@ export async function runRegionStat(opts, deps) {
   async function loadOpps(sess) {
     const labR = await fetchFieldLabels(sess, deps);
     if (!labR.ok) return labR;
-    return fetchAllOpportunities(sess, Object.assign({}, deps, { labels: labR.labels }));
+    return fetchAllOpportunities(sess, Object.assign({}, deps, { labels: labR.labels, shouldStop: shouldStop }));
   }
 
   await report({ stage: 'opps', done: 0 });
@@ -1158,6 +1168,15 @@ export async function runRegionStat(opts, deps) {
     if (!fr.ok) return { ok: false, code: fr.code, message: fr.message };
   }
   const recs = fr.records || [];
+  /* 商机还没扫完就被叫停：没有任何可用结果，直接收工（2026-11-06） */
+  if (fr.cancelled) {
+    log('crm: 区域统计在商机扫描阶段被停止');
+    await report({ stage: 'stopped', done: 0, total: 0 });
+    return {
+      ok: false, cancelled: true,
+      message: '已停止：商机清单尚未检索完，本次不产生结果',
+    };
+  }
 
   /* 顺带把全域战区分布算出来，前端下拉框直接用（避免再跑一次商机全量） */
   const regMap = {};
@@ -1174,9 +1193,13 @@ export async function runRegionStat(opts, deps) {
   });
   const total = hits.length;
   log('crm: 区域统计 ' + region + '，项目 ' + total + ' 个（商机全量 ' + recs.length + '）');
+  /* 项目数一确定就先报给前端：用户能立刻看到「这个区域有多少个项目」（2026-11-06） */
+  await report({ stage: 'devices', done: 0, total: total, devices: 0 });
 
   const projects = [];
+  let scanned = 0, stopped = false;
   for (let i = 0; i < total; i++) {
+    if (shouldStop()) { stopped = true; log('crm: 区域统计被用户停止（已扫 ' + i + '/' + total + '）'); break; }
     const o = hits[i];
     const pname = String((o.f && o.f['项目名称']) || '');
     await report({ stage: 'devices', done: i, total: total, current: pname });
@@ -1195,15 +1218,22 @@ export async function runRegionStat(opts, deps) {
       proj.error = '维保查询异常：' + (e && e.message);
     }
     projects.push(proj);
+    scanned = i + 1;
     if (i < total - 1) await sleep(250);
   }
 
   const built = buildRegionStat(projects);
-  await report({ stage: 'done', done: total, total: total });
-  log('crm: 区域统计完成 ' + region + '，设备 ' + built.stats.devices + ' 台 / 型号 ' + built.stats.models + ' 个');
+  await report({
+    stage: stopped ? 'stopped' : 'done', done: scanned, total: total,
+    devices: built.stats.devices,
+  });
+  log('crm: 区域统计' + (stopped ? '（已停止）' : '完成') + ' ' + region +
+    '，已扫 ' + scanned + '/' + total + ' 个项目，设备 ' + built.stats.devices +
+    ' 台 / 型号 ' + built.stats.models + ' 个');
 
   return {
     ok: true, region: region, regions: regions, truncated: !!fr.truncated,
+    cancelled: stopped, partial: stopped, scanned: scanned, total: total,
     projects: projects.map(function (p) {
       return {
         id: p.id, name: p.name, customer: p.customer, dept: p.dept, owner: p.owner,

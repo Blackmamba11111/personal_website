@@ -526,6 +526,7 @@
     transition:width .45s ease,background .3s ease;}
   .crm-prog-fill.done{background:var(--ok);}
   .crm-prog-fill.fail{background:var(--miss);}
+  .crm-prog-fill.stopped{background:var(--text-3);}
   /* 登录 / 拉商机阶段暂无百分比：走扫光动画，避免看起来卡死 */
   .crm-prog-track.waiting .crm-prog-fill{width:100%;background:transparent;}
   .crm-prog-track.waiting::after{content:'';position:absolute;inset:0;opacity:.5;
@@ -1307,7 +1308,7 @@
   <div class="page-head">
     <button type="button" class="btn" id="btnStatBack">← 返回 CRM</button>
     <h2>区域统计</h2>
-    <span class="sub" id="statSub">按「战区」汇总 CRM 全域项目，含台账外客户</span>
+    <span class="sub" id="statSub">以区域名称（战区）为检索条件，实时统计 CRM 项目数与设备台数</span>
     <div class="spacer"></div>
     <button type="button" class="btn" id="btnCrmStatCsvRows">导出明细 CSV</button>
     <button type="button" class="btn" id="btnCrmStatCsvSum">导出型号汇总 CSV</button>
@@ -1320,6 +1321,7 @@
           <option value="">加载中…</option>
         </select>
         <button type="button" class="btn primary" id="btnCrmStatRun">检索</button>
+        <button type="button" class="btn" id="btnCrmStatStop" style="display:none;">停止</button>
         <span class="hint" id="crmStatReadOnly" style="display:none;">只读：检索需超级管理员操作</span>
         <span class="hint" id="crmStatInfo">尚未检索</span>
       </div>
@@ -1352,7 +1354,8 @@
     </div>
     <p class="hint" style="margin:12px 2px 0;">
       以项目为主体展示 CRM 商机与维保设备：部门取「所属部门」，所属销售取维保明细的「销售」，合同日期为维保合同签订日。
-      台数按序列号去重（同一台设备跨项目只算 1 台）。结果由超级管理员触发检索后缓存，打开即可查看与导出。
+      台数按序列号去重（同一台设备跨项目只算 1 台）。项目数 / 设备数一律由「检索」实时查 CRM 得出，不预置。
+      检索耗时较长（金融行业部约 5–6 分钟），中途可点「停止」——已扫到的部分会保留并标为「部分结果」，仍可查看与导出。
     </p>
   </div>
 </div>
@@ -6471,18 +6474,20 @@
       if (saved && names.indexOf(saved) >= 0) pick = saved;
       else if (names.indexOf('金融行业部') >= 0) pick = '金融行业部';
       else pick = names[0] || '';
+      /* 区域名称即检索条件：下拉只列名称，项目数/设备数一律由「检索」实测得出后显示在结果区
+         （原来把上次统计数写进 option，容易被当成系统默认值，2026-11-06 改） */
       sel.innerHTML = regions.length
         ? regions.map(function (x) {
             return '<option value="' + esc(x.name) + '"' + (x.name === pick ? ' selected' : '') + '>' +
-              esc(x.name) + '（' + x.count + ' 个项目）</option>';
+              esc(x.name) + '</option>';
           }).join('')
         : '<option value="">暂无战区数据（先完成一次检索）</option>';
       if (pick) {
         CRM_STAT.region = pick;
         loadCrmStatData(pick);
       }
-      /* 服务端正在跑（例如上次没看完）：自动接管进度条 */
-      if (d.running && d.progress) { crmStatPaintProg(d.progress); crmStatPoll(); }
+      /* 服务端正在跑（例如上次没看完）：自动接管进度条，并给出「停止」 */
+      if (d.running && d.progress) { crmStatPaintProg(d.progress); crmStatStopBtn(true); crmStatPoll(); }
     });
   }
 
@@ -6505,8 +6510,12 @@
       CRM_STAT.modelFilter = '';
       crmStatClearQ();
       var st = d.stats || {};
-      crmStatEl('crmStatInfo').textContent = region + '：' + fmtTs(d.updatedAt) + ' 更新 · ' +
-        (st.projects || 0) + ' 个项目 · ' + (st.devices || 0) + ' 台设备 · ' + (st.models || 0) + ' 个型号' +
+      /* 「有多少项目 / 多少设备」= 最近一次以该区域名称为条件的实测结果；停止时标「部分结果」 */
+      crmStatEl('crmStatInfo').innerHTML = esc(region) + '：' + fmtTs(d.updatedAt) + ' 检索 · ' +
+        '<b>' + (st.projects || 0) + ' 个项目</b> · <b>' + (st.devices || 0) + ' 台设备</b> · ' +
+        (st.models || 0) + ' 个型号' +
+        (d.partial ? ' <span class="tag admin" title="上次检索被停止，只扫到 ' + (d.scanned || 0) + '/' +
+          (d.total || 0) + ' 个项目">部分结果（已扫 ' + (d.scanned || 0) + '/' + (d.total || 0) + ' 个项目）</span>' : '') +
         (d.truncated ? '（商机分页达到上限，结果可能不完整）' : '');
       renderCrmStat();
     });
@@ -6701,32 +6710,48 @@
     wrap.style.display = 'block';
     var total = Number(p.total) || 0;
     var done = Number(p.done) || 0;
+    var devs = Number(p.devices) || 0;
     var running = !!p.running;
+    var stopped = !!p.cancelled || p.stage === 'stopped';
     var known = total > 0 && p.stage !== 'login' && p.stage !== 'opps';
     var pct = running
       ? (known ? Math.min(100, Math.round(done / total * 100)) : 0)
       : (p.ok ? 100 : (known ? Math.min(100, Math.round(done / total * 100)) : 0));
     crmStatEl('crmStatProgStage').textContent = p.message || '处理中…';
-    crmStatEl('crmStatProgMeta').textContent =
-      (known && total) ? ('已完成 ' + Math.min(done, total) + ' / ' + total + ' 个项目') : '';
+    /* 项目数一确定就显示出来：先看到「共 560 个项目」，再看着设备数往上涨 */
+    crmStatEl('crmStatProgMeta').textContent = (known && total)
+      ? (done >= total ? ('共 ' + total + ' 个项目') : ('已完成 ' + Math.min(done, total) + ' / ' + total + ' 个项目')) +
+        (devs ? ' · 已发现 ' + devs + ' 台设备' : '')
+      : (p.stage === 'opps' ? '正在按区域名称检索 CRM 商机…' : '');
     var pctEl = crmStatEl('crmStatProgPct');
-    pctEl.textContent = pct + '%';
-    pctEl.style.color = running ? 'var(--primary)' : (p.ok ? 'var(--ok)' : 'var(--miss)');
+    pctEl.textContent = stopped ? '已停止' : (pct + '%');
+    pctEl.style.color = running ? 'var(--primary)'
+      : (stopped ? 'var(--text-2)' : (p.ok ? 'var(--ok)' : 'var(--miss)'));
     var track = crmStatEl('crmStatProgTrack');
     if (running && !known) track.classList.add('waiting'); else track.classList.remove('waiting');
     var fill = crmStatEl('crmStatProgFill');
-    fill.style.width = pct + '%';
-    fill.className = 'crm-prog-fill' + (running ? '' : (p.ok ? ' done' : ' fail'));
+    fill.style.width = (stopped ? Math.min(100, pct) : pct) + '%';
+    fill.className = 'crm-prog-fill' + (running ? '' : (stopped ? ' stopped' : (p.ok ? ' done' : ' fail')));
     var parts = [];
     var t0 = Date.parse(p.startedAt || '');
     if (t0) {
       var t1 = p.finishedAt ? (Date.parse(p.finishedAt) || Date.now()) : Date.now();
       parts.push((running ? '已用' : '耗时') + ' <b>' + crmFmtDur(t1 - t0) + '</b>');
     }
+    if (stopped && known) parts.push('<span style="color:var(--text-2);">已扫 ' + Math.min(done, total) + '/' + total + ' 个项目（部分结果）</span>');
+    if (p.stopping && running) parts.push('<span style="color:var(--text-2);">正在停止，当前项目拉完即收尾</span>');
     if (!running && p.stage === 'error' && p.error) {
       parts.push('<span style="color:var(--miss);">' + esc(p.error) + '</span>');
     }
     crmStatEl('crmStatProgFoot').innerHTML = parts.join(' · ');
+  }
+
+  /* 检索进行中才显示「停止」 */
+  function crmStatStopBtn(on) {
+    var b = crmStatEl('btnCrmStatStop');
+    if (!b) return;
+    b.style.display = on ? '' : 'none';
+    if (on) { b.disabled = false; b.textContent = '停止'; }
   }
 
   function crmStatPoll() {
@@ -6738,6 +6763,7 @@
         /* 区域选择被用户改过时，进度仍按服务端当前跑的区域显示 */
         crmStatPaintProg(p);
         if (p.running) {
+          crmStatStopBtn(true);
           /* 公网版单次只能跑一批：服务端标 needNext 时自动续跑下一批（8 秒节流防重） */
           if (p.needNext && !CRM_STAT.nextBusy && Date.now() - CRM_STAT.nextAt > 8000) {
             CRM_STAT.nextBusy = true;
@@ -6750,6 +6776,7 @@
           return;
         }
         CRM_STAT.timer = null;
+        crmStatStopBtn(false);
         crmStatEl('btnCrmStatRun').disabled = !isAdmin();
         if (p.ok) {
           if (p.region && p.region !== CRM_STAT.region) {
@@ -6759,11 +6786,29 @@
           }
           if (p.region) loadCrmStatData(p.region);
           toast(p.message || '统计完成');
+        } else if (p.cancelled) {
+          toast(p.message || '已停止');
         } else {
           toast('统计失败：' + (p.error || '未知错误'));
         }
       });
     }, 1500);
+  }
+
+  /* 停止：协作式中断，服务端把已扫到的项目先落库，再按「部分结果」展示（2026-11-06） */
+  function stopCrmStat() {
+    var btn = crmStatEl('btnCrmStatStop');
+    if (btn) { btn.disabled = true; btn.textContent = '停止中…'; }
+    api('/crm/stat/stop', { method: 'POST', body: {} }).then(function (r) {
+      if (!r.ok) { toast(r.error || '停止失败'); if (btn) { btn.disabled = false; btn.textContent = '停止'; } return; }
+      var d = r.data || {};
+      if (d.stopping === false) { crmStatStopBtn(false); toast(d.message || '当前没有正在进行的检索'); return; }
+      if (d.progress) crmStatPaintProg(d.progress);
+      toast('已发出停止指令，当前项目拉完即收尾');
+    }, function () {
+      toast('停止请求失败，请重试');
+      if (btn) { btn.disabled = false; btn.textContent = '停止'; }
+    });
   }
 
   function runCrmStat() {
@@ -6774,17 +6819,19 @@
     var btn = crmStatEl('btnCrmStatRun');
     if (btn.disabled) return;
     btn.disabled = true;
+    crmStatStopBtn(true);
     try { localStorage.setItem(crmStatRegionKey(), region); } catch (e) {}
     CRM_STAT.region = region;
     CRM_STAT.modelFilter = '';
     crmStatPaintProg({
-      running: true, stage: 'login', region: region, message: '正在提交统计请求…',
-      done: 0, total: 0, startedAt: new Date().toISOString()
+      running: true, stage: 'login', region: region, message: '正在以「' + region + '」为条件检索 CRM…',
+      done: 0, total: 0, devices: 0, startedAt: new Date().toISOString()
     });
     crmStatPoll();
     api('/crm/stat/run', { method: 'POST', body: { region: region, reset: true } }).then(function (r) {
       if (!r.ok) {
         btn.disabled = false;
+        crmStatStopBtn(false);
         crmStatPaintProg({
           running: false, ok: false, stage: 'error', message: '触发失败：' + (r.error || '未知错误'),
           error: r.error || '未知错误', finishedAt: new Date().toISOString(),
@@ -6795,7 +6842,7 @@
       }
       var d = r.data || {};
       if (d.progress) crmStatPaintProg(d.progress);
-      if (d.started === false) toast(d.message || '未开始');
+      if (d.started === false) { crmStatStopBtn(false); toast(d.message || '未开始'); }
     });
   }
 
@@ -8022,6 +8069,7 @@
     document.getElementById('btnCrmStatPage').addEventListener('click', function () { openStatPage('crm'); });
     document.getElementById('btnStatBack').addEventListener('click', closeStatPage);
     document.getElementById('btnCrmStatRun').addEventListener('click', runCrmStat);
+    document.getElementById('btnCrmStatStop').addEventListener('click', stopCrmStat);
     document.getElementById('btnCrmStatCsvRows').addEventListener('click', exportCrmStatRows);
     document.getElementById('btnCrmStatCsvSum').addEventListener('click', exportCrmStatSum);
     document.getElementById('crmStatRegion').addEventListener('change', function () {

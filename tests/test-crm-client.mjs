@@ -734,6 +734,33 @@ void KEY_BYTES;
     prog4[prog4.length - 1].stage === 'done', JSON.stringify(prog4.map(p => p.stage)));
   const bad4 = await runRegionStat({ loginName: 'a', password: 'b', region: ' ' }, { fetchImpl: fetch4 });
   check('区域统计：缺区域名直接报错', bad4.ok === false && !!bad4.message, JSON.stringify(bad4));
+
+  /* 11.4 停止（设备阶段）：保留已扫部分，标 partial / scanned */
+  called4.length = 0;
+  const prog5 = [];
+  const r5 = await runRegionStat({
+    loginName: 'a', password: 'b', region: '金融行业部',
+    shouldStop: () => called4.length >= 1,
+    onProgress: (p) => prog5.push(p)
+  }, { fetchImpl: fetch4, sleep: async () => {} });
+  check('停止：设备阶段中断只拉已扫到的项目（1/2）',
+    r5.ok === true && r5.cancelled === true && r5.partial === true &&
+    r5.projects.length === 1 && r5.scanned === 1 && r5.total === 2,
+    JSON.stringify({ n: r5.projects.length, scanned: r5.scanned, total: r5.total }));
+  check('停止：已扫部分仍产出可看可导出的结果',
+    r5.rows.length === 2 && r5.stats.projects === 1 && r5.stats.devices === 2,
+    JSON.stringify(r5.stats));
+  check('停止：进度末态为 stopped 并带已发现设备数',
+    prog5[prog5.length - 1].stage === 'stopped' && prog5[prog5.length - 1].devices === 2,
+    JSON.stringify(prog5[prog5.length - 1]));
+
+  /* 11.5 停止（商机阶段）：没有任何可用结果，明确报「不产生结果」 */
+  const r6 = await runRegionStat({
+    loginName: 'a', password: 'b', region: '金融行业部',
+    shouldStop: () => true, onProgress: () => {}
+  }, { fetchImpl: fetch4, sleep: async () => {} });
+  check('停止：商机清单未扫完时不产生结果',
+    r6.ok === false && r6.cancelled === true && /已停止/.test(r6.message), JSON.stringify(r6));
 }
 
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');

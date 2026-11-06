@@ -461,18 +461,21 @@ async function doCrmSync(reason) {
 let crmStatRunning = false;
 let crmStatRegion = '';
 let crmStatProgress = null;
+/* 用户点「停止」的协作式中断标记：任务在项目之间检查，一停就收尾（2026-11-06） */
+let crmStatCancel = false;
 
 function crmStatProgressNew(region) {
   const t = nowIso();
   return {
     running: true, region: region, stage: 'login', message: '正在登录询盘云（销售易）…',
-    done: 0, total: 0, current: '', startedAt: t, updatedAt: t, finishedAt: '', ok: null, error: '',
+    done: 0, total: 0, current: '', devices: 0,
+    startedAt: t, updatedAt: t, finishedAt: '', ok: null, error: '', cancelled: false,
   };
 }
 function crmStatProgressPatch(p) {
   if (!crmStatProgress) return;
   const src = p || {};
-  ['stage', 'message', 'done', 'total', 'current'].forEach(function (k) {
+  ['stage', 'message', 'done', 'total', 'current', 'devices'].forEach(function (k) {
     if (src[k] !== undefined) crmStatProgress[k] = src[k];
   });
   crmStatProgress.updatedAt = nowIso();
@@ -480,17 +483,26 @@ function crmStatProgressPatch(p) {
 function crmStatProgressFinish(outcome) {
   const p = crmStatProgress;
   if (!p) return;
+  const cancelled = !!(outcome && outcome.cancelled);
   p.running = false;
   p.finishedAt = nowIso();
   p.updatedAt = p.finishedAt;
-  p.ok = !!(outcome && outcome.ok);
-  p.stage = p.ok ? 'done' : 'error';
+  p.ok = !!(outcome && outcome.ok) || cancelled;
+  p.cancelled = cancelled;
+  p.stage = cancelled ? 'stopped' : (p.ok ? 'done' : 'error');
   p.error = p.ok ? '' : String((outcome && (outcome.message || outcome.code)) || '未知错误');
   const st = (outcome && outcome.stats) || null;
-  p.message = p.ok
-    ? ('统计完成：' + (st ? st.projects : 0) + ' 个项目，' + (st ? st.devices : 0) + ' 台设备，' +
-      (st ? st.models : 0) + ' 个型号')
-    : ('统计失败：' + p.error);
+  if (cancelled) {
+    p.message = outcome && outcome.saved
+      ? ('已停止：保留已扫的 ' + (outcome.scanned || 0) + '/' + (outcome.total || 0) +
+        ' 个项目，' + (st ? st.devices : 0) + ' 台设备（部分结果）')
+      : ('已停止：' + (p.error || '商机清单尚未检索完，本次不产生结果'));
+  } else {
+    p.message = p.ok
+      ? ('统计完成：' + (st ? st.projects : 0) + ' 个项目，' + (st ? st.devices : 0) + ' 台设备，' +
+        (st ? st.models : 0) + ' 个型号')
+      : ('统计失败：' + p.error);
+  }
 }
 
 function readStatRegions() {
@@ -520,6 +532,7 @@ async function doRegionStat(region) {
 
   const cfg = readCrmConfig();
   crmStatRunning = true;
+  crmStatCancel = false;
   crmStatRegion = region;
   crmStatProgress = crmStatProgressNew(region);
   console.log('[crm:stat] 统计开始：' + region);
@@ -528,22 +541,31 @@ async function doRegionStat(region) {
     const P = await loadCrm();
     const res = await P.runRegionStat({
       loginName: cfg.loginName, password: cfg.password, region: region,
+      shouldStop: function () { return crmStatCancel; },
       onProgress: crmStatProgressPatch
     }, { fetchImpl: fetch, log: function (m) { console.log('[crm:stat] ' + m); } });
     if (!res.ok) {
-      outcome = { ok: false, code: res.code, message: res.message };
+      outcome = res.cancelled
+        ? { ok: false, cancelled: true, saved: false, message: res.message }
+        : { ok: false, code: res.code, message: res.message };
     } else {
+      /* 停止时也落库：已扫到的那部分结果可看可导出，前端标「部分结果」（2026-11-06） */
       db.prepare('INSERT INTO crm_stat (region, updated_at, data) VALUES (?, ?, ?) ' +
         'ON CONFLICT(region) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data')
         .run(region, nowIso(), JSON.stringify({
           stats: res.stats, rows: res.rows, summary: res.summary,
           projects: res.projects, truncated: !!res.truncated,
+          partial: !!res.partial, scanned: res.scanned || 0, total: res.total || 0,
         }));
       if (res.regions && res.regions.length) {
         db.prepare("INSERT INTO crm_config (k, v) VALUES ('stat_regions', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
           .run(JSON.stringify(res.regions));
       }
-      outcome = { ok: true, stats: res.stats };
+      outcome = {
+        ok: true, stats: res.stats, cancelled: !!res.cancelled, saved: true,
+        scanned: res.scanned || 0, total: res.total || 0,
+        message: res.cancelled ? '已停止' : '',
+      };
     }
   } catch (e) {
     outcome = { ok: false, code: 'exception', message: '统计异常：' + (e && e.message) };
@@ -564,6 +586,7 @@ function readStatCache(region) {
     region: region, updatedAt: row.updated_at,
     stats: d.stats || null, rows: d.rows || [], summary: d.summary || [],
     projects: d.projects || [], truncated: !!d.truncated,
+    partial: !!d.partial, scanned: d.scanned || 0, total: d.total || 0,
   };
 }
 
@@ -1552,6 +1575,18 @@ async function handleApi(req, res, url) {
       console.error('[crm:stat] 后台任务异常：' + (e && e.message));
     });
     return ok(res, { started: true, progress: crmStatProgress });
+  }
+  if (p === '/api/crm/stat/stop' && method === 'POST') {
+    if (!isAdmin) return bad(res, '仅超级管理员可停止区域统计检索', 403);
+    if (!crmStatRunning) return ok(res, { stopping: false, message: '当前没有正在进行的检索' });
+    crmStatCancel = true;
+    if (crmStatProgress) {
+      crmStatProgress.stopping = true;
+      crmStatProgress.updatedAt = nowIso();
+      crmStatProgress.message = '正在停止：本轮项目拉取完当前这一个就收尾…';
+    }
+    console.log('[crm:stat] 收到停止请求：' + crmStatRegion);
+    return ok(res, { stopping: true, region: crmStatRegion, progress: crmStatProgress });
   }
   if (p === '/api/crm/stat/status' && method === 'GET') {
     if (!isAdmin && !me.statVisible) return bad(res, '没有区域统计的查看权限', 403);

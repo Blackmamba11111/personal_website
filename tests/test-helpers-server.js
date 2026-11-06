@@ -318,7 +318,7 @@ function installApiStub(window, opts) {
     if (p.indexOf('/crm/stat/') === 0) {
       const canRead = auth.role === 'admin' || !!auth.statVisible;
       const pathOnly0 = p.split('?')[0];
-      if (pathOnly0 === '/crm/stat/run') {
+      if (pathOnly0 === '/crm/stat/run' || pathOnly0 === '/crm/stat/stop') {
         if (auth.role !== 'admin') return bad('仅超级管理员可触发区域统计检索', 403);
       } else if (!canRead) {
         return bad('没有区域统计的查看权限', 403);
@@ -355,6 +355,27 @@ function installApiStub(window, opts) {
       }
       if (pathOnly === '/crm/stat/status' && method === 'GET') {
         return ok({ running: !!(st.progress && st.progress.running), region: st.region || '', progress: st.progress || null });
+      }
+      /* 停止：协作式中断 → 立刻产出「部分结果」终态（真实服务端是当前项目拉完才收尾） */
+      if (pathOnly === '/crm/stat/stop' && method === 'POST') {
+        if (!st.progress || !st.progress.running) {
+          return ok({ stopping: false, message: '当前没有正在进行的检索' });
+        }
+        const region = st.region || st.progress.region || '';
+        const cur = (st.cache || {})[region];
+        if (cur) {
+          cur.partial = true;
+          cur.scanned = 1;
+          cur.total = 2;
+        }
+        st.progress = {
+          running: false, ok: true, cancelled: true, stage: 'stopped', region: region,
+          message: '已停止：保留已扫的 1/2 个项目，3 台设备（部分结果）',
+          done: 1, total: 2, devices: 3,
+          startedAt: st.progress.startedAt, updatedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(), error: ''
+        };
+        return ok({ stopping: true, region: region, progress: st.progress });
       }
     }
 

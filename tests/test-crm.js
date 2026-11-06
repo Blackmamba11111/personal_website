@@ -313,9 +313,10 @@ function makeBoard(opts) {
     'statView=' + C.id('statView').className + ' crmView=' + C.id('crmView').className);
   check('C14c 从 CRM 进入时返回按钮回 CRM 页', C.id('btnStatBack').textContent.indexOf('返回 CRM') >= 0,
     C.id('btnStatBack').textContent);
-  check('C15 区域下拉列出 CRM 全域战区（含项目数）',
-    C.id('crmStatRegion').options.length === 2 && /金融行业部（560 个项目）/.test(C.id('crmStatRegion').options[1].textContent),
-    C.id('crmStatRegion').innerHTML.slice(0, 120));
+  check('C15 区域下拉只列名称，项目数不再写进选项（数字改由检索实测）',
+    C.id('crmStatRegion').options.length === 2 &&
+    C.id('crmStatRegion').options[1].textContent.trim() === '金融行业部',
+    C.id('crmStatRegion').innerHTML.slice(0, 160));
   check('C16 默认选中「金融行业部」', C.id('crmStatRegion').value === '金融行业部',
     C.id('crmStatRegion').value);
   check('C17 已有缓存时自动加载并显示台账数',
@@ -460,6 +461,31 @@ function makeBoard(opts) {
     C.id('crmStatProgFill').className.indexOf('done') >= 0 && /4 台设备/.test(C.id('crmStatInfo').textContent),
     C.id('crmStatProgFill').className + ' | ' + C.id('crmStatInfo').textContent);
 
+
+  /* ---------- C28–C31：停止检索 + 部分结果（2026-11-06） ---------- */
+  C.w.__SRV__.crmStat.progress = null;
+  C.w.__SRV__.crmStat.cache['金融行业部'] = statData(STAT_ROWS2, STAT_SUM);
+  await C.tick(4);
+  check('C28 空闲时「停止」按钮隐藏', C.id('btnCrmStatStop').style.display === 'none',
+    C.id('btnCrmStatStop').style.display);
+  C.click(C.id('btnCrmStatRun'));
+  await C.tick(6);
+  check('C28b 检索进行中才出现「停止」按钮', C.id('btnCrmStatStop').style.display !== 'none',
+    C.id('btnCrmStatStop').style.display);
+  C.click(C.id('btnCrmStatStop'));
+  await C.tick(6);
+  const stopCall = C.w.__SRV__.calls.filter(c => c.path === '/crm/stat/stop').pop();
+  check('C29 点「停止」发 POST /crm/stat/stop',
+    !!stopCall && stopCall.method === 'POST', stopCall ? stopCall.method : '(无请求)');
+  await new Promise(r => setTimeout(r, 1800));
+  await C.tick(8);
+  check('C30 停止后进度条进入「已停止」态', C.id('crmStatProgFill').className.indexOf('stopped') >= 0 &&
+    /已停止/.test(C.id('crmStatProgPct').textContent),
+    C.id('crmStatProgFill').className + ' | ' + C.id('crmStatProgPct').textContent);
+  check('C31 停止后结果区标「部分结果」并给已扫项目数',
+    /部分结果（已扫 1\/2 个项目）/.test(C.id('crmStatInfo').textContent), C.id('crmStatInfo').textContent);
+  check('C31b 停止完成后「停止」按钮收起', C.id('btnCrmStatStop').style.display === 'none',
+    C.id('btnCrmStatStop').style.display);
 
   /* ==================== D. 用户管理表单：中文名 + CRM 可见 ==================== */
   C.click(C.id('umUsers'));
