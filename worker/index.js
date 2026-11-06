@@ -428,21 +428,83 @@ async function upsertCrmMatch(env, name, r) {
 }
 /* 跑一轮完整同步（Cron scheduled 或手动触发）；Workers 单次执行有时长上限，
    客户数多时靠 12 小时间隔自然分摊，这里不做跨请求断点续跑。 */
+/* ---------- 检索进度（2026-11-06）：内存即时可读，6s 节流落 D1 供其他 isolate 兜底读取 ---------- */
+let crmProgressMem = null;
+let crmProgressWriteAt = 0;
+function crmProgressNew(reason, total) {
+  const t = new Date().toISOString();
+  return {
+    running: true, reason: reason, stage: 'login', message: '正在登录询盘云（销售易）…',
+    done: 0, total: total, current: '', oppCount: 0,
+    matched: 0, missed: 0, failed: 0,
+    startedAt: t, updatedAt: t, finishedAt: '', ok: null, error: '',
+  };
+}
+function mergeCrmProgress(prog, p) {
+  const src = p || {};
+  ['stage', 'message', 'done', 'total', 'current', 'oppCount', 'matched', 'missed', 'failed',
+    'projectIndex', 'projectTotal', 'projectName'].forEach(function (k) {
+    if (src[k] !== undefined) prog[k] = src[k];
+  });
+  prog.updatedAt = new Date().toISOString();
+}
+function finishCrmProgress(prog, outcome) {
+  const st = (outcome && outcome.stats) || null;
+  if (st) {
+    prog.done = st.total; prog.total = st.total;
+    prog.matched = st.matched; prog.missed = st.missed; prog.failed = st.failed;
+  }
+  prog.running = false;
+  prog.finishedAt = new Date().toISOString();
+  prog.updatedAt = prog.finishedAt;
+  prog.ok = !!(outcome && outcome.ok);
+  prog.stage = prog.ok ? 'done' : 'error';
+  prog.error = prog.ok ? '' : String((outcome && (outcome.message || outcome.code)) || '未知错误');
+  prog.message = prog.ok
+    ? ('检索完成：匹配成功 ' + prog.matched + ' / 未匹配 ' + prog.missed +
+      (prog.failed ? ' / 失败 ' + prog.failed : '') + ' 个客户')
+    : ('检索失败：' + prog.error);
+}
+async function saveCrmProgress(env, prog, force) {
+  const now = Date.now();
+  if (!force && now - crmProgressWriteAt < 6000) return;
+  crmProgressWriteAt = now;
+  try {
+    await env.DB.prepare("INSERT INTO crm_config (k, v) VALUES ('progress', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+      .bind(JSON.stringify(prog)).run();
+  } catch (e) { /* 进度落库失败不影响检索本身 */ }
+}
+async function readCrmProgress(env) {
+  try {
+    const row = await env.DB.prepare("SELECT v FROM crm_config WHERE k = 'progress'").first();
+    return row ? (JSON.parse(row.v) || null) : null;
+  } catch (e) { return null; }
+}
+
 async function doCrmSync(env, reason) {
   const cfg = await readCrmConfig(env);
   if (!(cfg.loginName && cfg.password)) return { ok: false, message: '未配置 CRM 账号' };
   const startedAt = new Date().toISOString();
   const names = await collectCustomerNames(env);
+  const prog = crmProgressNew(reason, names.length);
+  crmProgressMem = prog;
+  crmProgressWriteAt = 0;
   let outcome;
   try {
     outcome = await CRM_P.runCrmSync({
       loginName: cfg.loginName, password: cfg.password, session: cfg.session,
       customerNames: names,
-      onMatch: async function (n, r) { await upsertCrmMatch(env, n, r); }
+      onMatch: async function (n, r) { await upsertCrmMatch(env, n, r); },
+      onProgress: async function (p) {
+        mergeCrmProgress(prog, p);
+        await saveCrmProgress(env, prog, false);
+      }
     }, { fetchImpl: fetch });
   } catch (e) {
     outcome = { ok: false, code: 'exception', message: '同步异常：' + (e && e.message) };
   }
+  finishCrmProgress(prog, outcome);
+  await saveCrmProgress(env, prog, true);
   cfg.lastSyncAt = startedAt;
   cfg.session = (outcome && outcome.session) || null;
   cfg.lastResult = outcome && outcome.ok
@@ -1060,8 +1122,12 @@ async function route(request, env) {
   if (p === '/api/crm/sync' && method === 'POST') {
     if (!isAdmin) return bad('仅超级管理员可触发 CRM 检索', 403);
     if (!(await crmConfigured(env))) return bad('请先保存 CRM 账号配置');
+    /* 公网这一版请求是同步等待整轮跑完的，重复点击会并发跑两轮，这里拦住 */
+    if (crmProgressMem && crmProgressMem.running) {
+      return ok({ started: false, message: '上一轮检索仍在进行中', progress: crmProgressMem });
+    }
     const r = await doCrmSync(env, 'manual');
-    return ok(r && r.ok ? { started: true, result: r } : { started: false, result: r });
+    return ok(r && r.ok ? { started: true, result: r, progress: crmProgressMem } : { started: false, result: r, progress: crmProgressMem });
   }
   if (p === '/api/crm/status' && method === 'GET') {
     if (!isAdmin) return bad('仅超级管理员可查看 CRM 匹配状态', 403);
@@ -1070,8 +1136,11 @@ async function route(request, env) {
     const r = await env.DB.prepare('SELECT * FROM crm_matches').all();
     (r.results || []).forEach(function (row) { map[row.customer_name] = row; });
     const names = await collectCustomerNames(env);
+    const progress = crmProgressMem || await readCrmProgress(env);
     return ok({
-      lastSyncAt: c.lastSyncAt, lastResult: c.lastResult, running: false,
+      lastSyncAt: c.lastSyncAt, lastResult: c.lastResult,
+      running: !!(progress && progress.running),
+      progress: progress,
       items: names.sort().map(function (n) {
         const row = map[n];
         let data = {};

@@ -58,6 +58,7 @@ function installApiStub(window, opts) {
     attachments: {},          /* id -> {id,name,mime,size,data(base64),owner} */
     servers: (opts.servers || []).slice(),  /* 认证服务器（远程用户用） */
     crmMatches: opts.crmMatches || {},      /* CRM 快照：{ 客户名: {status, opp, maintenance, warranty} } */
+    crmProgress: opts.crmProgress || null,  /* 检索进度：{running, stage, done, total, ...}（进度条用例） */
     crmConfig: { loginName: '', password: '', intervalHours: 12 },
     calls: []                               /* 调用记录：{path, method, body}（断言请求方法用） */
   };
@@ -307,7 +308,8 @@ function installApiStub(window, opts) {
     }
     if (p === '/crm/status' && method === 'GET') {
       if (auth.role !== 'admin') return bad('仅超级管理员可查看 CRM 匹配状态', 403);
-      return ok({ lastSyncAt: '', lastResult: null, running: false, items: [] });
+      return ok({ lastSyncAt: '', lastResult: null, running: !!(srv.crmProgress && srv.crmProgress.running),
+        progress: srv.crmProgress || null, items: [] });
     }
 
     /* CRM 现网信息快照：与两版真实服务端同口径 —— 非超管且 crmVisible=0 时只回空表 */

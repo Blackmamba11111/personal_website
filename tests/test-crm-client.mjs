@@ -11,7 +11,8 @@
 import crypto from 'node:crypto';
 import {
   xsyLogin, fetchFieldLabels, fetchAllOpportunities, fetchMaintenance,
-  warrantyStatus, matchForCustomer, translateRecord, runCrmSync, mergeMaintenance, XSY_HOSTS
+  warrantyStatus, matchForCustomer, translateRecord, runCrmSync, mergeMaintenance,
+  crmProgressText, XSY_HOSTS
 } from '../worker/crm-client.mjs';
 
 let pass = 0, fail = 0;
@@ -440,6 +441,48 @@ void KEY_BYTES;
     JSON.stringify(res2 && res2.projects[1] && res2.projects[1].error));
   check('成功项目的设备仍进入合并清单（2 台）', !!res2 && res2.maintenance.length === 2,
     String(res2 && res2.maintenance.length));
+
+  /* 9.4 进度上报：阶段顺序 / done 单调 / 终值等于客户数 / 多项目阶段 */
+  const prog = [];
+  await runCrmSync({
+    loginName: 'a', password: 'b', customerNames: ['承德银行', '查无此客户'],
+    onMatch: () => {},
+    onProgress: (p) => { prog.push(p); }
+  }, { fetchImpl: mkFetch(null), sleep: async () => {} });
+  const stages = prog.map(p => p.stage);
+  check('进度从登录开始，经 opps 进入 match',
+    stages[0] === 'login' && stages.indexOf('opps') > 0 && stages.lastIndexOf('match') > stages.indexOf('opps'),
+    JSON.stringify(stages));
+  check('每条进度都带 total 与可读文案',
+    prog.every(p => p.total === 2 && !!p.message), JSON.stringify(prog[0]));
+  const dones = prog.filter(p => p.stage === 'match').map(p => p.done);
+  check('match 阶段 done 单调不减且最终等于客户总数',
+    dones[dones.length - 1] === 2 && dones.every((v, i) => i === 0 || v >= dones[i - 1]), JSON.stringify(dones));
+  check('进度里标注当前处理的客户名',
+    prog.some(p => p.current === '承德银行') && prog.some(p => p.current === '查无此客户'),
+    JSON.stringify(prog.filter(p => p.current).map(p => p.current)));
+  check('多项目客户额外上报 maintenance 阶段（含项目序号）',
+    prog.some(p => p.stage === 'maintenance' && p.projectIndex === 2 && p.projectTotal === 2),
+    JSON.stringify(prog.filter(p => p.stage === 'maintenance')));
+}
+
+/* ---------------- 10. 检索进度文案（纯函数） ---------------- */
+{
+  check('文案：登录阶段明确在登录',
+    crmProgressText({ stage: 'login' }) === '正在登录询盘云（销售易）…', crmProgressText({ stage: 'login' }));
+  const t1 = crmProgressText({ stage: 'match', done: 3, total: 28, current: '承德银行' });
+  check('文案：匹配阶段含当前客户与进度', t1.indexOf('承德银行') >= 0 && t1.indexOf('3/28') >= 0, t1);
+  const t2 = crmProgressText({
+    stage: 'maintenance', projectName: '技术专用-A', projectIndex: 2, projectTotal: 3, current: '承德银行'
+  });
+  check('文案：多项目阶段含项目序号与项目名', t2.indexOf('2/3') >= 0 && t2.indexOf('技术专用-A') >= 0, t2);
+  check('文案：完成 / 失败 / 未知阶段',
+    crmProgressText({ stage: 'done' }) === '检索完成' &&
+    crmProgressText({ stage: 'error' }) === '检索失败' &&
+    crmProgressText({}) === '处理中…', '');
+  check('文案：没有待检索客户时不报 0/0',
+    crmProgressText({ stage: 'match', done: 0, total: 0 }) === '没有待检索的客户',
+    crmProgressText({ stage: 'match', done: 0, total: 0 }));
 }
 
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');

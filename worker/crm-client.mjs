@@ -758,8 +758,35 @@ export function matchForCustomer(custName, translated) {
 
 /* ---------------- 一轮完整同步 ---------------- */
 /*
- * opts = { loginName, password, session?(复用), customerNames:[...去重客户名] }
+ * 进度文案（纯函数，服务端与前端共用同一口径，便于单测）
+ * p = { stage, done, total, current, oppCount, projectName, projectIndex, projectTotal }
+ */
+export function crmProgressText(p) {
+  const o = p || {};
+  const total = Number(o.total) || 0;
+  const done = Number(o.done) || 0;
+  if (o.stage === 'login') return '正在登录询盘云（销售易）…';
+  if (o.stage === 'opps') return '登录成功，正在拉取商机列表…';
+  if (o.stage === 'maintenance') {
+    return '正在拉取维保：' + (o.projectName || '—') +
+      (Number(o.projectTotal) > 1 ? '（该项目 ' + o.projectIndex + '/' + o.projectTotal + '）' : '') +
+      ' · 客户：' + (o.current || '—');
+  }
+  if (o.stage === 'match') {
+    if (!total) return '没有待检索的客户';
+    if (done === 0 && o.oppCount) return '已获取商机 ' + o.oppCount + ' 条，开始逐个客户检索';
+    return '正在检索：' + (o.current || '—') + '（已完成 ' + done + '/' + total + '）';
+  }
+  if (o.stage === 'done') return '检索完成';
+  if (o.stage === 'error') return '检索失败';
+  return '处理中…';
+}
+
+/*
+ * opts = { loginName, password, session?(复用), customerNames:[...去重客户名],
+ *          onMatch(customerName, result), onProgress(p) }
  * cb.onMatch(customerName, result)  每个客户回调（result 含快照）
+ * cb.onProgress(p)                  进度回调（stage/login|opps|match|maintenance，含 done/total）
  * 返回 { ok, session, stats:{matched,missed,failed,total}, error }
  * 限流：维保查询间 sleep 300ms（deps.sleep 可注入）
  */
@@ -767,13 +794,23 @@ export async function runCrmSync(opts, deps) {
   const log = (deps && deps.log) || function () {};
   const sleep = (deps && deps.sleep) || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
   const onMatch = (opts && opts.onMatch) || function () {};
+  const onProgress = (opts && opts.onProgress) || function () {};
+  const totalCustomers = opts.customerNames.length;
+  /* 进度上报（2026-11-06）：文案统一在此补齐，回调异常不得中断检索 */
+  async function report(p) {
+    const payload = Object.assign({ total: totalCustomers }, p || {});
+    if (!payload.message) payload.message = crmProgressText(payload);
+    try { await onProgress(payload); } catch (e) { log('crm: 进度上报失败 ' + (e && e.message)); }
+  }
 
   let session = opts.session;
   if (!session) {
+    await report({ stage: 'login', done: 0 });
     const lr = await xsyLogin(opts, deps);
     if (!lr.ok) return { ok: false, code: lr.code, message: lr.message, stats: null };
     session = lr.session;
   }
+  await report({ stage: 'opps', done: 0 });
 
   const fr = await fetchAllOpportunities(session, deps);
   if (fr.ok && fr.code === 'authexpire') return { ok: false, code: 'authexpire', message: 'CRM 会话失效，请重新测试连通性', session: null };
@@ -794,13 +831,22 @@ export async function runCrmSync(opts, deps) {
   const translated = fr.records.map(function (rec) { return translateRecord(rec, labels); });
   log('crm: 商机共 ' + translated.length + ' 条，待匹配客户 ' + opts.customerNames.length + ' 个');
 
-  const stats = { matched: 0, missed: 0, failed: 0, total: opts.customerNames.length };
+  const stats = { matched: 0, missed: 0, failed: 0, total: totalCustomers };
+  await report({ stage: 'match', done: 0, oppCount: translated.length });
   for (let i = 0; i < opts.customerNames.length; i++) {
     const cname = opts.customerNames[i];
+    await report({
+      stage: 'match', done: i, current: cname, oppCount: translated.length,
+      matched: stats.matched, missed: stats.missed, failed: stats.failed
+    });
     const m = matchForCustomer(cname, translated);
     if (m.status !== 'ok') {
       stats.missed++;
       await onMatch(cname, { status: 'miss' });
+      await report({
+        stage: 'match', done: i + 1, current: cname, oppCount: translated.length,
+        matched: stats.matched, missed: stats.missed, failed: stats.failed
+      });
       continue;
     }
     /* 命中多条：逐个商机拉维保，最后按序列号聚合（2026-11-06 口径）。
@@ -814,6 +860,13 @@ export async function runCrmSync(opts, deps) {
         id: o.id, name: String((o.f && o.f['项目名称']) || ''), updatedAt: o.updatedAt || '',
         devices: [], warranty: null, error: null,
       };
+      /* 多项目客户耗时最长，这个阶段单独上报，避免进度条长时间停在同一个百分比 */
+      if (hits.length > 1) {
+        await report({
+          stage: 'maintenance', done: i, current: cname,
+          projectIndex: k + 1, projectTotal: hits.length, projectName: proj.name
+        });
+      }
       try {
         const wb = await fetchMaintenance(session, o.id, deps);
         if (wb.ok) {
@@ -840,6 +893,10 @@ export async function runCrmSync(opts, deps) {
     };
     if (okCount) stats.matched++; else stats.failed++;
     await onMatch(cname, result);
+    await report({
+      stage: 'match', done: i + 1, current: cname, oppCount: translated.length,
+      matched: stats.matched, missed: stats.missed, failed: stats.failed
+    });
     if (i < opts.customerNames.length - 1) await sleep(300);
   }
   return { ok: true, session: session, stats: stats };

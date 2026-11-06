@@ -250,6 +250,27 @@ function makeBoard(opts) {
   const syncCall = C.w.__SRV__.calls.filter(c => c.path === '/crm/sync').pop();
   check('C9 立即检索用 POST', syncCall && syncCall.method === 'POST', syncCall ? syncCall.method : '(无请求)');
 
+  /* C10-C14 检索进度条：由服务端 progress 驱动，不靠前端假动画 */
+  C.w.__SRV__.crmProgress = {
+    running: true, stage: 'match', done: 12, total: 28, current: '承德银行',
+    matched: 10, missed: 2, failed: 0, oppCount: 1344,
+    message: '正在检索：承德银行（已完成 12/28）',
+    startedAt: new Date(Date.now() - 80000).toISOString(), finishedAt: '', ok: null, error: ''
+  };
+  C.click(C.id('btnCrmRefresh'));
+  await C.tick(8);
+  check('C10 服务端在跑时自动展开进度条',
+    C.id('crmProgWrap').style.display === 'block', C.id('crmProgWrap').style.display);
+  check('C11 百分比按已完成客户数推进（12/28 → 43%）',
+    C.id('crmProgPct').textContent === '43%', C.id('crmProgPct').textContent);
+  check('C12 显示已完成 x/N 与成功/未匹配明细',
+    /12 \/ 28/.test(C.id('crmProgMeta').textContent) && /未匹配/.test(C.id('crmProgFoot').textContent),
+    C.id('crmProgMeta').textContent + ' | ' + C.id('crmProgFoot').textContent);
+  check('C13 进行中显示已用时长', /已用/.test(C.id('crmProgFoot').textContent), C.id('crmProgFoot').textContent);
+  check('C14 进行中不使用完成态配色',
+    C.id('crmProgFill').className.indexOf('done') < 0 && C.id('crmProgFill').className.indexOf('fail') < 0,
+    C.id('crmProgFill').className);
+
   /* ==================== D. 用户管理表单：中文名 + CRM 可见 ==================== */
   C.click(C.id('umUsers'));
   await C.tick(4);
@@ -333,6 +354,14 @@ function makeBoard(opts) {
   const src = G.id('dCrmSrc').textContent;
   check('G2 来源行标注命中项目数与「有维保记录」个数',
     /命中 3 个项目/.test(src) && /2 个有维保记录/.test(src), src);
+  /* G2b 时间显示：服务端存 UTC（…Z），页面必须按本地时区渲染，不能直接截断 */
+  const isoAt = AGG_MATCHES['承德银行'].updatedAt;
+  const dAt = new Date(isoAt);
+  const p2 = (n) => (n < 10 ? '0' : '') + n;
+  const expAt = dAt.getFullYear() + '-' + p2(dAt.getMonth() + 1) + '-' + p2(dAt.getDate()) +
+    ' ' + p2(dAt.getHours()) + ':' + p2(dAt.getMinutes());
+  check('G2b 更新时间按本地时区显示（不再少 8 小时）', src.indexOf(expAt) >= 0,
+    src + ' | 期望含 ' + expAt + '（原始 ' + isoAt + '）');
   const wbTxt = G.id('dCrmWarranty').textContent;
   const tagTxt = [...G.d.querySelectorAll('#dCrmWarranty .tag')].map(x => x.textContent).join('|');
   check('G2b 项目级标签只列有维保记录的项目',

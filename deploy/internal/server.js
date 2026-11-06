@@ -367,6 +367,46 @@ function upsertCrmMatch(name, r) {
 }
 
 let crmSyncing = false;
+/* 检索进度（2026-11-06）：内存态，仅供前端进度条读取；进程重启即丢弃，不影响快照数据 */
+let crmProgress = null;
+function crmProgressNew(reason, total) {
+  const t = nowIso();
+  return {
+    running: true, reason: reason, stage: 'login', message: '正在登录询盘云（销售易）…',
+    done: 0, total: total, current: '', oppCount: 0,
+    matched: 0, missed: 0, failed: 0,
+    startedAt: t, updatedAt: t, finishedAt: '', ok: null, error: '',
+  };
+}
+function crmProgressPatch(p) {
+  if (!crmProgress) return;
+  const src = p || {};
+  ['stage', 'message', 'done', 'total', 'current', 'oppCount', 'matched', 'missed', 'failed',
+    'projectIndex', 'projectTotal', 'projectName'].forEach(function (k) {
+    if (src[k] !== undefined) crmProgress[k] = src[k];
+  });
+  crmProgress.updatedAt = nowIso();
+}
+function crmProgressFinish(outcome) {
+  if (!crmProgress) crmProgress = crmProgressNew('manual', 0);
+  const p = crmProgress;
+  const st = (outcome && outcome.stats) || null;
+  if (st) {
+    p.done = st.total; p.total = st.total;
+    p.matched = st.matched; p.missed = st.missed; p.failed = st.failed;
+  }
+  p.running = false;
+  p.finishedAt = nowIso();
+  p.updatedAt = p.finishedAt;
+  p.ok = !!(outcome && outcome.ok);
+  p.stage = p.ok ? 'done' : 'error';
+  p.error = p.ok ? '' : String((outcome && (outcome.message || outcome.code)) || '未知错误');
+  p.message = p.ok
+    ? ('检索完成：匹配成功 ' + p.matched + ' / 未匹配 ' + p.missed +
+      (p.failed ? ' / 失败 ' + p.failed : '') + ' 个客户')
+    : ('检索失败：' + p.error);
+}
+
 /* 跑一轮完整同步；reason 用于日志（scheduled / manual）。返回 {ok, stats|message} */
 async function doCrmSync(reason) {
   const cfg = readCrmConfig();
@@ -374,7 +414,9 @@ async function doCrmSync(reason) {
   if (crmSyncing) return { ok: false, message: '上一轮检索仍在进行中' };
   crmSyncing = true;
   const startedAt = nowIso();
-  console.log('[crm] 同步开始（' + reason + '），客户 ' + collectCustomerNames().length + ' 个');
+  const names = collectCustomerNames();
+  crmProgress = crmProgressNew(reason, names.length);
+  console.log('[crm] 同步开始（' + reason + '），客户 ' + names.length + ' 个');
   let outcome;
   try {
     const P = await loadCrm();
@@ -382,14 +424,16 @@ async function doCrmSync(reason) {
       loginName: cfg.loginName,
       password: cfg.password,
       session: cfg.session,
-      customerNames: collectCustomerNames(),
-      onMatch: upsertCrmMatch
+      customerNames: names,
+      onMatch: upsertCrmMatch,
+      onProgress: crmProgressPatch
     }, { fetchImpl: fetch, log: function (m) { console.log('[crm] ' + m); } });
   } catch (e) {
     outcome = { ok: false, code: 'exception', message: '同步异常：' + (e && e.message) };
   } finally {
     crmSyncing = false;
   }
+  crmProgressFinish(outcome);
   cfg.lastSyncAt = startedAt;
   cfg.session = (outcome && outcome.session) || null;
   cfg.lastResult = outcome && outcome.ok
@@ -1302,6 +1346,7 @@ async function handleApi(req, res, url) {
     db.prepare('SELECT * FROM crm_matches').all().forEach(function (r) { map[r.customer_name] = r; });
     return ok(res, {
       lastSyncAt: c.lastSyncAt, lastResult: c.lastResult, running: crmSyncing,
+      progress: crmProgress,
       items: collectCustomerNames().sort().map(function (n) {
         const r = map[n];
         let data = {};

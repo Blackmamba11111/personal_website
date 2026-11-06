@@ -514,6 +514,26 @@
   .page-head h2{margin:0;font-size:15.5px;font-weight:650;}
   .page-head .sub{font-size:11.5px;color:var(--text-3);}
   .page-body{flex:1;min-height:0;overflow:auto;padding:18px;}
+  /* CRM 检索进度条（2026-11-06）：页头下方内联，真实进度由服务端上报 */
+  .crm-prog{flex:0 0 auto;padding:10px 18px 12px;background:var(--panel);border-bottom:1px solid var(--border);}
+  .crm-prog-top{display:flex;align-items:center;gap:10px;font-size:12.5px;min-height:18px;}
+  .crm-prog-stage{font-weight:650;}
+  .crm-prog-meta{font-size:11.5px;color:var(--text-3);}
+  .crm-prog-pct{margin-left:auto;font-weight:700;color:var(--primary);
+    font-variant-numeric:tabular-nums;font-size:13px;}
+  .crm-prog-track{margin-top:8px;height:8px;border-radius:999px;background:var(--border-2);overflow:hidden;position:relative;}
+  .crm-prog-fill{height:100%;width:0;border-radius:999px;background:var(--primary);
+    transition:width .45s ease,background .3s ease;}
+  .crm-prog-fill.done{background:var(--ok);}
+  .crm-prog-fill.fail{background:var(--miss);}
+  /* 登录 / 拉商机阶段暂无百分比：走扫光动画，避免看起来卡死 */
+  .crm-prog-track.waiting .crm-prog-fill{width:100%;background:transparent;}
+  .crm-prog-track.waiting::after{content:'';position:absolute;inset:0;opacity:.5;
+    background:linear-gradient(90deg,transparent,var(--primary),transparent);
+    transform:translateX(-100%);animation:crm-sweep 1.4s linear infinite;}
+  @keyframes crm-sweep{to{transform:translateX(100%);}}
+  .crm-prog-foot{margin-top:7px;font-size:11.5px;color:var(--text-3);display:flex;gap:14px;flex-wrap:wrap;}
+  .crm-prog-foot b{font-weight:650;color:var(--text-2);font-variant-numeric:tabular-nums;}
   .ucard{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;}
   .utable{width:100%;border-collapse:collapse;font-size:12.5px;}
   .utable th{text-align:left;padding:11px 14px;background:var(--panel-2);border-bottom:1px solid var(--border);
@@ -1207,6 +1227,16 @@
     <div class="spacer"></div>
     <button type="button" class="btn" id="btnCrmRefresh">刷新状态</button>
     <button type="button" class="btn primary" id="btnCrmSyncNow">立即检索</button>
+  </div>
+  <!-- 检索进度：点「立即检索」后展开，完成 5s 后自动收起 -->
+  <div class="crm-prog" id="crmProgWrap" style="display:none;">
+    <div class="crm-prog-top">
+      <span class="crm-prog-stage" id="crmProgStage">准备检索…</span>
+      <span class="crm-prog-meta" id="crmProgMeta"></span>
+      <span class="crm-prog-pct" id="crmProgPct">0%</span>
+    </div>
+    <div class="crm-prog-track" id="crmProgTrack"><div class="crm-prog-fill" id="crmProgFill"></div></div>
+    <div class="crm-prog-foot" id="crmProgFoot"></div>
   </div>
   <div class="page-body">
     <div class="ucard">
@@ -1905,6 +1935,22 @@
   /* ---------------- 工具函数 ---------------- */
   function uid(p) { return (p || 'id') + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  /* 服务端时间统一是 ISO UTC（带 Z），直接截断会少 8 小时；这里统一按浏览器本地时区渲染。
+     noSec=true 时只到分钟；纯日期或不带时区的串原样输出，避免二次偏移。 */
+  function fmtTs(s, noSec) {
+    if (!s) return '';
+    var str = String(s);
+    var m = /^(\d{4})-(\d{2})-(\d{2})([T ](\d{2}):(\d{2})(:(\d{2}))?)?/.exec(str);
+    if (!m) return str.slice(0, noSec ? 16 : 19);
+    if (!m[5]) return m[1] + '-' + m[2] + '-' + m[3];           /* 纯日期 */
+    var hasZone = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(str);
+    if (!hasZone) return m[1] + '-' + m[2] + '-' + m[3] + ' ' + m[5] + ':' + m[6] + (noSec ? '' : ':' + (m[8] || '00'));
+    var d = new Date(str);
+    if (isNaN(d.getTime())) return m[1] + '-' + m[2] + '-' + m[3] + ' ' + m[5] + ':' + m[6];
+    var out = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes());
+    return noSec ? out : (out + ':' + pad(d.getSeconds()));
+  }
   function qIndex(d) { return Math.floor(d.getMonth() / 3) + 1; }
   function quarterKey(d) { return d.getFullYear() + 'Q' + qIndex(d); }
   function parseDate(s) {
@@ -4119,7 +4165,7 @@
         (multiProj
           ? '· 命中 ' + pjs.length + ' 个项目，维保已按序列号聚合（' + pjWithData.length + ' 个有维保记录）'
           : '· ' + pnames[0]) +
-        ' · 更新 ' + ((cm.updatedAt || '').replace('T', ' ').slice(0, 16));
+        ' · 更新 ' + (fmtTs(cm.updatedAt, true) || '—');
       document.getElementById('dCrmBase').innerHTML =
         kvRow('项目名称', f['项目名称']) + kvRow('客户名称', f['客户名称']) +
         kvRow('客户级别', f['客户级别']) + kvRow('所属行业', (f['一级行业'] || f['二级行业'] ? [f['一级行业'], f['二级行业']].filter(Boolean).join(' / ') : '')) +
@@ -6000,7 +6046,7 @@
         var actor = findUser(l.actor);
         var kindCls = l.kind === 'visit' ? 'user' : (l.kind === 'region' ? 'admin' : 'active');
         return '<tr>' +
-          '<td class="sub2" style="white-space:nowrap;">' + esc((l.at || '').replace('T', ' ').slice(0, 19)) + '</td>' +
+          '<td class="sub2" style="white-space:nowrap;">' + esc(fmtTs(l.at)) + '</td>' +
           '<td style="white-space:nowrap;">' + esc(actor ? actor.name : l.actor) + '<div class="sub2">' + esc(l.actor) + '</div></td>' +
           '<td><span class="tag ' + kindCls + '">' + esc(LOG_KIND_LABEL[l.kind] || l.kind) + '</span></td>' +
           '<td><span class="tag ' + (l.action === 'delete' ? 'disabled' : (l.action === 'add' ? 'active' : 'user')) + '">' +
@@ -6067,21 +6113,147 @@
     });
   }
   function syncCrmNow() {
+    var btn = document.getElementById('btnCrmSyncNow');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    /* 立即展开进度条并开始轮询：公网这一版请求要等整轮跑完才返回，不能等 response 再显示 */
+    if (CRM_PROG_HIDE) { clearTimeout(CRM_PROG_HIDE); CRM_PROG_HIDE = null; }
+    CRM_PROG_TRIGGER_AT = Date.now();
+    crmProgPaint({
+      running: true, stage: 'login', message: '正在提交检索请求…',
+      done: 0, total: CRM_PROG_P && CRM_PROG_P.total ? CRM_PROG_P.total : 0,
+      startedAt: new Date().toISOString()
+    });
+    pollCrmProgress();
     api('/crm/sync', { method: 'POST' }).then(function (r) {
-      if (!r.ok) { toast(r.error || '触发失败'); return; }
-      if (r.data && r.data.started) toast('已开始检索，完成后状态列表自动更新');
-      else toast((r.data && r.data.message) || '未开始');
+      btn.disabled = false;
+      if (!r.ok) {
+        crmProgPaint({
+          running: false, ok: false, stage: 'error', message: '触发失败：' + (r.error || '未知错误'),
+          error: r.error || '未知错误', finishedAt: new Date().toISOString(),
+          startedAt: (CRM_PROG_P && CRM_PROG_P.startedAt) || new Date().toISOString()
+        });
+        toast(r.error || '触发失败');
+        return;
+      }
+      var d = r.data || {};
+      if (d.started === false) {
+        toast(d.message || '未开始');
+        if (d.progress && !d.progress.running) { CRM_PROG_TRIGGER_AT = 0; crmProgPaint(d.progress); }
+      }
+      if (d.progress) { CRM_PROG_TRIGGER_AT = 0; crmProgPaint(d.progress); }
       renderCrmStatusIfOpen();
+      pollCrmProgress();
     });
   }
   var CRM_STATUS_TIMER = null;
+
+  /* ---------- 检索进度条（2026-11-06）：数据来自服务端 progress，按已完成客户数推进 ---------- */
+  var CRM_PROG_TIMER = null;        /* 轮询定时器 */
+  var CRM_PROG_TICK = null;         /* 每秒刷新已用时长 */
+  var CRM_PROG_HIDE = null;         /* 完成后的自动收起 */
+  var CRM_PROG_P = null;            /* 最近一次进度对象 */
+  var CRM_PROG_TRIGGER_AT = 0;      /* 本次点击时间：用于忽略上一轮的旧终态 */
+
+  function crmFmtDur(ms) {
+    var s = Math.max(0, Math.round((ms || 0) / 1000));
+    var m = Math.floor(s / 60);
+    s = s % 60;
+    return m ? (m + ' 分 ' + s + ' 秒') : (s + ' 秒');
+  }
+  function crmElapsedText(p) {
+    var t0 = Date.parse((p && p.startedAt) || '');
+    if (!t0) return '';
+    var t1 = (p && p.finishedAt) ? (Date.parse(p.finishedAt) || Date.now()) : Date.now();
+    return crmFmtDur(t1 - t0);
+  }
+  function crmProgHide() {
+    var wrap = document.getElementById('crmProgWrap');
+    if (wrap) wrap.style.display = 'none';
+    CRM_PROG_P = null;
+    CRM_PROG_TRIGGER_AT = 0;
+    if (CRM_PROG_TICK) { clearInterval(CRM_PROG_TICK); CRM_PROG_TICK = null; }
+    if (CRM_PROG_TIMER) { clearTimeout(CRM_PROG_TIMER); CRM_PROG_TIMER = null; }
+  }
+  function crmProgPaint(p) {
+    var wrap = document.getElementById('crmProgWrap');
+    if (!wrap || !p) return;
+    CRM_PROG_P = p;
+    wrap.style.display = 'block';
+    var total = Number(p.total) || 0;
+    var done = Number(p.done) || 0;
+    var running = !!p.running;
+    /* 登录 / 拉商机阶段还没有确定百分比，用扫光动画代替，避免看起来卡死 */
+    var known = total > 0 && p.stage !== 'login' && p.stage !== 'opps';
+    var pct;
+    if (!running) pct = (!known) ? (p.ok ? 100 : 0) : (p.ok ? 100 : Math.min(100, Math.round(done / total * 100)));
+    else pct = known ? Math.min(100, Math.round(done / total * 100)) : 0;
+    var track = document.getElementById('crmProgTrack');
+    var fill = document.getElementById('crmProgFill');
+    document.getElementById('crmProgStage').textContent = p.message || '处理中…';
+    document.getElementById('crmProgMeta').textContent =
+      (known && total) ? ('已完成 ' + Math.min(done, total) + ' / ' + total + ' 个客户') : '';
+    var pctEl = document.getElementById('crmProgPct');
+    pctEl.textContent = pct + '%';
+    pctEl.style.color = running ? 'var(--primary)' : (p.ok ? 'var(--ok)' : 'var(--miss)');
+    if (running && !known) track.classList.add('waiting'); else track.classList.remove('waiting');
+    fill.style.width = pct + '%';
+    fill.className = 'crm-prog-fill' + (running ? '' : (p.ok ? ' done' : ' fail'));
+    var parts = [];
+    if (known || !running) {
+      parts.push('成功 <b>' + (Number(p.matched) || 0) + '</b>');
+      parts.push('未匹配 <b>' + (Number(p.missed) || 0) + '</b>');
+      parts.push('失败 <b>' + (Number(p.failed) || 0) + '</b>');
+    }
+    if (!running && p.stage === 'error' && p.error) {
+      parts.push('<span style="color:var(--miss);">' + esc(p.error) + '</span>');
+    }
+    var el = crmElapsedText(p);
+    if (el) parts.push((running ? '已用' : '耗时') + ' <b class="crm-prog-elapsed">' + el + '</b>');
+    document.getElementById('crmProgFoot').innerHTML = parts.join(' · ') || '';
+    if (!CRM_PROG_TICK) CRM_PROG_TICK = setInterval(function () {
+      var node = document.querySelector('#crmProgFoot .crm-prog-elapsed');
+      if (!node || !CRM_PROG_P || !CRM_PROG_P.running) return;
+      node.textContent = crmElapsedText(CRM_PROG_P);
+    }, 1000);
+  }
+  /* 进度轮询：进行中每 1.5s 一次；结束后停轮询并按结果自动收起 */
+  function pollCrmProgress() {
+    if (CRM_PROG_TIMER) { clearTimeout(CRM_PROG_TIMER); CRM_PROG_TIMER = null; }
+    api('/crm/status').then(function (r) {
+      if (!r.ok) { CRM_PROG_TIMER = setTimeout(pollCrmProgress, 2500); return; }
+      var d = r.data || {};
+      var p = d.progress || null;
+      if (!p) {
+        /* 服务端没有进度（旧版本或进程刚重启）：恢复常规状态刷新 */
+        if (!CRM_PROG_TRIGGER_AT) { crmProgHide(); return; }
+        CRM_PROG_TIMER = setTimeout(pollCrmProgress, 1500);
+        return;
+      }
+      /* 刚点下按钮时可能还读到上一轮的终态，等新一轮真正开始再显示 */
+      if (CRM_PROG_TRIGGER_AT && !p.running) {
+        var fin = Date.parse(p.finishedAt || '') || 0;
+        if (!fin || fin < CRM_PROG_TRIGGER_AT - 5000) {
+          CRM_PROG_TIMER = setTimeout(pollCrmProgress, 1200);
+          return;
+        }
+      }
+      if (p.running) CRM_PROG_TRIGGER_AT = 0;
+      crmProgPaint(p);
+      if (p.running) { CRM_PROG_TIMER = setTimeout(pollCrmProgress, 1500); return; }
+      CRM_PROG_TIMER = null;
+      renderCrmStatusIfOpen();
+      if (CRM_PROG_HIDE) clearTimeout(CRM_PROG_HIDE);
+      CRM_PROG_HIDE = setTimeout(function () { CRM_PROG_HIDE = null; crmProgHide(); }, 5000);
+    });
+  }
   function renderCrmStatusIfOpen() {
     var wrap = document.getElementById('crmStatusWrap');
     var info = document.getElementById('crmRunInfo');
     api('/crm/status').then(function (r) {
       if (!r.ok) { wrap.innerHTML = '<div class="empty">' + esc(r.error || '加载失败') + '</div>'; return; }
       var d = r.data || {};
-      var lastAt = (d.lastSyncAt || '').replace('T', ' ').slice(0, 19);
+      var lastAt = fmtTs(d.lastSyncAt);
       var lr = d.lastResult || null;
       var head = lastAt ? '最近检索：' + lastAt : '尚未检索过';
       if (lr && lr.ok) {
@@ -6092,6 +6264,12 @@
         head += ' · 上轮失败：' + (lr.message || lr.code || '未知');
       }
       info.textContent = head;
+      /* 进度条：不管是本页点「立即检索」还是定时任务触发，只要服务端在跑就自动接管
+         （必须放在客户列表为空提前 return 之前，否则没客户时看不到进度） */
+      if (d.progress && d.progress.running) {
+        crmProgPaint(d.progress);
+        if (!CRM_PROG_TIMER) pollCrmProgress();
+      }
       var items = d.items || [];
       if (!items.length) { wrap.innerHTML = '<div class="empty">还没有客户档案；先在台账里录入客户</div>'; return; }
       var rows = items.map(function (it) {
@@ -6113,7 +6291,7 @@
             esc(pjNames.length > 2 ? pjNames.slice(0, 2).join(' / ') + ' 等 ' + pjNames.length + ' 个' : pjNames.join(' / ')) + '</td>'
           : '<td class="sub2">—</td>';
         return '<tr><td style="font-weight:600;">' + esc(it.name) + '</td><td>' + stTag + '</td><td>' + wbTxt + '</td>' + pjCell +
-          '<td class="sub2" style="white-space:nowrap;">' + esc((it.updatedAt || '').replace('T', ' ').slice(0, 19) || '—') + '</td>' +
+          '<td class="sub2" style="white-space:nowrap;">' + esc(fmtTs(it.updatedAt) || '—') + '</td>' +
           (it.error ? '<td class="sub2" style="color:var(--danger,#c0392b);">' + esc(it.error) + '</td>' : '<td class="sub2">—</td>') + '</tr>';
       }).join('');
       wrap.innerHTML =
@@ -6181,7 +6359,7 @@
         '<td class="sub2" style="font-size:12px;">' + esc(s.host) + ':' + s.port + '</td>' +
         '<td>' + (s.userCount ? s.userCount + ' 个账号' : '<span class="sub2">未绑定</span>') + '</td>' +
         '<td><span class="tag ' + (s.enabled ? 'active' : 'disabled') + '">' + (s.enabled ? '已启用' : '已停用') + '</span></td>' +
-        '<td class="sub2" style="font-size:11.5px;">' + esc((s.updatedAt || s.createdAt || '').slice(0, 16).replace('T', ' ')) + '</td>' +
+        '<td class="sub2" style="font-size:11.5px;">' + esc(fmtTs(s.updatedAt || s.createdAt, true)) + '</td>' +
         '<td><div class="uact">' +
           '<button type="button" class="btn sm" data-sact="edit">编辑</button>' +
           '<button type="button" class="btn sm" data-sact="test">测试</button>' +
