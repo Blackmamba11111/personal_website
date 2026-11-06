@@ -1,7 +1,13 @@
 #!/bin/bash
 # 一键部署内部实例（10.1.114.115）
-# 用法：SSH_PASS='口令' bash deploy/internal/deploy.sh
+# 用法：SSH_PASS='口令' bash deploy/internal/deploy.sh            # 部署 + 一致性校验
+#       SSH_PASS='口令' bash deploy/internal/deploy.sh --verify   # 只校验 git HEAD ↔ 内网，不动服务
 # 前提：本机可直连 10.1.114.115:22；服务器 /opt/inspection 结构见 DEPLOY.md
+#
+# 【硬性约定】git 仓库里的代码必须与内网运行的代码完全一致。
+#   - 部署末尾自动比对 HEAD 中每个文件与服务器文件（含 assets/），不一致直接报错退出；
+#   - 有改动还没提交时提示「待提交」，提交推送后跑 --verify 复验。
+#   - 公网 Cloudflare 版不再作为设计约束，只保证推送不遗漏。
 set -euo pipefail
 
 HOST=10.1.114.115
@@ -14,7 +20,56 @@ SRC_FILES=(deploy/internal/server.js index.html inspection-dashboard.html worker
 DST_FILES=(server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs)
 REMOTE_LIST="server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs"
 
-: "${SSH_PASS:?用法：SSH_PASS='口令' bash deploy/internal/deploy.sh}"
+# --verify：只做 git ↔ 内网一致性校验，不上传、不重建
+VERIFY_ONLY=false
+[ "${1:-}" = "--verify" ] && VERIFY_ONLY=true
+
+: "${SSH_PASS:?用法：SSH_PASS='口令' bash deploy/internal/deploy.sh [--verify]}"
+
+md5_of_stdin() { if command -v md5sum >/dev/null 2>&1; then md5sum | awk '{print $1}'; else md5 -q; fi; }
+
+# 一致性校验：git HEAD ↔ 内网运行代码
+# 返回 0=完全一致  3=有改动尚未提交（正常中间态）  1=已提交但与内网不一致
+consistency_check() {
+  echo "==> 一致性校验：git HEAD ↔ 内网 $REMOTE_DIR"
+  local dirty i want got rc=0
+  if ! git -C "$REPO_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    echo "    仓库还没有任何 commit，跳过"; return 3
+  fi
+  dirty=$(git -C "$REPO_ROOT" status --porcelain -- "${SRC_FILES[@]}" assets 2>/dev/null || true)
+  if [ -n "$dirty" ]; then
+    echo "    以下改动尚未提交（内网已是最新，但 git 里还没有这个版本）："
+    printf '%s\n' "$dirty" | sed 's/^/      /'
+    return 3
+  fi
+  $SSH "cd $REMOTE_DIR && md5sum $REMOTE_LIST" </dev/null > /tmp/cons-remote-src
+  for i in "${!SRC_FILES[@]}"; do
+    if ! git -C "$REPO_ROOT" cat-file -e "HEAD:${SRC_FILES[$i]}" 2>/dev/null; then
+      echo "    ✗ ${DST_FILES[$i]}  git 中没有该文件"; rc=1; continue
+    fi
+    want=$(git -C "$REPO_ROOT" show "HEAD:${SRC_FILES[$i]}" | md5_of_stdin)
+    got=$(awk -v f="${DST_FILES[$i]}" '$2==f{print $1}' /tmp/cons-remote-src)
+    if [ "$want" = "$got" ]; then
+      echo "    ✓ ${DST_FILES[$i]}"
+    else
+      echo "    ✗ ${DST_FILES[$i]}  git=$want  内网=$got"; rc=1
+    fi
+  done
+  $SSH "cd $REMOTE_DIR/assets 2>/dev/null && find . -type f -print0 | sort -z | xargs -0 md5sum" </dev/null \
+    | awk '{print $2"\t"$1}' | sort > /tmp/cons-remote-assets
+  git -C "$REPO_ROOT" ls-tree -r --name-only HEAD assets | while IFS= read -r f; do
+    printf '%s\t%s\n' ".${f#assets}" "$(git -C "$REPO_ROOT" show "HEAD:$f" | md5_of_stdin)"
+  done | sort > /tmp/cons-git-assets
+  if diff -q /tmp/cons-git-assets /tmp/cons-remote-assets >/dev/null 2>&1; then
+    echo "    ✓ assets/（$(wc -l < /tmp/cons-git-assets | tr -d ' ') 个文件）"
+  else
+    echo "    ✗ assets/ 与 git 不一致（< 为 git，> 为内网）："
+    diff /tmp/cons-git-assets /tmp/cons-remote-assets 2>/dev/null | head -20 | sed 's/^/      /' || true
+    rc=1
+  fi
+  return $rc
+}
+
 
 # --- askpass 免交互（macOS 无 sshpass） ---
 ASKPASS=$(mktemp /tmp/deploy-askpass.XXXXXX)
@@ -28,6 +83,21 @@ SCP="scp ${SSH_OPTS[*]}"
 
 echo "==> 连接测试"
 $SSH 'echo OK' </dev/null
+
+if [ "$VERIFY_ONLY" = true ]; then
+  RC=0
+  consistency_check || RC=$?
+  echo
+  if [ "$RC" = 0 ]; then
+    echo "==> 一致：git HEAD 就是内网正在运行的代码"
+    exit 0
+  elif [ "$RC" = 3 ]; then
+    echo "!! 还有改动没提交，git 与内网不是同一版本"
+  else
+    echo "!! 不一致：可能有提交遗漏，或服务器文件被手工改过"
+  fi
+  exit 2
+fi
 
 echo "==> 部署前校验：server.js 必须含 TLS 代码（防旧 HTTP 版覆盖导致 HTTPS 中断）"
 grep -q 'https.createServer' "$REPO_ROOT/deploy/internal/server.js" || { echo '!! server.js 缺少 TLS 代码，终止'; exit 1; }
@@ -68,4 +138,19 @@ echo "==> 健康检查"
 sleep 4
 $SSH "curl -sk https://127.0.0.1/healthz && echo && docker compose -f $REMOTE_DIR/docker-compose.yml ps --format '{{.Status}}'" </dev/null
 
-echo "==> 完成。回滚：ssh root@$HOST 'cd $REMOTE_DIR && cp -a backup/src-$TS/* . && docker compose build && docker compose up -d'"
+echo
+RC=0
+consistency_check || RC=$?
+echo
+if [ "$RC" = 0 ]; then
+  echo "==> 部署完成，且 git HEAD = 内网运行代码"
+  echo "==> 回滚：ssh root@$HOST 'cd $REMOTE_DIR && cp -a backup/src-$TS/* . && docker compose build && docker compose up -d'"
+elif [ "$RC" = 3 ]; then
+  echo "==> 部署完成。git 还是上一版（改动尚未提交），提交并推送后复验："
+  echo "    SSH_PASS='口令' bash deploy/internal/deploy.sh --verify"
+  echo "==> 回滚：ssh root@$HOST 'cd $REMOTE_DIR && cp -a backup/src-$TS/* . && docker compose build && docker compose up -d'"
+else
+  echo "!! 服务已更新，但 git HEAD 与内网代码不一致（提交遗漏或服务器被手改）"
+  echo "   排查后复验：SSH_PASS='口令' bash deploy/internal/deploy.sh --verify"
+  exit 2
+fi
