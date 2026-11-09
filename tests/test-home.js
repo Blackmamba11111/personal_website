@@ -340,6 +340,19 @@ async function main() {
       /ADD COLUMN multi_ledger/.test(worker));
     check('个人台账客户也参与 CRM 匹配', /readLedger\(env, row\.username, true\)/.test(worker) &&
       /readLedger\(r\.username, true\)/.test(inner));
+    /* 2026-11-09 追加：台账「已共享给别人」的 owner 也要有第二份台账 */
+    check('两版服务端都识别「台账已被共享出去」的账号',
+      /function hasSharedTo\(env, username\)/.test(worker) && /function hasSharedTo\(username\)/.test(inner));
+    check('多台账判定接受借入或借出两种共享关系',
+      /if \(u\.shareFrom != null \? u\.shareFrom : u\.share_from\) return true;/.test(worker) &&
+      /if \(u\.shareFrom != null \? u\.shareFrom : u\.share_from\) return true;/.test(inner));
+    check('个人台账落库键同时看共享来源与下家',
+      /\(row\.share_from \|\| row\.down\)/.test(worker) && /\(row\.share_from \|\| row\.down\)/.test(inner));
+    check('前端以服务端判定为准显示切换',
+      /AUTH\.ledger && AUTH\.ledger\.multi != null/.test(dash) && /function sharedToNames/.test(dash));
+    check('汇总把 owner 的个人台账也单独计入',
+      dash.indexOf('台账被共享出去的 owner 也可能开了多台账') >= 0);
+    check('提供方的公共台账说明写「已共享给谁」', /function publicLedgerTip/.test(dash));
 
     /* ---------- 省界数据拆分：主文档瘦身 + 数据文件可长期缓存 ---------- */
     const prov = fs.readFileSync(path.join(DIR, 'assets/provinces.js'), 'utf8');

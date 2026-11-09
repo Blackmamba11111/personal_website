@@ -378,20 +378,32 @@ async function currentUser(env, request) {
 }
 
 /* ---------------- 数据读写（共享数据集：share_from 指向数据归属者，一层） ----------------
- * 多台账（2026-11-09）：multi_ledger=1 且设了共享来源的账号，额外拥有一份
+ * 多台账（2026-11-09）：multi_ledger=1 且**处在共享关系里**的非超管账号，额外拥有一份
  * **属于自己的**台账，存放在同一张 ledgers 表里，键为 `<用户名>::mine`。
- *   · 公共台账 key = share_from（与他人双向同步，一切照旧）
+ *   · 公共台账 key = share_from（借来的那份；自己就是提供方时 key = 自己，与他人双向同步）
  *   · 个人台账 key = `<用户名>::mine`（只有本人与超管可见，恒可写）
- * 只有显式传 mine 才落到个人台账，未开权限 / 无共享来源时 mine 被忽略，行为与旧版一致。 */
+ * 「处在共享关系里」两种都算：① 我借了别人的台账（share_from 指向他人）；② 别人借了我的
+ * 台账（有下家 share_from 指向我）。纯独立账号没有第二份台账，行为与旧版完全一致。
+ * 只有显式传 mine 才落到个人台账，未开权限 / 不在共享关系里时 mine 被忽略。 */
 const MINE_SUFFIX = '::mine';
 function mineKey(username) { return String(username || '') + MINE_SUFFIX; }
-/* 该用户是否真的拥有第二份台账（开关 + 共享来源 + 非超管三项同时成立）。
-   注意：bundleFor 可能拿到「数据库行」（下划线）或「已映射对象」（驼峰），两种都要认 */
-function hasMultiLedger(u) {
-  if (!u) return false;
-  var multi = u.multiLedger != null ? u.multiLedger : u.multi_ledger;
-  var share = u.shareFrom != null ? u.shareFrom : u.share_from;
-  return !!(multi && share && u.role !== 'admin');
+function multiFlagOf(u) {
+  return u.multiLedger != null ? u.multiLedger : u.multi_ledger;
+}
+/* 该账号是否已经把台账共享给别人（有下家 share_from 指向它） */
+async function hasSharedTo(env, username) {
+  const r = await env.DB.prepare('SELECT 1 AS x FROM users WHERE share_from = ? LIMIT 1').bind(username).first();
+  return !!r;
+}
+/* 该用户是否真的拥有第二份台账：开关 + 非超管 + 共享关系（借入 / 借出，任一即可）。
+   注意：bundleFor 与请求上下文可能拿到「数据库行」（下划线）或「已映射对象」（驼峰），两种都要认 */
+async function hasMultiLedger(env, u) {
+  if (!u || u.role === 'admin') return false;
+  if (!multiFlagOf(u)) return false;
+  if (u.shareFrom != null ? u.shareFrom : u.share_from) return true;
+  const down = u.sharedWith;                        /* bundleFor 已算好的下家清单，省一次查询 */
+  if (Array.isArray(down)) return down.length > 0;
+  return hasSharedTo(env, u.username);
 }
 async function dataOwner(env, username) {
   const row = await env.DB.prepare('SELECT share_from FROM users WHERE username = ?').bind(username).first();
@@ -400,8 +412,12 @@ async function dataOwner(env, username) {
 /* 台账真正落库的键：mine=true 且权限成立时用个人键，否则沿用共享归属者 */
 async function ledgerKeyOf(env, username, mine) {
   if (mine) {
-    const row = await env.DB.prepare('SELECT share_from, multi_ledger, role FROM users WHERE username = ?').bind(username).first();
-    if (row && row.multi_ledger && row.share_from && row.role !== 'admin') return mineKey(username);
+    const row = await env.DB.prepare(
+      'SELECT share_from, multi_ledger, role, ' +
+      '(SELECT COUNT(*) FROM users x WHERE x.share_from = users.username) AS down ' +
+      'FROM users WHERE username = ?'
+    ).bind(username).first();
+    if (row && row.multi_ledger && row.role !== 'admin' && (row.share_from || row.down)) return mineKey(username);
   }
   return dataOwner(env, username);
 }
@@ -443,14 +459,17 @@ async function crmConfigured(env) {
 /* 全库客户名去重（所有台账 owner 的 customers[].name） */
 async function collectCustomerNames(env) {
   const names = {};
-  const r = await env.DB.prepare('SELECT username, share_from, multi_ledger FROM users').all();
+  const r = await env.DB.prepare(
+    'SELECT username, share_from, multi_ledger, ' +
+    '(SELECT COUNT(*) FROM users x WHERE x.share_from = users.username) AS down FROM users'
+  ).all();
   for (const row of (r.results || [])) {
     const d = await readLedger(env, row.username);
     if (d && Array.isArray(d.customers)) {
       d.customers.forEach(function (c) { if (c && c.name) names[c.name] = true; });
     }
     /* 多台账账号的个人台账里也可能有公共台账没有的客户，同样要参与 CRM 匹配 */
-    if (row.multi_ledger && row.share_from) {
+    if (row.multi_ledger && (row.share_from || row.down)) {
       const p = await readLedger(env, row.username, true);
       if (p && Array.isArray(p.customers)) {
         p.customers.forEach(function (c) { if (c && c.name) names[c.name] = true; });
@@ -903,6 +922,13 @@ async function bundleFor(env, u) {
   } else {
     users = [mapUser(u, srvMap)];
   }
+  /* 下家清单必须先算：台账「已被共享给别人」的账号同样可以开第二份台账 */
+  for (const x of users) {
+    x.sharedWith = await shareMembers(env, x.username);
+  }
+  const meRec = users.filter(function (x) { return x.username === u.username; })[0];
+  if (meRec) u.sharedWith = meRec.sharedWith;
+  const multi = isAdmin ? false : await hasMultiLedger(env, u);
   const ledgers = {};
   const hideSens = !!u.hideSensitive;
   const mask = function (d) { return hideSens ? maskLedgerSensitive(d) : d; };
@@ -911,7 +937,7 @@ async function bundleFor(env, u) {
       const d = await readLedger(env, row.username);   /* 共享成员解析到 owner 的数据 */
       if (d) ledgers[row.username] = mask(d);
       /* 多台账账号的个人台账：单独一个键，超管汇总时当作独立数据集各计一次 */
-      if (row.multiLedger && row.shareFrom) {
+      if (await hasMultiLedger(env, row)) {
         const p = await readLedger(env, row.username, true);
         if (p) ledgers[mineKey(row.username)] = mask(p);
       }
@@ -919,22 +945,20 @@ async function bundleFor(env, u) {
   } else {
     const d = await readLedger(env, u.username);
     if (d) ledgers[u.username] = mask(d);
-    if (hasMultiLedger(u)) {
+    if (multi) {
       const p = await readLedger(env, u.username, true);
       if (p) ledgers[mineKey(u.username)] = mask(p);
     }
-  }
-  for (const x of users) {
-    x.sharedWith = await shareMembers(env, x.username);
   }
   return {
     user: mapUser(u, srvMap), users: users, ledgers: ledgers, admin: isAdmin,
     canWrite: canWriteUser(u), attachMax: ATTACH_MAX,
     /* 当前账号的台账形态：multi=true 时前端才显示「公共 / 我的」切换 */
     ledger: {
-      multi: hasMultiLedger(u),
+      multi: multi,
       mineKey: mineKey(u.username),
-      shareFrom: (u.shareFrom != null ? u.shareFrom : (u.share_from || ''))
+      shareFrom: (u.shareFrom != null ? u.shareFrom : (u.share_from || '')),
+      sharedTo: (u.sharedWith || []).slice()
     },
     /* 认证服务器清单只给超管（密钥仅标记是否已设置） */
     authServers: isAdmin ? await listServers(env) : []
@@ -1219,7 +1243,7 @@ async function route(request, env) {
   /* --- 巡检附件：上传 / 删除（需登录；读取见上） --- */
   if (p === '/api/attach' && method === 'POST') {
     /* 附件归属「人」而不是某一份台账：有多台账权限的账号至少有一份可写台账，允许上传 */
-    if (!canWriteUser(me) && !hasMultiLedger(me)) return bad('当前账号为只读权限，不能上传附件。', 403);
+    if (!canWriteUser(me) && !(await hasMultiLedger(env, me))) return bad('当前账号为只读权限，不能上传附件。', 403);
     await ensureAttachTable(env);
     const name = safeFileName(body.name);
     const mime = String(body.mime || '').toLowerCase().split(';')[0].trim();
@@ -1255,7 +1279,7 @@ async function route(request, env) {
 
   const mAt = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
   if (mAt && method === 'DELETE') {
-    if (!canWriteUser(me) && !hasMultiLedger(me)) return bad('当前账号为只读权限，不能删除附件。', 403);
+    if (!canWriteUser(me) && !(await hasMultiLedger(env, me))) return bad('当前账号为只读权限，不能删除附件。', 403);
     await ensureAttachTable(env);
     const row = await env.DB.prepare('SELECT id, owner FROM attachments WHERE id = ?').bind(mAt[1]).first();
     if (!row) return ok({ removed: false });
@@ -1276,7 +1300,7 @@ async function route(request, env) {
     const scope = normName(body.scope) || (wantMine ? me.username : '');
     if (!scope) return bad('缺少数据范围');
     if (!isAdmin && scope !== me.username) return bad('无权写入该账号的台账', 403);
-    if (wantMine && !hasMultiLedger(me)) return bad('当前账号没有多台账权限', 403);
+    if (wantMine && !(await hasMultiLedger(env, me))) return bad('当前账号没有多台账权限', 403);
     if (isAdmin && !wantMine) {
       const exists = await env.DB.prepare('SELECT 1 AS x FROM users WHERE username = ?').bind(scope).first();
       if (!exists) return bad('目标账号不存在', 404);
@@ -1512,7 +1536,7 @@ async function route(request, env) {
     let allow = null;
     if (me.role !== 'admin') {
       allow = {};
-      const d = await readLedger(env, me.username, wantMine && hasMultiLedger(me));
+      const d = await readLedger(env, me.username, wantMine && (await hasMultiLedger(env, me)));
       (d && Array.isArray(d.customers) ? d.customers : []).forEach(function (c) { if (c && c.name) allow[c.name] = true; });
     }
     const myName = String(me.nameCn || '').trim();
@@ -1598,8 +1622,10 @@ async function route(request, env) {
     } else if (body.password) {
       return bad('远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，请不要在本地设置密码');
     }
-    /* 多台账：只有设了共享来源的账号才有第二份台账（超管维护全局数据，不参与） */
-    const multiLedger = (shareFrom && role !== 'admin' && body.multiLedger) ? 1 : 0;
+    /* 多台账：处在共享关系里的账号才有第二份台账（借入 = 设了共享来源；借出 = 有下家指向它）。
+       超管维护全局数据，不参与共享数据集，永远没有第二份台账。 */
+    const hasDown = (role !== 'admin' && !shareFrom) ? await hasSharedTo(env, username) : false;
+    const multiLedger = (role !== 'admin' && body.multiLedger && (shareFrom || hasDown)) ? 1 : 0;
     await env.DB.prepare(
       'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
@@ -1653,8 +1679,10 @@ async function route(request, env) {
         return bad('远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
-      /* 多台账：共享来源被清空或降级为超管时自动关掉（数据保留，重新开启可继续用） */
-      const multiNow = !!(row.share_from || '').length && role !== 'admin'
+      /* 多台账：既没有共享来源、也没有下家指向它，或降级为超管时自动关掉
+         （数据保留，重新开启可继续用） */
+      const stillShared = !!(row.share_from || '').length || await hasSharedTo(env, target);
+      const multiNow = stillShared && role !== 'admin'
         ? (body.multiLedger == null ? (row.multi_ledger ? 1 : 0) : (body.multiLedger ? 1 : 0))
         : 0;
       await env.DB.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ?, stat_visible = ?, multi_ledger = ? WHERE username = ?')
@@ -1719,7 +1747,7 @@ async function route(request, env) {
     }
     if (!isAdmin && req !== me.username) return bad('无权查看该账号的数据日志', 403);
     const wantMine = url.searchParams.get('mine') === '1';
-    if (wantMine && !isAdmin && !hasMultiLedger(me)) return bad('当前账号没有多台账权限', 403);
+    if (wantMine && !isAdmin && !(await hasMultiLedger(env, me))) return bad('当前账号没有多台账权限', 403);
     const owner = await ledgerKeyOf(env, req, wantMine);
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10) || 200, 500);
     const r = await env.DB.prepare(

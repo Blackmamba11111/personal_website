@@ -112,12 +112,13 @@ function installApiStub(window, opts) {
     const u = findUser(username);
     return (u && u.shareFrom) ? u.shareFrom : username;
   };
-  /* 多台账（与两版真实服务端同口径）：开了多台账且设了共享来源的账号，另有一份
-     键为 `<用户名>::mine` 的个人台账，只有本人与超管可见、恒可写 */
+  /* 多台账（与两版真实服务端同口径）：处在共享关系里（借入别的台账 / 自己的台账被共享给别人）
+     且开了多台账的账号，另有一份键为 `<用户名>::mine` 的个人台账，只有本人与超管可见、恒可写 */
   const MINE_SUFFIX = '::mine';
   const mineKey = (u) => String(u) + MINE_SUFFIX;
   const isMineKey = (k) => /::mine$/.test(String(k == null ? '' : k));
-  const hasMulti = (u) => !!(u && u.multiLedger && u.shareFrom && u.role !== 'admin');
+  const sharedTo = (u) => srv.users.filter(x => (x.shareFrom || '') === u.username).map(x => x.username);
+  const hasMulti = (u) => !!(u && u.multiLedger && u.role !== 'admin' && (u.shareFrom || sharedTo(u).length));
   const ledgerKeyOf = (username, mine) => {
     const u = findUser(username);
     if (mine && hasMulti(u)) return mineKey(u.username);
@@ -142,7 +143,7 @@ function installApiStub(window, opts) {
         const owner = dataOwner(x.username);
         if (srv.ledgers[owner]) ledgers[x.username] = hideSens ? maskLedger(srv.ledgers[owner]) : srv.ledgers[owner];
         /* 多台账账号的个人台账：单独一个键，汇总时作为独立数据集 */
-        if (x.multiLedger && x.shareFrom) {
+        if (hasMulti(x)) {
           const p = srv.ledgers[mineKey(x.username)];
           if (p) ledgers[mineKey(x.username)] = hideSens ? maskLedger(p) : p;
         }
@@ -163,7 +164,7 @@ function installApiStub(window, opts) {
       admin: isAdmin,
       canWrite: isAdmin || (u.perm !== 'ro'),
       /* 前端据 ledger.multi 显示「公共 / 我的」切换 */
-      ledger: { multi: hasMulti(u), mineKey: mineKey(u.username), shareFrom: u.shareFrom || '' },
+      ledger: { multi: hasMulti(u), mineKey: mineKey(u.username), shareFrom: u.shareFrom || '', sharedTo: sharedTo(u) },
       token: TOKEN,
       attachMax: 20 * 1024 * 1024,
       authServers: isAdmin ? srv.servers.map(serverView) : []
@@ -560,8 +561,9 @@ function installApiStub(window, opts) {
         nameCn: String(body.nameCn || '').trim(),
         crmVisible: !!body.crmVisible,
         statVisible: !!body.statVisible,
-        /* 多台账：只有设了共享来源的非超管账号才有第二份台账 */
-        multiLedger: !!(shareFrom && body.role !== 'admin' && body.multiLedger)
+        /* 多台账：处在共享关系里的非超管账号才有第二份台账（借入 = 设了共享来源；借出 = 有下家） */
+        multiLedger: !!(body.role !== 'admin' && body.multiLedger &&
+          (shareFrom || srv.users.some(x => (x.shareFrom || '') === un)))
       };
       srv.users.push(nu);
       if (!shareFrom && body.data) srv.ledgers[un] = body.data;
@@ -584,11 +586,11 @@ function installApiStub(window, opts) {
         if (body.nameCn !== undefined) t.nameCn = String(body.nameCn || '').trim();
         if (body.crmVisible !== undefined) t.crmVisible = !!body.crmVisible;
         if (body.statVisible !== undefined) t.statVisible = !!body.statVisible;
-        /* 多台账：共享来源为空或降级为超管时强制关闭 */
+        /* 多台账：既没借入也没借出，或降级为超管时强制关闭 */
         if (body.multiLedger !== undefined) {
-          t.multiLedger = !!(body.multiLedger && (t.shareFrom || '') && t.role !== 'admin');
+          t.multiLedger = !!(body.multiLedger && t.role !== 'admin' && (t.shareFrom || sharedTo(t).length));
         }
-        if (t.role === 'admin' || !(t.shareFrom || '')) t.multiLedger = false;
+        if (t.role === 'admin' || (!(t.shareFrom || '') && !sharedTo(t).length)) t.multiLedger = false;
         /* 登录超时（分钟）：与 Worker 版 normSessionMins 同口径（5–43200，非法回退 30） */
         if (body.sessionMins !== undefined) {
           const n = Math.round(Number(body.sessionMins));

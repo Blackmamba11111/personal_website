@@ -435,5 +435,64 @@ r = await api('/ledger', { method: 'GET' }, tk);
 check('删号后个人台账不留残余', !Object.prototype.hasOwnProperty.call(r.data.ledgers, 'multi1::mine'),
   Object.keys(r.data.ledgers).join(','));
 
+/* ============ 台账被共享出去的 owner 也能有第二份台账（2026-11-09 追加） ============
+   提供方（member1，member2 共享它的台账）与借入方一样可以开多台账：
+   公共台账仍是别人正在看的那一份，个人台账只属于自己。 */
+r = await api('/users/member1', { method: 'PATCH', body: { multiLedger: true } }, tk);
+check('台账已共享给别人的账号可以开多台账', r.ok && r.data.user.multiLedger === true,
+  JSON.stringify(r.data && r.data.user));
+
+r = await api('/auth/login', { method: 'POST', body: { username: 'member1', password: 'Member@123' } });
+check('提供方登录成功', r.ok === true, JSON.stringify(r.error));
+const pk = r.data.token;
+check('提供方 bundle.ledger.multi=true', !!r.data.ledger && r.data.ledger.multi === true, JSON.stringify(r.data.ledger));
+check('提供方 bundle.ledger.shareFrom 为空（自己是 owner）', (r.data.ledger.shareFrom || '') === '', r.data.ledger.shareFrom);
+check('提供方 bundle.ledger.sharedTo 列出下家',
+  Array.isArray(r.data.ledger.sharedTo) && r.data.ledger.sharedTo.indexOf('member2') >= 0,
+  JSON.stringify(r.data.ledger.sharedTo));
+check('提供方的公共台账仍是自己的那份（客户甲）',
+  !!r.data.ledgers.member1 && r.data.ledgers.member1.customers.some(c => c.name === '客户甲'),
+  Object.keys(r.data.ledgers).join(','));
+
+const ownerMine = { regions: [], customers: [{ id: 'om1', name: '邯郸银行', phone: '', contact: '' }], visits: [] };
+r = await api('/ledger', { method: 'PUT', body: { mine: true, data: ownerMine } }, pk);
+check('提供方可以写自己的个人台账', r.ok === true && r.data.mine === true, JSON.stringify(r));
+
+r = await api('/ledger', { method: 'GET' }, pk);
+check('个人台账落在 member1::mine', !!r.data.ledgers['member1::mine'] &&
+  r.data.ledgers['member1::mine'].customers[0].name === '邯郸银行', Object.keys(r.data.ledgers).join(','));
+check('提供方的公共台账未被个人台账污染',
+  r.data.ledgers.member1.customers.length === 1 && r.data.ledgers.member1.customers[0].name === '客户甲',
+  JSON.stringify(r.data.ledgers.member1.customers.map(c => c.name)));
+
+/* 借入方照旧只看公共台账 */
+r = await api('/auth/login', { method: 'POST', body: { username: 'member2', password: 'Member@456' } });
+const bk = r.data.token;
+r = await api('/ledger', { method: 'GET' }, bk);
+check('借入方看不到 owner 的个人台账', !Object.prototype.hasOwnProperty.call(r.data.ledgers, 'member1::mine'),
+  Object.keys(r.data.ledgers).join(','));
+check('借入方仍拿到公共台账（客户甲）',
+  !!r.data.ledgers.member2 && r.data.ledgers.member2.customers.some(c => c.name === '客户甲'),
+  Object.keys(r.data.ledgers).join(','));
+
+/* 超管：两份都在（汇总各计一次） */
+r = await api('/ledger', { method: 'GET' }, tk);
+check('超管能看到 owner 的个人台账', !!r.data.ledgers['member1::mine'], Object.keys(r.data.ledgers).join(','));
+
+r = await api('/logs?username=member1&mine=1', {}, pk);
+check('owner 的个人台账日志独立记账', r.ok && r.data.owner === 'member1::mine',
+  JSON.stringify(r.data && r.data.owner));
+
+/* 共享关系消失（下家被删）→ 多台账自动关闭，但个人台账数据保留 */
+r = await api('/users/member2', { method: 'DELETE' }, tk);
+check('删除共享成员成功', r.ok === true, JSON.stringify(r));
+r = await api('/users/member1', { method: 'PATCH', body: { note: '独立账号' } }, tk);
+check('最后一个共享成员被删后，提供方的多台账自动关闭', r.ok && r.data.user.multiLedger === false,
+  JSON.stringify(r.data && r.data.user));
+r = await api('/auth/login', { method: 'POST', body: { username: 'member1', password: 'Member@123' } });
+check('降级为独立账号后 bundle.ledger.multi=false', r.ok && r.data.ledger.multi === false,
+  JSON.stringify(r.data && r.data.ledger));
+
+
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);

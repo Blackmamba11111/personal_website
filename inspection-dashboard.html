@@ -1855,7 +1855,7 @@
       </div>
       <div class="field" id="uMultiLedgerField">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;" id="uMultiLedgerLabel"><input type="checkbox" id="uMultiLedger"> 多台账权限</label>
-        <div class="hint" id="uMultiLedgerHint">开启后该账号除「公共台账」（与共享来源共用、双向同步）外，还拥有一份只有自己可见的「我的台账」，登录后在右上角账号菜单切换。个人台账恒可写（只读账号也能维护），初始为空。</div>
+        <div class="hint" id="uMultiLedgerHint">开启后该账号除「公共台账」（处在共享关系里的那一份，双向同步）外，还拥有一份只有自己可见的「我的台账」，登录后在右上角账号菜单切换。个人台账恒可写（只读账号也能维护），初始为空。</div>
       </div>
       <div class="field" id="uPwdField">
         <label for="uPwd">初始密码 <span class="req">*</span></label>
@@ -6093,23 +6093,33 @@
   /* 服务端签发的会话令牌；取代了旧版用于本地会话的 inspection_board_session_v1 */
   var TOKEN_KEY   = 'inspection_board_token_v1';
 
-  var AUTH = { user: null, scope: '', attachMax: 0, servers: [], mine: false };
+  var AUTH = { user: null, scope: '', attachMax: 0, servers: [], mine: false, ledger: null };
   var appBooted = false;
   /* 与服务端的同步状态：dirty 表示本地有尚未推送成功的改动；
      keys 记录「哪几份台账」待推送（多台账时公共 / 我的各自独立，不能互相覆盖） */
   var SYNC = { dirty: false, timer: null, warnShown: false, lastAt: '', keys: {} };
 
   /* ---------- 多台账（2026-11-09） ----------
-     开了「多台账权限」且设了共享来源的账号有两份台账：
+     处在共享关系里的账号（借入别人台账 / 自己的台账被共享给别人）开了「多台账权限」后有两份：
        公共台账 = 共享来源用户的那一份（键 = 用户名，双向同步，一切照旧）
        我的台账 = 自己的那一份（键 = `<用户名>::mine`，只有本人与超管可见，恒可写）
      未开权限的账号永不进入这一分支，行为与旧版完全一致。 */
   var MINE_SUFFIX = '::mine';
   function isMineKey(k)   { return /::mine$/.test(String(k == null ? '' : k)); }
   function mineKeyOf(u)   { return String(u == null ? '' : u) + MINE_SUFFIX; }
+  /* 我把台账共享给了谁（服务端下发，缺失时退回本地账号镜像） */
+  function sharedToNames() {
+    if (AUTH.ledger && Array.isArray(AUTH.ledger.sharedTo)) return AUTH.ledger.sharedTo;
+    var me = AUTH.user ? findUser(AUTH.user.username) : null;
+    return (me && me.sharedWith) || [];
+  }
   function hasMultiLedger() {
     var u = AUTH.user;
-    return !!(u && u.multiLedger && u.shareFrom && u.role !== 'admin');
+    if (!u || u.role === 'admin') return false;
+    /* 以服务端判定为准：共享关系有「借入 / 借出」两种，本地不必重复推断 */
+    if (AUTH.ledger && AUTH.ledger.multi != null) return !!AUTH.ledger.multi;
+    if (!u.multiLedger) return false;
+    return !!(u.shareFrom || sharedToNames().length);
   }
   function isMine() { return !!AUTH.mine && hasMultiLedger(); }
   /* 当前要读写的台账键；汇总视图（SCOPE_ALL）不带后缀 */
@@ -6464,9 +6474,12 @@
       }
       var fresh = (d.users || []).filter(function (x) { return x.username === AUTH.user.username; })[0];
       if (fresh && fresh.mustChange !== AUTH.user.mustChange) AUTH.user.mustChange = fresh.mustChange;
-      /* 多台账权限被超管调整后即时生效（关闭时退回公共台账，避免停留在无权访问的个人台账） */
-      if (fresh && !!fresh.multiLedger !== !!AUTH.user.multiLedger) {
-        AUTH.user.multiLedger = !!fresh.multiLedger;
+      /* 多台账权限被超管调整后即时生效（关闭 / 共享关系解除时退回公共台账，避免停留在无权访问的个人台账）。
+         判定以服务端每次下发的 ledger 为准——共享关系有「借入 / 借出」两种，本地不重复推断 */
+      var wasMulti = hasMultiLedger();
+      if (d.ledger) AUTH.ledger = d.ledger;
+      if (fresh) AUTH.user.multiLedger = !!fresh.multiLedger;
+      if (hasMultiLedger() !== wasMulti) {
         if (!hasMultiLedger() && AUTH.mine) { AUTH.mine = false; load(); renderAll(); buildRegionLayers(); }
         renderLedgerSwitch();
         renderUserChip();
@@ -6585,12 +6598,15 @@
     userList().forEach(function (u) {
       /* 共享成员（数据实际归属他人）跳过：同一份数据由归属账号呈现一次，
          否则 owner 和每个成员各出一份，汇总视图整页重复。 */
+      var recMulti = !!u.multiLedger && u.role !== 'admin' && !!(u.shareFrom || (u.sharedWith && u.sharedWith.length));
       if (u.shareFrom && findUser(u.shareFrom)) {
         /* 例外：共享成员若开了多台账，它的个人台账是独有数据，必须计入 */
-        if (u.multiLedger && u.role !== 'admin') mergeInto(mineKeyOf(u.username), u.username, u.name + ' · 个人');
+        if (recMulti) mergeInto(mineKeyOf(u.username), u.username, u.name + ' · 个人');
         return;
       }
       mergeInto(u.username, u.username, u.name);
+      /* 台账被共享出去的 owner 也可能开了多台账：它的个人台账同样是独有数据 */
+      if (recMulti) mergeInto(mineKeyOf(u.username), u.username, u.name + ' · 个人');
     });
     /* 合并区域按客户数降序（0 客户的沉底，保持出现顺序） */
     var cnt = {};
@@ -6716,8 +6732,18 @@
     if (sub) {
       sub.textContent = isMine()
         ? '当前：我的台账（仅自己可见，可自由编辑）'
-        : '当前：公共台账（与 ' + (AUTH.user.shareFrom || '来源账号') + ' 共用）';
+        : '当前：公共台账（' + publicLedgerTip() + '）';
     }
+  }
+  /* 公共台账的归属说明：借来的写「与 X 共用」，自己共享出去的写「已共享给 X」 */
+  function publicLedgerTip() {
+    var u = AUTH.user || {};
+    if (u.shareFrom) return '与 ' + u.shareFrom + ' 共用';
+    var peers = sharedToNames();
+    if (!peers.length) return '仅自己使用';
+    return '已共享给 ' + (peers.length > 2
+      ? peers.slice(0, 2).join('、') + ' 等 ' + peers.length + ' 人'
+      : peers.join('、'));
   }
   function switchLedger(mode) {
     if (!hasMultiLedger()) return;
@@ -6741,7 +6767,7 @@
     document.getElementById('userMenu').classList.remove('on');
     toast(mine
       ? '已切换到「我的台账」：只有你能看到与维护'
-      : '已切换到「公共台账」：与 ' + (AUTH.user.shareFrom || '来源账号') + ' 共用一份数据');
+      : '已切换到「公共台账」：' + publicLedgerTip());
   }
   function renderScopeSelect() {
     var wrap = document.getElementById('umScopeWrap');
@@ -6810,7 +6836,7 @@
         }, 700);
       }
       document.getElementById('loginPwd').value = '';
-      signIn(d.user, { welcome: true, attachMax: d.attachMax, servers: d.authServers || [] });
+      signIn(d.user, { welcome: true, attachMax: d.attachMax, servers: d.authServers || [], ledger: d.ledger });
     });
   }
 
@@ -6910,7 +6936,7 @@
     /* 多台账账号：除公共台账外，个人台账的日志也单列一项（服务端按 ?mine=1 查询） */
     sel.innerHTML = users.map(function (u) {
       var opt = '<option value="' + esc(u.username) + '">' + esc(u.name) + '（' + esc(u.username) + '）</option>';
-      if (u.multiLedger && u.shareFrom && u.role !== 'admin') {
+      if (u.multiLedger && u.role !== 'admin' && (u.shareFrom || (u.sharedWith && u.sharedWith.length))) {
         opt += '<option value="' + esc(mineKeyOf(u.username)) + '">' + esc(u.name) + '（个人台账）</option>';
       }
       return opt;
@@ -8462,7 +8488,7 @@
           : permTag(u) + (u.hideSensitive ? ' <span class="tag ro" title="客户详细地址 / 联系人电话对该账号打码显示">隐藏敏感</span>' : '') +
             (u.crmVisible ? ' <span class="tag active" title="该账号可查看询盘云 CRM 现网信息与维保到期提醒">CRM可见</span>' : '') +
             (u.statVisible ? ' <span class="tag active" title="该账号可查看区域统计（只读，不能触发检索）">区域统计</span>' : '') +
-            (u.multiLedger ? ' <span class="tag user" title="两份台账：与共享来源共用的公共台账 + 只有自己可见的个人台账，登录后可切换">多台账</span>' : '')) + '</td>' +
+            (u.multiLedger ? ' <span class="tag user" title="两份台账：处在共享关系里的公共台账 + 只有自己可见的个人台账，登录后可切换">多台账</span>' : '')) + '</td>' +
         '<td><span class="tag ' + (u.role === 'admin' ? 'admin' : 'user') + '">' + roleText(u) + '</span></td>' +
         '<td><span class="tag ' + (u.status === 'active' ? 'active' : 'disabled') + '">' +
           (u.status === 'active' ? '启用中' : '已停用') + '</span></td>' +
@@ -8531,7 +8557,8 @@
     syncMultiLedgerField();
   }
 
-  /* 多台账权限：只有「有共享来源」的非超管账号才有第二份台账，其余置灰并说明原因 */
+  /* 多台账权限：只要账号处在共享关系里（借入别人的台账 / 自己的台账被共享给别人）就有第二份台账，
+     其余置灰并说明原因 */
   function shareFromOfForm() {
     if (editingUserId) {
       var t = userList().filter(function (x) { return x.id === editingUserId; })[0];
@@ -8540,22 +8567,31 @@
     return document.getElementById('uSeed').value === 'copy'
       ? (document.getElementById('uSeedUser').value || '') : '';
   }
+  /* 正在编辑的账号已经把台账共享给了谁（新建时不可能有下家） */
+  function sharedToOfForm() {
+    if (!editingUserId) return [];
+    var t = userList().filter(function (x) { return x.id === editingUserId; })[0];
+    return (t && t.sharedWith) || [];
+  }
   function syncMultiLedgerField() {
     var el = document.getElementById('uMultiLedger');
     var hint = document.getElementById('uMultiLedgerHint');
     if (!el) return;
     var src = shareFromOfForm();
+    var peers = sharedToOfForm();
     var isAdminRole = document.getElementById('uRole').value === 'admin';
-    var ok = !!src && !isAdminRole;
+    var ok = !isAdminRole && (!!src || peers.length > 0);
     el.disabled = !ok;
     if (!ok) el.checked = false;
     if (!hint) return;
     if (isAdminRole) {
       hint.textContent = '超级管理员维护全局数据，不参与共享数据集，因此没有个人台账。';
-    } else if (ok) {
+    } else if (ok && src) {
       hint.textContent = '开启后该账号除「公共台账」（与 ' + src + ' 共用、双向同步）外，还拥有一份只有自己可见的「我的台账」，登录后在右上角账号菜单切换。个人台账恒可写（只读账号也能维护），初始为空。';
+    } else if (ok) {
+      hint.textContent = '该账号的台账已共享给 ' + peers.join('、') + '。开启后除这份「公共台账」（他们仍在看的那份，双向同步）外，还拥有一份只有自己可见的「我的台账」，登录后在右上角账号菜单切换。个人台账恒可写（只读账号也能维护），初始为空。';
     } else {
-      hint.textContent = '该账号没有共享来源，只有一份自己的台账——新建用户时把「初始数据」选为「与现有用户共享」即可开启。';
+      hint.textContent = '该账号既没有借用别人的台账，台账也没有共享给别人，只有一份——新建用户时把「初始数据」选为「与现有用户共享」，或先给其他账号设置共享来源指向它，即可开启。';
     }
   }
 
@@ -9112,6 +9148,7 @@
   function signIn(user, opts) {
     AUTH.user = user;
     SENS_SHOW = {};                          /* 换账号 / 重新登录后敏感明文全部恢复打码 */
+    AUTH.ledger = (opts && opts.ledger) || null;   /* 服务端下发的台账形态（是否两份 / 共享给了谁） */
     AUTH.scope = (user.role === 'admin') ? SCOPE_ALL : user.username;
     /* 登录默认进公共台账（沿用现有习惯），需要时在账号菜单切到「我的台账」 */
     AUTH.mine = false;
@@ -9196,7 +9233,7 @@
         if (r.ok && r.data) {
           applyServerUsers(r.data.users);
           applyServerLedgers(r.data.ledgers);
-          signIn(r.data.user, { attachMax: r.data.attachMax, servers: r.data.authServers || [] });
+          signIn(r.data.user, { attachMax: r.data.attachMax, servers: r.data.authServers || [], ledger: r.data.ledger });
         } else {
           clearToken();
           AUTH.user = null;

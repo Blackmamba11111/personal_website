@@ -354,13 +354,14 @@ function crmConfigured() { const c = readCrmConfig(); return !!(c.loginName && c
 /* 全库客户名去重（所有台账 owner 的 customers[].name） */
 function collectCustomerNames() {
   const names = {};
-  db.prepare('SELECT username, share_from, multi_ledger FROM users').all().forEach(function (r) {
+  db.prepare('SELECT username, share_from, multi_ledger, ' +
+    '(SELECT COUNT(*) FROM users x WHERE x.share_from = users.username) AS down FROM users').all().forEach(function (r) {
     const d = readLedger(r.username);
     if (d && Array.isArray(d.customers)) {
       d.customers.forEach(function (c) { if (c && c.name) names[c.name] = true; });
     }
     /* 多台账账号的个人台账里也可能有公共台账没有的客户，同样要参与 CRM 匹配 */
-    if (r.multi_ledger && r.share_from) {
+    if (r.multi_ledger && (r.share_from || r.down)) {
       const p = readLedger(r.username, true);
       if (p && Array.isArray(p.customers)) {
         p.customers.forEach(function (c) { if (c && c.name) names[c.name] = true; });
@@ -798,15 +799,24 @@ function currentUser(req) {
 }
 
 /* ---------- 共享数据集：share_from 指向数据归属者（一层，创建时已解析成最终 owner） ----------
-   多台账（2026-11-09）：multi_ledger=1 且有共享来源的非超管账号，另有一份属于自己的台账，
-   键为 `<用户名>::mine`；不传 mine 时行为与旧版完全一致。 */
+   多台账（2026-11-09）：multi_ledger=1 且**处在共享关系里**的非超管账号，另有一份属于自己的台账，
+   键为 `<用户名>::mine`。「处在共享关系里」两种都算：① 借入（share_from 指向他人）；
+   ② 借出（有下家 share_from 指向自己）。纯独立账号没有第二份台账，不传 mine 时行为与旧版一致。 */
 const MINE_SUFFIX = '::mine';
 function mineKey(username) { return String(username || '') + MINE_SUFFIX; }
+function multiFlagOf(u) {
+  return u.multiLedger != null ? u.multiLedger : u.multi_ledger;
+}
+/* 该账号是否已经把台账共享给别人（有下家 share_from 指向它） */
+function hasSharedTo(username) {
+  return !!db.prepare('SELECT 1 AS x FROM users WHERE share_from = ? LIMIT 1').get(username);
+}
 function hasMultiLedger(u) {
-  if (!u) return false;
-  const multi = u.multiLedger != null ? u.multiLedger : u.multi_ledger;
-  const share = u.shareFrom != null ? u.shareFrom : u.share_from;
-  return !!(multi && share && u.role !== 'admin');
+  if (!u || u.role === 'admin') return false;
+  if (!multiFlagOf(u)) return false;
+  if (u.shareFrom != null ? u.shareFrom : u.share_from) return true;
+  if (Array.isArray(u.sharedWith)) return u.sharedWith.length > 0;
+  return hasSharedTo(u.username);
 }
 function dataOwner(username) {
   const row = db.prepare('SELECT share_from FROM users WHERE username = ?').get(username);
@@ -815,8 +825,10 @@ function dataOwner(username) {
 /* 台账真正落库的键：mine=true 且权限成立时用个人键，否则沿用共享归属者 */
 function ledgerKeyOf(username, mine) {
   if (mine) {
-    const row = db.prepare('SELECT share_from, multi_ledger, role FROM users WHERE username = ?').get(username);
-    if (row && row.multi_ledger && row.share_from && row.role !== 'admin') return mineKey(username);
+    const row = db.prepare('SELECT share_from, multi_ledger, role, ' +
+      '(SELECT COUNT(*) FROM users x WHERE x.share_from = users.username) AS down ' +
+      'FROM users WHERE username = ?').get(username);
+    if (row && row.multi_ledger && row.role !== 'admin' && (row.share_from || row.down)) return mineKey(username);
   }
   return dataOwner(username);
 }
@@ -957,15 +969,19 @@ function bundleFor(u) {
     users = [mapUser(u, srvMap)];
   }
   users.forEach(function (x) { x.sharedWith = shareMembers(x.username).map(function (m) { return m.username; }); });
+  /* 下家清单必须先算：台账「已被共享给别人」的账号同样可以开第二份台账 */
+  const meRec = users.filter(function (x) { return x.username === u.username; })[0];
+  if (meRec) u.sharedWith = meRec.sharedWith;
+  const multi = isAdmin ? false : hasMultiLedger(u);
   const ledgers = {};
   const hideSens = !!u.hideSensitive;
   const mask = function (d) { return hideSens ? maskLedgerSensitive(d) : d; };
   if (isAdmin) {
-    db.prepare('SELECT ' + USER_COLS + ' FROM users').all().forEach(function (r) {
-      const d = readLedger(r.username);          /* 共享成员解析到 owner 的数据 */
+    users.forEach(function (r) {
+      const d = readLedger(r.username);           /* 共享成员解析到 owner 的数据 */
       if (d) ledgers[r.username] = mask(d);
       /* 多台账账号的个人台账：单独一个键，超管汇总时当作独立数据集各计一次 */
-      if (r.multi_ledger && r.share_from) {
+      if (hasMultiLedger(r)) {
         const p = readLedger(r.username, true);
         if (p) ledgers[mineKey(r.username)] = mask(p);
       }
@@ -973,7 +989,7 @@ function bundleFor(u) {
   } else {
     const d = readLedger(u.username);
     if (d) ledgers[u.username] = mask(d);
-    if (hasMultiLedger(u)) {
+    if (multi) {
       const p = readLedger(u.username, true);
       if (p) ledgers[mineKey(u.username)] = mask(p);
     }
@@ -983,9 +999,10 @@ function bundleFor(u) {
     canWrite: canWriteUser(u), attachMax: ATTACH_MAX,
     /* 当前账号的台账形态：multi=true 时前端才显示「公共 / 我的」切换 */
     ledger: {
-      multi: hasMultiLedger(u),
+      multi: multi,
       mineKey: mineKey(u.username),
-      shareFrom: (u.shareFrom != null ? u.shareFrom : (u.share_from || ''))
+      shareFrom: (u.shareFrom != null ? u.shareFrom : (u.share_from || '')),
+      sharedTo: (u.sharedWith || []).slice()
     },
     /* 认证服务器清单只给超管（含配置，密钥仅标记是否已设置） */
     authServers: isAdmin ? listServers() : []
@@ -1712,8 +1729,10 @@ async function handleApi(req, res, url) {
       return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，请不要在本地设置密码');
     }
 
-    /* 多台账：只有设了共享来源的账号才有第二份台账（超管维护全局数据，不参与） */
-    const multiLedger = (shareFrom && role !== 'admin' && body.multiLedger) ? 1 : 0;
+    /* 多台账：处在共享关系里的账号才有第二份台账（借入 = 设了共享来源；借出 = 有下家指向它）。
+       超管维护全局数据，不参与共享数据集，永远没有第二份台账。 */
+    const hasDown = (role !== 'admin' && !shareFrom) ? hasSharedTo(username) : false;
+    const multiLedger = (role !== 'admin' && body.multiLedger && (shareFrom || hasDown)) ? 1 : 0;
     db.prepare(
       'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
@@ -1767,8 +1786,10 @@ async function handleApi(req, res, url) {
         return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
-      /* 多台账：共享来源为空或降级为超管时自动关掉（个人台账数据保留，重新开启可继续用） */
-      const multiNow = !!(row.share_from || '').length && role !== 'admin'
+      /* 多台账：既没有共享来源、也没有下家指向它，或降级为超管时自动关掉
+         （个人台账数据保留，重新开启可继续用） */
+      const stillShared = !!(row.share_from || '').length || hasSharedTo(target);
+      const multiNow = stillShared && role !== 'admin'
         ? (body.multiLedger == null ? (row.multi_ledger ? 1 : 0) : (body.multiLedger ? 1 : 0))
         : 0;
       db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ?, stat_visible = ?, multi_ledger = ? WHERE username = ?')

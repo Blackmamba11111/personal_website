@@ -570,11 +570,67 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 8.8 多台账：台账被共享出去的 owner 也有第二份 ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+      Object.assign(mkUser({ username: 'zhangsan', name: '张三', password: 'zhang1234' }),
+        { multiLedger: true }),
+      Object.assign(mkUser({ username: 'wangwu', name: '王五', password: 'wangw888' }),
+        { shareFrom: 'zhangsan' })
+    ] };
+    const dom = makeDom({
+      fixture: fx,
+      sessionUser: 'zhangsan',
+      data: { zhangsan: mkDB(3, 'Z-'), 'zhangsan::mine': mkDB(1, 'P-') },
+      errors
+    });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    const seg = k => d.querySelector('#ledgerSeg [data-ledger="' + k + '"]');
+
+    click(w, id('userChip'));
+    check('提供方也有台账切换入口', !!id('umLedgerWrap') && id('umLedgerWrap').style.display !== 'none',
+      id('umLedgerWrap') ? id('umLedgerWrap').style.display : '无节点');
+    check('提供方默认停在公共台账', seg('shared').classList.contains('on'), seg('shared').className);
+    check('公共台账是自己的 3 家客户', id('stTotal').textContent === '3', id('stTotal').textContent);
+    check('提示写明公共台账已共享给谁',
+      id('umLedgerHint').textContent.indexOf('已共享给 wangwu') >= 0, id('umLedgerHint').textContent);
+
+    click(w, seg('mine'));
+    await tick(80);
+    check('切到我的台账显示自己的 1 家客户', id('stTotal').textContent === '1', id('stTotal').textContent);
+
+    click(w, id('btnAdd'));
+    id('fName').value = '提供方私账客户';
+    click(w, id('btnSaveCust'));
+    await tick(60);
+    check('提供方的个人台账可新增客户（2 家）', id('stTotal').textContent === '2', id('stTotal').textContent);
+
+    await tick(900);
+    const ownMine = w.__SRV__.ledgers['zhangsan::mine'];
+    const ownPub = w.__SRV__.ledgers.zhangsan;
+    check('写入落在 zhangsan::mine',
+      !!ownMine && ownMine.customers.some(c => c.name === '提供方私账客户'),
+      ownMine ? ownMine.customers.map(c => c.name).join(',') : '无');
+    check('提供方的公共台账没有被写入（借入方看到的那份不变）',
+      !!ownPub && ownPub.customers.length === 3 && !ownPub.customers.some(c => c.name === '提供方私账客户'),
+      ownPub ? ownPub.customers.map(c => c.name).join(',') : '无');
+
+    click(w, id('userChip'));
+    click(w, seg('shared'));
+    await tick(80);
+    check('切回公共台账恢复 3 家', id('stTotal').textContent === '3', id('stTotal').textContent);
+    w.close();
+  }
+
   /* ================= 8.7 多台账：超管视角（汇总与用户管理） ================= */
   {
     const fx = { version: 1, users: [
       mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
       mkUser({ username: 'zhangsan', name: '张三', password: 'zhang1234' }),
+      mkUser({ username: 'lisi', name: '李四', password: 'lisi1234' }),
       Object.assign(mkUser({ username: 'wangwu', name: '王五', password: 'wangw888' }),
         { shareFrom: 'zhangsan', multiLedger: true })
     ] };
@@ -612,8 +668,19 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     const zsRow = rows.filter(r => r.textContent.indexOf('zhangsan') >= 0 && r.textContent.indexOf('共享自') < 0)[0];
     click(w, zsRow.querySelector('[data-ua="edit"]'));
     await tick(40);
-    check('没有共享来源的账号开关被禁用', id('uMultiLedger').disabled === true && id('uMultiLedger').checked === false);
-    check('禁用原因有说明', id('uMultiLedgerHint').textContent.indexOf('没有共享来源') >= 0,
+    /* 台账被共享出去的 owner 同样处在共享关系里 → 也能开第二份台账 */
+    check('台账已共享给别人的账号开关可用', id('uMultiLedger').disabled === false,
+      id('uMultiLedgerHint').textContent);
+    check('开关说明写明公共台账已共享给谁', id('uMultiLedgerHint').textContent.indexOf('已共享给 wangwu') >= 0,
+      id('uMultiLedgerHint').textContent);
+    click(w, d.querySelector('#maskUser [data-close="maskUser"]'));
+    await tick(20);
+
+    const lsRow = rows.filter(r => r.textContent.indexOf('lisi') >= 0)[0];
+    click(w, lsRow.querySelector('[data-ua="edit"]'));
+    await tick(40);
+    check('完全独立的账号开关被禁用', id('uMultiLedger').disabled === true && id('uMultiLedger').checked === false);
+    check('禁用原因有说明', id('uMultiLedgerHint').textContent.indexOf('只有一份') >= 0,
       id('uMultiLedgerHint').textContent);
     click(w, d.querySelector('#maskUser [data-close="maskUser"]'));
     await tick(20);
