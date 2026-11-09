@@ -21,7 +21,16 @@ CREATE TABLE IF NOT EXISTS users (
   -- 登录超时（分钟）：会话滑动过期，默认 30，范围 5~43200
   session_mins INTEGER NOT NULL DEFAULT 30,
   -- 敏感字段（客户详细地址/联系人电话）对该账号隐藏：1 = 隐藏（服务端打码下发）
-  hide_sensitive INTEGER NOT NULL DEFAULT 0
+  hide_sensitive INTEGER NOT NULL DEFAULT 0,
+  -- CRM 比对用的中文姓名（登录名为拼音时填写），「我负责的项目」按它与维护人A 比对
+  name_cn     TEXT NOT NULL DEFAULT '',
+  -- 可见 CRM 现网信息（0 = 只回「维护人A = 本人」的项目）
+  crm_visible INTEGER NOT NULL DEFAULT 0,
+  -- 可见区域统计（只读；触发检索仍是超管）
+  stat_visible INTEGER NOT NULL DEFAULT 0,
+  -- 多台账权限（2026-11-09）：1 = 除共享来的公共台账外，另有一份自己的台账
+  -- 键为 ledgers 里的 `<用户名>::mine`；仅对设了 share_from 的非超管账号有效
+  multi_ledger INTEGER NOT NULL DEFAULT 0
 );
 
 -- 远程认证服务器（RADIUS / TACACS+ / LDAP）
@@ -37,6 +46,7 @@ CREATE TABLE IF NOT EXISTS auth_servers (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT ''
 );
+-- 台账：username = 台账归属者（公共台账用 owner 用户名；个人台账用 `<用户名>::mine`）
 CREATE TABLE IF NOT EXISTS ledgers (
   username   TEXT PRIMARY KEY,
   data       TEXT NOT NULL,

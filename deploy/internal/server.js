@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS users (
   source      TEXT NOT NULL DEFAULT 'local',
   perm        TEXT NOT NULL DEFAULT 'rw',
   server_id   TEXT NOT NULL DEFAULT '',
-  share_from  TEXT NOT NULL DEFAULT ''
+  share_from  TEXT NOT NULL DEFAULT '',
+  multi_ledger INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS auth_servers (
   id         TEXT PRIMARY KEY,
@@ -181,7 +182,9 @@ try {
     ['hide_sensitive', 'ALTER TABLE users ADD COLUMN hide_sensitive INTEGER NOT NULL DEFAULT 0'],
     ['name_cn', "ALTER TABLE users ADD COLUMN name_cn TEXT NOT NULL DEFAULT ''"],
     ['crm_visible', 'ALTER TABLE users ADD COLUMN crm_visible INTEGER NOT NULL DEFAULT 0'],
-    ['stat_visible', 'ALTER TABLE users ADD COLUMN stat_visible INTEGER NOT NULL DEFAULT 0']
+    ['stat_visible', 'ALTER TABLE users ADD COLUMN stat_visible INTEGER NOT NULL DEFAULT 0'],
+    /* 多台账权限（2026-11-09）：设了共享来源的账号可另有一份自己的台账 */
+    ['multi_ledger', 'ALTER TABLE users ADD COLUMN multi_ledger INTEGER NOT NULL DEFAULT 0']
   ];
   add.forEach(function (pair) {
     if (ucols.indexOf(pair[0]) < 0) {
@@ -241,7 +244,8 @@ function mapUser(row, srvMap) {
     hideSensitive: row.hide_sensitive != null ? !!row.hide_sensitive : !!row.hideSensitive,
     nameCn: row.name_cn != null ? row.name_cn : (row.nameCn || ''),
     crmVisible: row.crm_visible != null ? !!row.crm_visible : !!row.crmVisible,
-    statVisible: row.stat_visible != null ? !!row.stat_visible : !!row.statVisible
+    statVisible: row.stat_visible != null ? !!row.stat_visible : !!row.statVisible,
+    multiLedger: row.multi_ledger != null ? !!row.multi_ledger : !!row.multiLedger
   };
 }
 
@@ -350,10 +354,18 @@ function crmConfigured() { const c = readCrmConfig(); return !!(c.loginName && c
 /* 全库客户名去重（所有台账 owner 的 customers[].name） */
 function collectCustomerNames() {
   const names = {};
-  db.prepare('SELECT username FROM users').all().forEach(function (r) {
+  db.prepare('SELECT username, share_from, multi_ledger FROM users').all().forEach(function (r) {
     const d = readLedger(r.username);
-    if (!d || !Array.isArray(d.customers)) return;
-    d.customers.forEach(function (c) { if (c && c.name) names[c.name] = true; });
+    if (d && Array.isArray(d.customers)) {
+      d.customers.forEach(function (c) { if (c && c.name) names[c.name] = true; });
+    }
+    /* 多台账账号的个人台账里也可能有公共台账没有的客户，同样要参与 CRM 匹配 */
+    if (r.multi_ledger && r.share_from) {
+      const p = readLedger(r.username, true);
+      if (p && Array.isArray(p.customers)) {
+        p.customers.forEach(function (c) { if (c && c.name) names[c.name] = true; });
+      }
+    }
   });
   return Object.keys(names);
 }
@@ -745,9 +757,9 @@ function ensureServerInput(body, base) {
 /* ---------------- 数据访问 ---------------- */
 const stmtSessionJoin =
   'SELECT s.expires_at AS exp, u.username, u.name, u.role, u.status, u.note, u.must_change, u.created_at, u.last_login, ' +
-  'u.source, u.perm, u.server_id, u.session_mins, u.hide_sensitive, u.name_cn, u.crm_visible, u.stat_visible ' +
+  'u.source, u.perm, u.server_id, u.share_from, u.session_mins, u.hide_sensitive, u.name_cn, u.crm_visible, u.stat_visible, u.multi_ledger ' +
   'FROM sessions s JOIN users u ON u.username = s.username WHERE s.token = ?';
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger';
 
 /* 登录超时（分钟）：按用户配置，默认 30，范围 5 ~ 43200（30 天）。
    会话为滑动过期：每次通过鉴权的请求都会把过期时间顺延到 now + session_mins。 */
@@ -785,17 +797,35 @@ function currentUser(req) {
   return u;
 }
 
-/* ---------- 共享数据集：share_from 指向数据归属者（一层，创建时已解析成最终 owner） ---------- */
+/* ---------- 共享数据集：share_from 指向数据归属者（一层，创建时已解析成最终 owner） ----------
+   多台账（2026-11-09）：multi_ledger=1 且有共享来源的非超管账号，另有一份属于自己的台账，
+   键为 `<用户名>::mine`；不传 mine 时行为与旧版完全一致。 */
+const MINE_SUFFIX = '::mine';
+function mineKey(username) { return String(username || '') + MINE_SUFFIX; }
+function hasMultiLedger(u) {
+  if (!u) return false;
+  const multi = u.multiLedger != null ? u.multiLedger : u.multi_ledger;
+  const share = u.shareFrom != null ? u.shareFrom : u.share_from;
+  return !!(multi && share && u.role !== 'admin');
+}
 function dataOwner(username) {
   const row = db.prepare('SELECT share_from FROM users WHERE username = ?').get(username);
   return (row && row.share_from) ? row.share_from : username;
+}
+/* 台账真正落库的键：mine=true 且权限成立时用个人键，否则沿用共享归属者 */
+function ledgerKeyOf(username, mine) {
+  if (mine) {
+    const row = db.prepare('SELECT share_from, multi_ledger, role FROM users WHERE username = ?').get(username);
+    if (row && row.multi_ledger && row.share_from && row.role !== 'admin') return mineKey(username);
+  }
+  return dataOwner(username);
 }
 function shareMembers(owner) {
   return db.prepare('SELECT username, name, created_at FROM users WHERE share_from = ? ORDER BY created_at').all(owner);
 }
 
-function readLedger(username) {
-  const row = db.prepare('SELECT data FROM ledgers WHERE username = ?').get(dataOwner(username));
+function readLedger(username, mine) {
+  const row = db.prepare('SELECT data FROM ledgers WHERE username = ?').get(ledgerKeyOf(username, mine));
   if (!row) return null;
   try { return JSON.parse(row.data); } catch (e) { return null; }
 }
@@ -869,8 +899,8 @@ function pruneLogs() {
     db.prepare('DELETE FROM ledger_logs WHERE id <= (SELECT id FROM ledger_logs ORDER BY id DESC LIMIT 1 OFFSET 5000)').run();
   }
 }
-function writeLedger(username, data, by) {
-  const owner = dataOwner(username);
+function writeLedger(username, data, by, mine) {
+  const owner = ledgerKeyOf(username, mine);
   const oldData = readLedger(owner);
   db.prepare(
     'INSERT INTO ledgers (username, data, updated_at, updated_by) VALUES (?, ?, ?, ?) ' +
@@ -929,18 +959,34 @@ function bundleFor(u) {
   users.forEach(function (x) { x.sharedWith = shareMembers(x.username).map(function (m) { return m.username; }); });
   const ledgers = {};
   const hideSens = !!u.hideSensitive;
+  const mask = function (d) { return hideSens ? maskLedgerSensitive(d) : d; };
   if (isAdmin) {
     db.prepare('SELECT ' + USER_COLS + ' FROM users').all().forEach(function (r) {
       const d = readLedger(r.username);          /* 共享成员解析到 owner 的数据 */
-      if (d) ledgers[r.username] = hideSens ? maskLedgerSensitive(d) : d;
+      if (d) ledgers[r.username] = mask(d);
+      /* 多台账账号的个人台账：单独一个键，超管汇总时当作独立数据集各计一次 */
+      if (r.multi_ledger && r.share_from) {
+        const p = readLedger(r.username, true);
+        if (p) ledgers[mineKey(r.username)] = mask(p);
+      }
     });
   } else {
     const d = readLedger(u.username);
-    if (d) ledgers[u.username] = hideSens ? maskLedgerSensitive(d) : d;
+    if (d) ledgers[u.username] = mask(d);
+    if (hasMultiLedger(u)) {
+      const p = readLedger(u.username, true);
+      if (p) ledgers[mineKey(u.username)] = mask(p);
+    }
   }
   return {
     user: mapUser(u, srvMap), users: users, ledgers: ledgers, admin: isAdmin,
     canWrite: canWriteUser(u), attachMax: ATTACH_MAX,
+    /* 当前账号的台账形态：multi=true 时前端才显示「公共 / 我的」切换 */
+    ledger: {
+      multi: hasMultiLedger(u),
+      mineKey: mineKey(u.username),
+      shareFrom: (u.shareFrom != null ? u.shareFrom : (u.share_from || ''))
+    },
     /* 认证服务器清单只给超管（含配置，密钥仅标记是否已设置） */
     authServers: isAdmin ? listServers() : []
   };
@@ -1276,7 +1322,8 @@ async function handleApi(req, res, url) {
 
   /* --- 巡检附件：上传 / 删除（需登录；读取见上方公开路由） --- */
   if (p === '/api/attach' && method === 'POST') {
-    if (!canWriteUser(me)) return bad(res, '当前账号为只读权限，不能上传附件。', 403);
+    /* 附件归属「人」而不是某一份台账：有多台账权限的账号至少有一份可写台账，允许上传 */
+    if (!canWriteUser(me) && !hasMultiLedger(me)) return bad(res, '当前账号为只读权限，不能上传附件。', 403);
     const name = safeFileName(body.name);
     const mime = String(body.mime || '').toLowerCase().split(';')[0].trim();
     const raw = String(body.data || '');
@@ -1314,7 +1361,7 @@ async function handleApi(req, res, url) {
 
   const mAt = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
   if (mAt && method === 'DELETE') {
-    if (!canWriteUser(me)) return bad(res, '当前账号为只读权限，不能删除附件。', 403);
+    if (!canWriteUser(me) && !hasMultiLedger(me)) return bad(res, '当前账号为只读权限，不能删除附件。', 403);
     const row = db.prepare('SELECT id, name, mime, owner, ext FROM attachments WHERE id = ?').get(mAt[1]);
     if (!row) return ok(res, { removed: false });
     if (!isAdmin && row.owner !== me.username) return bad(res, '无权删除该附件', 403);
@@ -1328,11 +1375,15 @@ async function handleApi(req, res, url) {
   if (p === '/api/ledger' && method === 'GET') return ok(res, bundleFor(me));
 
   if (p === '/api/ledger' && method === 'PUT') {
-    if (!canWriteUser(me)) return bad(res, '当前账号为只读权限，不能修改台账。', 403);
-    const scope = normName(body.scope);
+    /* mine=true 表示写「我的台账」：只属于本人，任何时候都可写（不受账号只读限制）；
+       公共台账仍按账号权限判定，语义不变 */
+    const wantMine = !!body.mine;
+    if (!wantMine && !canWriteUser(me)) return bad(res, '当前账号为只读权限，不能修改台账。', 403);
+    const scope = normName(body.scope) || (wantMine ? me.username : '');
     if (!scope) return bad(res, '缺少数据范围');
     if (!isAdmin && scope !== me.username) return bad(res, '无权写入该账号的台账', 403);
-    if (isAdmin) {
+    if (wantMine && !hasMultiLedger(me)) return bad(res, '当前账号没有多台账权限', 403);
+    if (isAdmin && !wantMine) {
       const exists = db.prepare('SELECT 1 AS x FROM users WHERE username = ?').get(scope);
       if (!exists) return bad(res, '目标账号不存在', 404);
     }
@@ -1340,7 +1391,7 @@ async function handleApi(req, res, url) {
     /* 敏感字段隐藏的账号：已存在客户的 contact/phone 回填库内原值，
        防止前端把 **** 占位（或清空值）写回破坏数据；新建客户占位值不落库 */
     if (me.hideSensitive) {
-      const oldD = readLedger(scope);
+      const oldD = readLedger(scope, wantMine);
       const om = {};
       ((oldD && oldD.customers) || []).forEach(function (c) { if (c && c.id) om[c.id] = c; });
       const stripMask = function (v) { return /^\*{2,}$/.test(String(v == null ? '' : v).trim()) ? '' : v; };
@@ -1356,8 +1407,8 @@ async function handleApi(req, res, url) {
         });
       });
     }
-    writeLedger(scope, newData, me.username);
-    return ok(res, { scope: scope, updatedAt: nowIso() });
+    writeLedger(scope, newData, me.username, wantMine);
+    return ok(res, { scope: scope, mine: wantMine, updatedAt: nowIso() });
   }
 
   /* --- 数据变更日志：按数据归属（共享数据集共用一份历史）查询 --- */
@@ -1365,7 +1416,9 @@ async function handleApi(req, res, url) {
     const req = normName(url.searchParams.get('username') || me.username);
     if (!db.prepare('SELECT 1 AS x FROM users WHERE username = ?').get(req)) return bad(res, '用户不存在', 404);
     if (!isAdmin && req !== me.username) return bad(res, '无权查看该账号的数据日志', 403);
-    const owner = dataOwner(req);
+    const wantMine = url.searchParams.get('mine') === '1';
+    if (wantMine && !isAdmin && !hasMultiLedger(me)) return bad(res, '当前账号没有多台账权限', 403);
+    const owner = ledgerKeyOf(req, wantMine);
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10) || 200, 500);
     const rows = db.prepare('SELECT actor, kind, action, target, detail, at FROM ledger_logs WHERE username = ? ORDER BY id DESC LIMIT ?')
       .all(owner, limit);
@@ -1513,10 +1566,13 @@ async function handleApi(req, res, url) {
        对全员开放，关闭开关也要回，否则「我负责的项目」会被误判成空（2026-11-06 调整）。
        注意：me 已由 mapUser 转成驼峰字段（crmVisible / nameCn），不要再读下划线列名 */
     const mineOnly = !me.crmVisible && me.role !== 'admin';
+    /* 多台账：客户端可指定按哪一份台账的客户清单过滤（?mine=1 为「我的台账」），
+       默认公共台账，与旧行为一致 */
+    const wantMine = url.searchParams.get('mine') === '1';
     let allow = null;
     if (me.role !== 'admin') {
       allow = {};
-      const d = readLedger(dataOwner(me.username));
+      const d = readLedger(me.username, wantMine && hasMultiLedger(me));
       (d && Array.isArray(d.customers) ? d.customers : []).forEach(function (c) { if (c && c.name) allow[c.name] = true; });
     }
     const myName = String(me.nameCn || '').trim();
@@ -1656,10 +1712,12 @@ async function handleApi(req, res, url) {
       return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，请不要在本地设置密码');
     }
 
+    /* 多台账：只有设了共享来源的账号才有第二份台账（超管维护全局数据，不参与） */
+    const multiLedger = (shareFrom && role !== 'admin' && body.multiLedger) ? 1 : 0;
     db.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0);
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0, multiLedger);
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
     return ok(res, {
@@ -1709,8 +1767,12 @@ async function handleApi(req, res, url) {
         return bad(res, '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
-      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ?, stat_visible = ? WHERE username = ?')
-        .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), body.nameCn == null ? (row.name_cn || '') : String(body.nameCn).trim(), body.crmVisible == null ? (row.crm_visible ? 1 : 0) : (body.crmVisible ? 1 : 0), body.statVisible == null ? (row.stat_visible ? 1 : 0) : (body.statVisible ? 1 : 0), target);
+      /* 多台账：共享来源为空或降级为超管时自动关掉（个人台账数据保留，重新开启可继续用） */
+      const multiNow = !!(row.share_from || '').length && role !== 'admin'
+        ? (body.multiLedger == null ? (row.multi_ledger ? 1 : 0) : (body.multiLedger ? 1 : 0))
+        : 0;
+      db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ?, stat_visible = ?, multi_ledger = ? WHERE username = ?')
+        .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), body.nameCn == null ? (row.name_cn || '') : String(body.nameCn).trim(), body.crmVisible == null ? (row.crm_visible ? 1 : 0) : (body.crmVisible ? 1 : 0), body.statVisible == null ? (row.stat_visible ? 1 : 0) : (body.statVisible ? 1 : 0), multiNow, target);
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad(res, '密码至少 6 位');
@@ -1762,6 +1824,9 @@ async function handleApi(req, res, url) {
           }
         }
         db.prepare('DELETE FROM users WHERE username = ?').run(target);
+        /* 个人台账（<用户名>::mine）随账号一起清理，避免留下无主数据 */
+        db.prepare('DELETE FROM ledgers WHERE username = ?').run(mineKey(target));
+        db.prepare('DELETE FROM ledger_logs WHERE username = ?').run(mineKey(target));
         db.exec('COMMIT');
       } catch (e) {
         db.exec('ROLLBACK');

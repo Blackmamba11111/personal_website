@@ -337,5 +337,103 @@ check('未统计过的区域回 found=false', r.ok && r.data.found === false, JS
 r = await api('/crm/stat/run', { method: 'POST', body: { region: '' } }, tk);
 check('区域统计缺区域名 → 400', r.ok === false && r.status === 400, String(r.status));
 
+/* ============================ 多台账权限（2026-11-09） ============================
+   开了 multi_ledger 且设了共享来源的账号有两份台账：
+     公共台账 = share_from 的那一份（键 = 用户名，双向同步，一切照旧）
+     我的台账 = `<用户名>::mine`（只有本人与超管可见，恒可写，初始为空） */
+r = await api('/users', { method: 'POST', body: { username: 'multi1', name: '双账套', password: 'Multi@123', perm: 'ro', shareFrom: 'member1', multiLedger: true } }, tk);
+check('创建带多台账权限的共享成员', r.ok === true && r.data.user.multiLedger === true && r.data.user.shareFrom === 'member1',
+  JSON.stringify(r.data && r.data.user));
+
+r = await api('/users', { method: 'POST', body: { username: 'nosha', name: '无来源', password: 'Nos@1234', multiLedger: true } }, tk);
+check('没有共享来源时多台账开关被忽略', r.ok === true && r.data.user.multiLedger === false,
+  JSON.stringify(r.data && r.data.user));
+
+r = await api('/auth/login', { method: 'POST', body: { username: 'multi1', password: 'Multi@123' } });
+check('多台账账号能登录', r.ok === true, JSON.stringify(r.error));
+const qk = r.data.token;
+check('bundle.ledger.multi=true（前端据此显示切换）', r.data.ledger && r.data.ledger.multi === true, JSON.stringify(r.data.ledger));
+check('未写过个人台账时 ledgers 里没有 ::mine 键',
+  !Object.prototype.hasOwnProperty.call(r.data.ledgers, 'multi1::mine'), Object.keys(r.data.ledgers).join(','));
+check('公共台账就是共享来源那份（含客户甲）',
+  r.data.ledgers.multi1 && r.data.ledgers.multi1.customers.some(c => c.name === '客户甲'),
+  JSON.stringify(r.data.ledgers.multi1 && r.data.ledgers.multi1.customers.map(c => c.name)));
+
+/* 只读账号：公共台账拒写，个人台账恒可写 */
+r = await api('/ledger', { method: 'PUT', body: { scope: 'multi1', data: { regions: [], customers: [], visits: [] } } }, qk);
+check('只读账号仍不能写公共台账（403）', r.status === 403 && /只读权限/.test(r.error), JSON.stringify(r));
+const mineData = { regions: [{ id: 'mr1', name: '个人区' }], customers: [{ id: 'mc1', name: '承德银行', phone: '', contact: '' }], visits: [] };
+r = await api('/ledger', { method: 'PUT', body: { mine: true, data: mineData } }, qk);
+check('只读账号可以写「我的台账」', r.ok === true && r.data.mine === true, JSON.stringify(r));
+
+r = await api('/ledger', { method: 'GET' }, qk);
+check('个人台账落在 <用户>::mine 键上', !!r.data.ledgers['multi1::mine'] &&
+  r.data.ledgers['multi1::mine'].customers[0].name === '承德银行', Object.keys(r.data.ledgers).join(','));check('公共台账未被个人台账污染（仍只有客户甲）',
+  r.data.ledgers.multi1.customers.length === 1 && r.data.ledgers.multi1.customers[0].name === '客户甲',
+  JSON.stringify(r.data.ledgers.multi1.customers.map(c => c.name)));
+
+/* 附件归属「人」：有多台账的只读账号也要能给自己那份台账配图 */
+r = await api('/attach', { method: 'POST', body: { name: 'p.txt', mime: 'text/plain', data: 'aGVsbG8=' } }, qk);
+check('多台账的只读账号可上传附件', r.ok === true, JSON.stringify(r));
+
+/* 共享同一份数据的人看不到别人的个人台账 */
+r = await api('/auth/login', { method: 'POST', body: { username: 'member1', password: 'Member@123' } });
+const ok1 = r.data.token;
+r = await api('/ledger', { method: 'GET' }, ok1);
+check('同组成员看不到成员的个人台账', !Object.prototype.hasOwnProperty.call(r.data.ledgers, 'multi1::mine'),
+  Object.keys(r.data.ledgers).join(','));
+r = await api('/logs?username=multi1&mine=1', {}, ok1);
+check('同组成员不能查他人个人台账日志（403）', r.status === 403, String(r.status));
+
+/* 超管：两份都能看到（汇总按两个数据集各计一次） */
+r = await api('/ledger', { method: 'GET' }, tk);
+check('超管 bundle 含该账号的个人台账', !!r.data.ledgers['multi1::mine'], Object.keys(r.data.ledgers).join(','));
+
+/* 变更日志按台账分开记 */
+r = await api('/logs?username=multi1&mine=1', {}, qk);
+check('个人台账日志归属 owner=<用户>::mine', r.ok && r.data.owner === 'multi1::mine', JSON.stringify(r.data && r.data.owner));
+r = await api('/logs?username=multi1&mine=1', {}, tk);
+check('超管可查任意账号的个人台账日志', r.ok === true, JSON.stringify(r.error));
+r = await api('/logs?username=multi1', {}, qk);
+check('公共台账日志仍归属共享来源', r.ok && r.data.owner === 'member1', JSON.stringify(r.data && r.data.owner));
+
+/* 未开权限的账号请求个人台账 → 403（不静默写成公共台账） */
+r = await api('/ledger', { method: 'PUT', body: { mine: true, data: mineData } }, vk);
+check('无多台账权限写 mine → 403', r.status === 403 && /多台账/.test(r.error), JSON.stringify(r));
+
+/* CRM 快照按「当前台账」过滤客户清单 */
+r = await api('/users/multi1', { method: 'PATCH', body: { crmVisible: true } }, tk);
+check('PATCH 保留多台账开关', r.ok && r.data.user.multiLedger === true, JSON.stringify(r.data && r.data.user));
+r = await api('/crm/data?mine=1', { method: 'GET' }, qk);
+check('?mine=1 时按个人台账客户过滤（含承德银行）', r.ok && !!r.data.matches['承德银行'], Object.keys(r.data.matches || {}).join(','));
+check('个人台账里没有的客户不下发', r.ok && !r.data.matches['别家客户'], Object.keys(r.data.matches || {}).join(','));
+r = await api('/crm/data', { method: 'GET' }, qk);
+check('不传 mine 时仍按公共台账过滤（客户甲不在 CRM 里 → 空表）',
+  r.ok && !r.data.matches['承德银行'], Object.keys(r.data.matches || {}).join(','));
+
+/* 关掉开关：个人台账数据保留，重新开启可继续用 */
+r = await api('/users/multi1', { method: 'PATCH', body: { multiLedger: false } }, tk);
+check('可以关闭多台账权限', r.ok && r.data.user.multiLedger === false, JSON.stringify(r.data && r.data.user));
+r = await api('/ledger', { method: 'GET' }, qk);
+check('关闭后账号自己不再拿到个人台账', !Object.prototype.hasOwnProperty.call(r.data.ledgers, 'multi1::mine'),
+  Object.keys(r.data.ledgers).join(','));
+r = await api('/users/multi1', { method: 'PATCH', body: { multiLedger: true } }, tk);
+check('可重新开启', r.ok && r.data.user.multiLedger === true);
+r = await api('/ledger', { method: 'GET' }, qk);
+check('重新开启后个人台账数据仍在（关掉期间不丢）',
+  !!r.data.ledgers['multi1::mine'] && r.data.ledgers['multi1::mine'].customers[0].name === '承德银行',
+  Object.keys(r.data.ledgers).join(','));
+
+/* 降级为超管 / 无共享来源时自动清零 */
+r = await api('/users/nosha', { method: 'PATCH', body: { multiLedger: true } }, tk);
+check('无共享来源的账号 PATCH 也开不了多台账', r.ok && r.data.user.multiLedger === false, JSON.stringify(r.data && r.data.user));
+
+/* 删号：个人台账一并清理 */
+r = await api('/users/multi1', { method: 'DELETE' }, tk);
+check('删除多台账账号成功', r.ok === true, JSON.stringify(r));
+r = await api('/ledger', { method: 'GET' }, tk);
+check('删号后个人台账不留残余', !Object.prototype.hasOwnProperty.call(r.data.ledgers, 'multi1::mine'),
+  Object.keys(r.data.ledgers).join(','));
+
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);

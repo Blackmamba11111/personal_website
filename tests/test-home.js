@@ -322,6 +322,25 @@ async function main() {
     check('「维保全部到期」徽标走 danger 三元组（红底红字）',
       /\.badge\.wb-expired\{background:var\(--danger-soft\);border-color:var\(--danger-line\);color:var\(--danger-ink\);\}/.test(dash));
 
+    /* ---------- 多台账（2026-11-09）：两版服务端必须同口径，否则切过去读不到个人台账 ---------- */
+    const inner = fs.readFileSync(path.join(DIR, 'deploy/internal/server.js'), 'utf8');
+    check('用户管理提供「多台账权限」开关', /id="uMultiLedger"/.test(dash));
+    check('账号菜单提供公共 / 我的台账切换', /data-ledger="shared"/.test(dash) && /data-ledger="mine"/.test(dash));
+    check('个人台账以 <用户名>::mine 为键', /MINE_SUFFIX = '::mine'/.test(dash) && /function mineKeyOf/.test(dash));
+    check('个人台账恒可写（不受账号只读限制）', /if \(isMine\(\)\) return true;/.test(dash));
+    check('写台账带上是哪一份（防写串）', /function ledgerKey\(\)/.test(dash) && /writeUserData\(ledgerKey\(\), DB\)/.test(dash));
+    check('推送按台账键分开排队（多份互不覆盖）', /SYNC\.keys\[key\] = true/.test(dash) && /function flushPush/.test(dash));
+    check('Worker 与内网服务端都实现多台账', /MINE_SUFFIX = '::mine'/.test(worker) && /MINE_SUFFIX = '::mine'/.test(inner));
+    check('两版服务端写台账都带 mine 参数',
+      /writeLedger\(env, scope, newData, me\.username, wantMine\)/.test(worker) &&
+      /writeLedger\(scope, newData, me\.username, wantMine\)/.test(inner));
+    check('两版服务端都按 mine 组装 bundle', /ledgers\[mineKey\(u\.username\)\]/.test(worker) &&
+      /ledgers\[mineKey\(u\.username\)\]/.test(inner));
+    check('D1 schema 含 multi_ledger 且有老库补列', /multi_ledger INTEGER NOT NULL DEFAULT 0/.test(schema) &&
+      /ADD COLUMN multi_ledger/.test(worker));
+    check('个人台账客户也参与 CRM 匹配', /readLedger\(env, row\.username, true\)/.test(worker) &&
+      /readLedger\(r\.username, true\)/.test(inner));
+
     /* ---------- 省界数据拆分：主文档瘦身 + 数据文件可长期缓存 ---------- */
     const prov = fs.readFileSync(path.join(DIR, 'assets/provinces.js'), 'utf8');
     check('省界数据以 window.__PROVINCES_RAW 暴露', /window\.__PROVINCES_RAW\s*=\s*\[/.test(prov));

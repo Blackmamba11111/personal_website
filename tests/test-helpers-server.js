@@ -42,7 +42,8 @@ function userView(u) {
     hideSensitive: !!u.hideSensitive,
     nameCn: u.nameCn || '',
     crmVisible: !!u.crmVisible,
-    statVisible: !!u.statVisible
+    statVisible: !!u.statVisible,
+    multiLedger: !!u.multiLedger
   };
 }
 
@@ -111,6 +112,17 @@ function installApiStub(window, opts) {
     const u = findUser(username);
     return (u && u.shareFrom) ? u.shareFrom : username;
   };
+  /* 多台账（与两版真实服务端同口径）：开了多台账且设了共享来源的账号，另有一份
+     键为 `<用户名>::mine` 的个人台账，只有本人与超管可见、恒可写 */
+  const MINE_SUFFIX = '::mine';
+  const mineKey = (u) => String(u) + MINE_SUFFIX;
+  const isMineKey = (k) => /::mine$/.test(String(k == null ? '' : k));
+  const hasMulti = (u) => !!(u && u.multiLedger && u.shareFrom && u.role !== 'admin');
+  const ledgerKeyOf = (username, mine) => {
+    const u = findUser(username);
+    if (mine && hasMulti(u)) return mineKey(u.username);
+    return dataOwner(username);
+  };
   /* 敏感字段全隐（与两版真实服务端同口径）：hide_sensitive 账号的联系人/电话下发即 ****；地址照常 */
   const maskLedger = (d) => ({
     regions: (d && d.regions) || [],
@@ -129,9 +141,19 @@ function installApiStub(window, opts) {
       srv.users.forEach(x => {
         const owner = dataOwner(x.username);
         if (srv.ledgers[owner]) ledgers[x.username] = hideSens ? maskLedger(srv.ledgers[owner]) : srv.ledgers[owner];
+        /* 多台账账号的个人台账：单独一个键，汇总时作为独立数据集 */
+        if (x.multiLedger && x.shareFrom) {
+          const p = srv.ledgers[mineKey(x.username)];
+          if (p) ledgers[mineKey(x.username)] = hideSens ? maskLedger(p) : p;
+        }
       });
     } else if (srv.ledgers[dataOwner(u.username)]) {
       ledgers[u.username] = hideSens ? maskLedger(srv.ledgers[dataOwner(u.username)]) : srv.ledgers[dataOwner(u.username)];
+      if (hasMulti(u) && srv.ledgers[mineKey(u.username)]) {
+        ledgers[mineKey(u.username)] = hideSens ? maskLedger(srv.ledgers[mineKey(u.username)]) : srv.ledgers[mineKey(u.username)];
+      }
+    } else if (hasMulti(u) && srv.ledgers[mineKey(u.username)]) {
+      ledgers[mineKey(u.username)] = hideSens ? maskLedger(srv.ledgers[mineKey(u.username)]) : srv.ledgers[mineKey(u.username)];
     }
     const view = viewOf(u);
     return {
@@ -140,6 +162,8 @@ function installApiStub(window, opts) {
       ledgers: ledgers,
       admin: isAdmin,
       canWrite: isAdmin || (u.perm !== 'ro'),
+      /* 前端据 ledger.multi 显示「公共 / 我的」切换 */
+      ledger: { multi: hasMulti(u), mineKey: mineKey(u.username), shareFrom: u.shareFrom || '' },
       token: TOKEN,
       attachMax: 20 * 1024 * 1024,
       authServers: isAdmin ? srv.servers.map(serverView) : []
@@ -250,7 +274,7 @@ function installApiStub(window, opts) {
     if (!auth) return bad('登录已失效，请重新登录。', 401);
 
     if (p === '/attach' && method === 'POST') {
-      if (auth.role !== 'admin' && auth.perm === 'ro') return bad('当前账号为只读权限，不能上传附件。', 403);
+      if (auth.role !== 'admin' && auth.perm === 'ro' && !hasMulti(auth)) return bad('当前账号为只读权限，不能上传附件。', 403);
       const data = String(body.data || '');
       if (!data) return bad('附件内容为空');
       const size = Buffer.from(data, 'base64').length;
@@ -385,10 +409,11 @@ function installApiStub(window, opts) {
       const mineOnly = !auth.crmVisible && auth.role !== 'admin';
       const all = srv.crmMatches || {};
       const matches = {};
+      const wantMine = (p.split('?')[1] || '').indexOf('mine=1') >= 0;
       let allow = null;
       if (auth.role !== 'admin') {
         allow = {};
-        ((srv.ledgers[dataOwner(auth.username)] || {}).customers || []).forEach(c => { if (c && c.name) allow[c.name] = true; });
+        ((srv.ledgers[ledgerKeyOf(auth.username, wantMine)] || {}).customers || []).forEach(c => { if (c && c.name) allow[c.name] = true; });
       }
       const myName = String(auth.nameCn || '').trim();
       Object.keys(all).forEach(k => {
@@ -405,10 +430,13 @@ function installApiStub(window, opts) {
 
     if (p === '/ledger' && method === 'GET') return ok(bundle(auth));
     if (p === '/ledger' && method === 'PUT') {
-      if (auth.role !== 'admin' && auth.perm === 'ro') return bad('当前账号为只读权限，不能修改台账。', 403);
-      const scope = String(body.scope || '').toLowerCase();
+      /* mine=true：写「我的台账」，只属于本人，恒可写（不受只读限制） */
+      const wantMine = !!body.mine;
+      if (!wantMine && auth.role !== 'admin' && auth.perm === 'ro') return bad('当前账号为只读权限，不能修改台账。', 403);
+      const scope = String(body.scope || (wantMine ? auth.username : '')).toLowerCase();
       if (auth.role !== 'admin' && scope !== auth.username) return bad('无权写入该账号的台账', 403);
-      const owner = dataOwner(scope);
+      if (wantMine && !hasMulti(auth)) return bad('当前账号没有多台账权限', 403);
+      const owner = ledgerKeyOf(scope, wantMine);
       const newData = body.data || { regions: [], customers: [], visits: [] };
       /* 敏感字段隐藏的账号：已存在客户的 contact/phone 回填库内原值（防 **** 写回） */
       if (auth.hideSensitive) {
@@ -429,17 +457,20 @@ function installApiStub(window, opts) {
       srv.ledgers[owner] = newData;
       pushLogs(owner, auth.username, oldData, srv.ledgers[owner]);
       ls.setItem(DATA_PREFIX + owner, JSON.stringify(srv.ledgers[owner]));
-      return ok({ scope: scope });
+      return ok({ scope: scope, mine: wantMine });
     }
 
-    /* 数据变更日志：按数据归属查询（共享数据集共用一份历史） */
+    /* 数据变更日志：按数据归属查询（共享数据集共用一份历史；mine=1 查个人台账） */
     if (p.split('?')[0] === '/logs' && method === 'GET') {
       const qp = new URLSearchParams(p.split('?')[1] || '');
       const req = String(qp.get('username') || auth.username).toLowerCase();
       if (!findUser(req)) return bad('用户不存在', 404);
+      const wantMine = qp.get('mine') === '1';
+      if (wantMine && auth.role !== 'admin' && !hasMulti(auth)) return bad('当前账号没有多台账权限', 403);
       /* 共享数据集按归属解析：成员查看归属者的日志与查看本人日志等价（与 Worker 版一致） */
-      if (auth.role !== 'admin' && dataOwner(req) !== dataOwner(auth.username)) return bad('无权查看该账号的数据日志', 403);
-      const owner = dataOwner(req);
+      if (auth.role !== 'admin' && !wantMine && dataOwner(req) !== dataOwner(auth.username)) return bad('无权查看该账号的数据日志', 403);
+      if (auth.role !== 'admin' && wantMine && req !== auth.username) return bad('无权查看该账号的数据日志', 403);
+      const owner = ledgerKeyOf(req, wantMine);
       return ok({ owner: owner, logs: srv.logs.filter(l => l.username === owner).slice(-300).reverse() });
     }
 
@@ -528,7 +559,9 @@ function installApiStub(window, opts) {
         hideSensitive: !!body.hideSensitive,
         nameCn: String(body.nameCn || '').trim(),
         crmVisible: !!body.crmVisible,
-        statVisible: !!body.statVisible
+        statVisible: !!body.statVisible,
+        /* 多台账：只有设了共享来源的非超管账号才有第二份台账 */
+        multiLedger: !!(shareFrom && body.role !== 'admin' && body.multiLedger)
       };
       srv.users.push(nu);
       if (!shareFrom && body.data) srv.ledgers[un] = body.data;
@@ -551,6 +584,11 @@ function installApiStub(window, opts) {
         if (body.nameCn !== undefined) t.nameCn = String(body.nameCn || '').trim();
         if (body.crmVisible !== undefined) t.crmVisible = !!body.crmVisible;
         if (body.statVisible !== undefined) t.statVisible = !!body.statVisible;
+        /* 多台账：共享来源为空或降级为超管时强制关闭 */
+        if (body.multiLedger !== undefined) {
+          t.multiLedger = !!(body.multiLedger && (t.shareFrom || '') && t.role !== 'admin');
+        }
+        if (t.role === 'admin' || !(t.shareFrom || '')) t.multiLedger = false;
         /* 登录超时（分钟）：与 Worker 版 normSessionMins 同口径（5–43200，非法回退 30） */
         if (body.sessionMins !== undefined) {
           const n = Math.round(Number(body.sessionMins));

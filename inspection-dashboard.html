@@ -711,6 +711,16 @@
   .umenu button:hover{background:var(--panel-2);}
   .umenu button.danger{color:#B91C1C;}
   .umenu button.danger:hover{background:var(--miss-soft);}
+  /* 多台账切换：两段式，等宽、贴边，选中项用品牌浅底（与「数据范围」下拉区分层级） */
+  .umenu .seg{display:flex;padding:0 10px 4px;}
+  .umenu .seg button{flex:1 1 0;width:auto;text-align:center;padding:6px 0;border:1px solid var(--line);
+    background:var(--surface);font-size:12px;color:var(--ink-2);border-radius:0;}
+  .umenu .seg button:first-child{border-radius:var(--r-sm) 0 0 var(--r-sm);}
+  .umenu .seg button:last-child{border-radius:0 var(--r-sm) var(--r-sm) 0;border-left:0;}
+  .umenu .seg button:hover{background:var(--surface-2);}
+  .umenu .seg button.on{background:var(--brand-wash);color:var(--brand-ink);border-color:var(--brand-line);
+    font-weight:600;}
+  .umenu-hint{font-size:10.5px;color:var(--ink-3);padding:3px 10px 8px;line-height:1.5;}
 
   .robanner{flex:0 0 auto;padding:8px 16px;background:#FDF3E3;border-bottom:1px solid #F2DFBE;
     font-size:12px;line-height:1.6;color:#9A5B06;display:none;}
@@ -1504,6 +1514,15 @@
     <div class="umenu-lb">数据范围</div>
     <select id="scopeSel"></select>
   </div>
+  <!-- 多台账：只有「已设共享来源 + 开了多台账权限」的账号才显示 -->
+  <div id="umLedgerWrap" style="display:none;">
+    <div class="umenu-lb">台账（两份）</div>
+    <div class="seg" id="ledgerSeg">
+      <button type="button" data-ledger="shared">公共台账</button>
+      <button type="button" data-ledger="mine">我的台账</button>
+    </div>
+    <div class="umenu-hint" id="umLedgerHint">—</div>
+  </div>
   <button type="button" id="umLogs">数据日志</button>
   <button type="button" id="umUsers">用户管理</button>
   <button type="button" id="umCrm">CRM 台账关联</button>
@@ -1833,6 +1852,10 @@
       <div class="field">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uStatVisible"> 可见区域统计</label>
         <div class="hint">开启后账号菜单里出现「区域统计」：可按战区查看项目设备明细（部门 / 销售 / 合同 / 序列号 / 型号 / 维保起止）、按型号汇总台数并导出 CSV。只读，检索仍由超级管理员触发。</div>
+      </div>
+      <div class="field" id="uMultiLedgerField">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;" id="uMultiLedgerLabel"><input type="checkbox" id="uMultiLedger"> 多台账权限</label>
+        <div class="hint" id="uMultiLedgerHint">开启后该账号除「公共台账」（与共享来源共用、双向同步）外，还拥有一份只有自己可见的「我的台账」，登录后在右上角账号菜单切换。个人台账恒可写（只读账号也能维护），初始为空。</div>
       </div>
       <div class="field" id="uPwdField">
         <label for="uPwd">初始密码 <span class="req">*</span></label>
@@ -2530,11 +2553,11 @@
   function customersOfRegion(rid) {
     return DB.customers.filter(function (c) { return c.regionId === rid; });
   }
-  /* 写入当前数据范围。汇总视图为只读，写操作一律拒绝（UI 层还有一道前置拦截）。 */
+  /* 写入当前数据范围（多台账时是「当前那一份」）。汇总视图为只读，写操作一律拒绝（UI 层还有一道前置拦截）。 */
   function save() {
     if (isReadonly()) { toast('汇总视图为只读，请先切换到具体用户再编辑'); return; }
     if (!AUTH.scope || !AUTH.user) return;
-    writeUserData(AUTH.scope, DB);
+    writeUserData(ledgerKey(), DB);
   }
   function savePref() {
     try { localStorage.setItem(prefKeyOf(), JSON.stringify(prefs)); } catch (e) {}
@@ -6070,16 +6093,43 @@
   /* 服务端签发的会话令牌；取代了旧版用于本地会话的 inspection_board_session_v1 */
   var TOKEN_KEY   = 'inspection_board_token_v1';
 
-  var AUTH = { user: null, scope: '', attachMax: 0, servers: [] };
+  var AUTH = { user: null, scope: '', attachMax: 0, servers: [], mine: false };
   var appBooted = false;
-  /* 与服务端的同步状态：dirty 表示本地有尚未推送成功的改动 */
-  var SYNC = { dirty: false, timer: null, warnShown: false, lastAt: '' };
+  /* 与服务端的同步状态：dirty 表示本地有尚未推送成功的改动；
+     keys 记录「哪几份台账」待推送（多台账时公共 / 我的各自独立，不能互相覆盖） */
+  var SYNC = { dirty: false, timer: null, warnShown: false, lastAt: '', keys: {} };
+
+  /* ---------- 多台账（2026-11-09） ----------
+     开了「多台账权限」且设了共享来源的账号有两份台账：
+       公共台账 = 共享来源用户的那一份（键 = 用户名，双向同步，一切照旧）
+       我的台账 = 自己的那一份（键 = `<用户名>::mine`，只有本人与超管可见，恒可写）
+     未开权限的账号永不进入这一分支，行为与旧版完全一致。 */
+  var MINE_SUFFIX = '::mine';
+  function isMineKey(k)   { return /::mine$/.test(String(k == null ? '' : k)); }
+  function mineKeyOf(u)   { return String(u == null ? '' : u) + MINE_SUFFIX; }
+  function hasMultiLedger() {
+    var u = AUTH.user;
+    return !!(u && u.multiLedger && u.shareFrom && u.role !== 'admin');
+  }
+  function isMine() { return !!AUTH.mine && hasMultiLedger(); }
+  /* 当前要读写的台账键；汇总视图（SCOPE_ALL）不带后缀 */
+  function ledgerKey() {
+    var s = AUTH.scope;
+    if (!isAdmin()) s = AUTH.user ? AUTH.user.username : s;
+    if (!s || s === SCOPE_ALL) return SCOPE_ALL;
+    return isMine() ? mineKeyOf(s) : s;
+  }
 
   function isAdmin()    { return !!(AUTH.user && AUTH.user.role === 'admin'); }
   function isReadonly() { return AUTH.scope === SCOPE_ALL; }
   /* 写入权限由服务端按账号判定（perm=ro 只读），前端同步一份用于「提前拦截 + 提示」；
-     真正的边界在服务端：/api/ledger、/api/attach 都会拒绝只读账号的写请求。 */
-  function canWrite()   { return !!(AUTH.user && (AUTH.user.role === 'admin' || AUTH.user.perm !== 'ro')); }
+     真正的边界在服务端：/api/ledger、/api/attach 都会拒绝只读账号的写请求。
+     个人台账例外：它只属于本人，恒可写（只读账号也能维护自己的那份）。 */
+  function canWrite()   {
+    if (!AUTH.user) return false;
+    if (isMine()) return true;
+    return AUTH.user.role === 'admin' || AUTH.user.perm !== 'ro';
+  }
   function isRoUser()   { return !!AUTH.user && AUTH.user.role !== 'admin' && AUTH.user.perm === 'ro'; }
   function dataKeyOf(u) { return DATA_PREFIX + u; }
   function prefKeyOf()  { return PREF_KEY + '::' + (AUTH.scope || 'default'); }
@@ -6321,7 +6371,8 @@
   function clearSession() { clearToken(); }
 
   /* ---------- 台账：本地镜像 + 服务端同步 ----------
-     本地这份只是「镜像」，权威数据在服务端；保留它是为了界面秒开与断网兜底。 */
+     本地这份只是「镜像」，权威数据在服务端；保留它是为了界面秒开与断网兜底。
+     多台账时镜像按「台账键」分开存：`用户名`（公共）/ `用户名::mine`（我的）。 */
   function readUserDataLocal(username) {
     try {
       var raw = localStorage.getItem(dataKeyOf(username));
@@ -6346,30 +6397,48 @@
     writeUserDataLocal(username, db);
     queuePush(username);
   }
-  function queuePush(username) {
+  function queuePush(key) {
     if (!readToken()) return;                 /* 未登录（或降级模式）不推送 */
-    if (!canWrite()) return;                  /* 只读账号：服务端也会拒绝，不必白发一次请求 */
+    /* 只读账号：公共台账服务端也会拒绝，不必白发一次请求；个人台账恒可写 */
+    if (!isMineKey(key) && !canWrite()) return;
+    SYNC.keys[key] = true;
     SYNC.dirty = true;
     if (SYNC.timer) clearTimeout(SYNC.timer);
-    SYNC.timer = setTimeout(function () { pushLedger(username); }, 800);
+    SYNC.timer = setTimeout(flushPush, 800);
   }
-  function pushLedger(username) {
-    var d = readUserDataLocal(username);
-    if (!d) return;
-    api('/ledger', { method: 'PUT', body: { scope: username, data: d } }).then(function (r) {
+  function flushPush() {
+    var keys = Object.keys(SYNC.keys);
+    if (!keys.length) { SYNC.dirty = false; return; }
+    keys.forEach(function (k) { pushLedger(k); });
+  }
+  function pushLedger(key) {
+    var d = readUserDataLocal(key);
+    if (!d) { delete SYNC.keys[key]; return Promise.resolve(false); }
+    var mine = isMineKey(key);
+    var scope = mine ? key.slice(0, -MINE_SUFFIX.length) : key;
+    var payload = { scope: scope, data: d };
+    if (mine) payload.mine = true;
+    return api('/ledger', { method: 'PUT', body: payload }).then(function (r) {
       if (r.ok) {
-        SYNC.dirty = false; SYNC.warnShown = false;
-        SYNC.lastAt = (new Date()).toISOString();
-        return;
+        delete SYNC.keys[key];
+        SYNC.dirty = Object.keys(SYNC.keys).length > 0;
+        if (!SYNC.dirty) {
+          SYNC.warnShown = false;
+          SYNC.lastAt = (new Date()).toISOString();
+        }
+        return true;
       }
       if (r.offline) {
         if (!SYNC.warnShown) {
           SYNC.warnShown = true;
           toast('服务器暂时不可用，数据已存在本地，恢复联网后会自动重试');
         }
-        return;
+        return false;
       }
+      delete SYNC.keys[key];
+      SYNC.dirty = Object.keys(SYNC.keys).length > 0;
       toast('数据同步失败：' + (r.error || '未知错误'));
+      return false;
     });
   }
   function userDataCount(username) {
@@ -6386,7 +6455,7 @@
       applyServerUsers(d.users);
       applyServerLedgers(d.ledgers);
       if (Array.isArray(d.authServers)) AUTH.servers = d.authServers;
-      var scope = isAdmin() ? AUTH.scope : AUTH.user.username;
+      var scope = ledgerKey();
       if (scope !== SCOPE_ALL && d.ledgers && d.ledgers[scope]) {
         DB = d.ledgers[scope];
         migrate();
@@ -6395,6 +6464,13 @@
       }
       var fresh = (d.users || []).filter(function (x) { return x.username === AUTH.user.username; })[0];
       if (fresh && fresh.mustChange !== AUTH.user.mustChange) AUTH.user.mustChange = fresh.mustChange;
+      /* 多台账权限被超管调整后即时生效（关闭时退回公共台账，避免停留在无权访问的个人台账） */
+      if (fresh && !!fresh.multiLedger !== !!AUTH.user.multiLedger) {
+        AUTH.user.multiLedger = !!fresh.multiLedger;
+        if (!hasMultiLedger() && AUTH.mine) { AUTH.mine = false; load(); renderAll(); buildRegionLayers(); }
+        renderLedgerSwitch();
+        renderUserChip();
+      }
       /* 超管改「隐藏敏感字段」后无需再次登录即生效：权限收紧时清掉已展开的明文并重绘 */
       if (fresh && !!fresh.hideSensitive !== !!AUTH.user.hideSensitive) {
         AUTH.user.hideSensitive = !!fresh.hideSensitive;
@@ -6424,7 +6500,8 @@
   var CRM_DATA_LOADED = false;
   function refreshCrmData() {
     if (!AUTH.user) return;
-    api('/crm/data').then(function (r) {
+    /* 多台账：按「当前正在看的那份台账」的客户清单过滤匹配结果 */
+    api('/crm/data' + (isMine() ? '?mine=1' : '')).then(function (r) {
       if (!r.ok || !r.data) return;
       CRM_DATA = {
         crmVisible: !!r.data.crmVisible, mineOnly: !!r.data.mineOnly,
@@ -6464,47 +6541,56 @@
   /* ---------- 超管汇总视图：把各账号台账合并为一份只读数据集 ----------
      区域跨账号按名称合并：各账号普遍建有同名区域（北京 / 河北 / 山西…），
      原样拼接会出现几十个「账号名 · 区域名」碎片。合并后省份取并集、
-     客户数累加，并按客户数降序排列，便于超管快速定位。 */
+     客户数累加，并按客户数降序排列，便于超管快速定位。
+     多台账账号的「个人台账」算作独立数据集（owner 记为该账号，名字带「· 个人」），
+     公共台账按归属账号计一次、个人台账再计一次，同一批客户不会重复计数。 */
   function buildMergedDB() {
     var regionList = [], rByKey = {};
     var customers = [], visits = [];
-    userList().forEach(function (u) {
-      /* 共享成员（数据实际归属他人）跳过：同一份数据由归属账号呈现一次，
-         否则 owner 和每个成员各出一份，汇总视图整页重复。 */
-      if (u.shareFrom && findUser(u.shareFrom)) return;
-      var d = readUserData(u.username) || { regions: [], customers: [], visits: [] };
+    function mergeInto(key, ownerId, ownerName) {
+      var d = readUserData(key) || { regions: [], customers: [], visits: [] };
       var cmap = {};
       var lmap = {};                                   /* 账号内区域 id → 合并区域 */
       d.regions.forEach(function (r) {
         var nm = String(r.name || '未命名').trim();
-        var key = nm.toLowerCase();
-        var m = rByKey[key];
+        var rk = nm.toLowerCase();
+        var m = rByKey[rk];
         if (!m) {
-          m = rByKey[key] = { id: 'm::' + key, name: nm, color: r.color || '', provinces: [], owners: [] };
+          m = rByKey[rk] = { id: 'm::' + rk, name: nm, color: r.color || '', provinces: [], owners: [] };
           regionList.push(m);
         }
         (r.provinces || []).forEach(function (pn) {
           if (pn && m.provinces.indexOf(pn) < 0) m.provinces.push(pn);
         });
         if (!m.color && r.color) m.color = r.color;
-        if (m.owners.indexOf(u.name) < 0) m.owners.push(u.name);
+        if (m.owners.indexOf(ownerName) < 0) m.owners.push(ownerName);
         lmap[r.id] = m;
       });
       d.customers.forEach(function (c) {
-        cmap[c.id] = u.username + '::' + c.id;
+        cmap[c.id] = key + '::' + c.id;
         var mr = lmap[c.regionId];
         customers.push(Object.assign({}, c, {
-          id: u.username + '::' + c.id,
+          id: key + '::' + c.id,
           regionId: mr ? mr.id : '',
-          owner: u.username, ownerName: u.name
+          owner: ownerId, ownerName: ownerName
         }));
       });
       d.visits.forEach(function (v) {
         if (!cmap[v.customerId]) return;
         visits.push(Object.assign({}, v, {
-          id: u.username + '::' + v.id, customerId: cmap[v.customerId], owner: u.username
+          id: key + '::' + v.id, customerId: cmap[v.customerId], owner: ownerId
         }));
       });
+    }
+    userList().forEach(function (u) {
+      /* 共享成员（数据实际归属他人）跳过：同一份数据由归属账号呈现一次，
+         否则 owner 和每个成员各出一份，汇总视图整页重复。 */
+      if (u.shareFrom && findUser(u.shareFrom)) {
+        /* 例外：共享成员若开了多台账，它的个人台账是独有数据，必须计入 */
+        if (u.multiLedger && u.role !== 'admin') mergeInto(mineKeyOf(u.username), u.username, u.name + ' · 个人');
+        return;
+      }
+      mergeInto(u.username, u.username, u.name);
     });
     /* 合并区域按客户数降序（0 客户的沉底，保持出现顺序） */
     var cnt = {};
@@ -6524,7 +6610,7 @@
       var borrowed = u.shareFrom && findUser(u.shareFrom);
       if (borrowed && u.username !== AUTH.user.username) return;
       if (u.username === AUTH.user.username) {
-        opts.push({ v: u.username, t: '我的台账 · ' + u.name });
+        opts.push({ v: u.username, t: (hasMultiLedger() ? '公共台账 · ' : '我的台账 · ') + u.name });
       } else if (isAdmin()) {
         opts.push({ v: u.username, t: u.name + ' · ' + u.username + (u.status === 'disabled' ? '（已停用）' : '') });
       }
@@ -6540,8 +6626,10 @@
     if (scope === SCOPE_ALL) {
       DB = buildMergedDB();
     } else {
-      var d = readUserData(scope);
-      if (!d) { d = seedData(); writeUserData(scope, d); }
+      var key = ledgerKey();
+      var d = readUserData(key);
+      /* 个人台账初始为空（不复制公共台账，也不铺演示数据） */
+      if (!d) { d = isMineKey(key) ? { regions: [], customers: [], visits: [] } : seedData(); writeUserData(key, d); }
       DB = d;
     }
     migrate();
@@ -6552,6 +6640,8 @@
   }
   function applyScope(scope) {
     if (!isAdmin() && scope !== AUTH.user.username) scope = AUTH.user.username;
+    /* 换到别人的台账时退出「我的台账」（个人台账只属于本人） */
+    if (scope !== AUTH.user.username || isAdmin()) AUTH.mine = false;
     AUTH.scope = scope;
     load();
     state.regionFilter = 'all';
@@ -6565,6 +6655,7 @@
     renderUserChip();
     renderReadonlyBanner();
     renderScopeSelect();
+    renderLedgerSwitch();
   }
   function guardEdit() {
     if (!canWrite()) {
@@ -6587,20 +6678,70 @@
     av.className = 'uavatar' + (u.role === 'admin' ? ' admin' : '');
     /* 账号区只显示登录名（不显示「姓名」——该字段可能被填成区域/部门等文字） */
     document.getElementById('userNameText').textContent = u.username || u.name;
-    document.getElementById('userRoleText').textContent = isReadonly() ? '汇总' : (isRoUser() ? '只读' : roleText(u));
+    /* 个人台账恒可写：只读账号在看自己那份时不该被标成「只读」 */
+    document.getElementById('userRoleText').textContent =
+      isReadonly() ? '汇总' : ((isRoUser() && !isMine()) ? '只读' : roleText(u));
     document.getElementById('umName').textContent = u.name + '（' + u.username + '）';
-    var cnt = userDataCount(u.username);
+    var cnt = userDataCount(isReadonly() ? u.username : ledgerKey());
     var srcTxt = (u.source && u.source !== 'local')
       ? (AUTH_LABELS[u.source] || u.source) + ' 认证' + (u.serverName ? '（' + u.serverName + '）' : '')
       : '本地账号';
+    var ledgerTxt = hasMultiLedger()
+      ? ((isMine() ? '我的台账 ' : '公共台账 ') + cnt.customers + ' 家客户')
+      : ('我的台账 ' + cnt.customers + ' 家客户');
     document.getElementById('umMeta').innerHTML =
-      roleText(u) + ' · ' + permText(u) + ' · ' + esc(srcTxt) + ' · 我的台账 ' + cnt.customers + ' 家客户' +
+      roleText(u) + ' · ' + permText(u) + ' · ' + esc(srcTxt) + ' · ' + ledgerTxt +
       (u.lastLogin ? '<br>上次登录 ' + esc(u.lastLogin) : '');
     document.getElementById('umUsers').style.display = isAdmin() ? 'block' : 'none';
     /* CRM 页只给超管；被授权区域统计的账号看到的是「区域统计」入口，点了直达统计页 */
     var crmBtn = document.getElementById('umCrm');
     crmBtn.style.display = (isAdmin() || canViewStat()) ? 'block' : 'none';
     crmBtn.textContent = isAdmin() ? 'CRM 台账关联' : '区域统计';
+    renderLedgerSwitch();
+  }
+  /* 多台账切换（账号菜单内）：只有开了权限的账号才显示这一组 */
+  function renderLedgerSwitch() {
+    var wrap = document.getElementById('umLedgerWrap');
+    if (!wrap) return;
+    var on = hasMultiLedger();
+    wrap.style.display = on ? 'block' : 'none';
+    if (!on) return;
+    var seg = document.getElementById('ledgerSeg');
+    Array.prototype.forEach.call(seg.querySelectorAll('[data-ledger]'), function (b) {
+      var isOn = (b.getAttribute('data-ledger') === 'mine') === isMine();
+      b.classList.toggle('on', isOn);
+      b.setAttribute('aria-pressed', isOn ? 'true' : 'false');
+    });
+    var sub = document.getElementById('umLedgerHint');
+    if (sub) {
+      sub.textContent = isMine()
+        ? '当前：我的台账（仅自己可见，可自由编辑）'
+        : '当前：公共台账（与 ' + (AUTH.user.shareFrom || '来源账号') + ' 共用）';
+    }
+  }
+  function switchLedger(mode) {
+    if (!hasMultiLedger()) return;
+    var mine = mode === 'mine';
+    if (isMine() === mine) return;
+    /* 切换前把当前这份未推的改动推掉，避免带着旧内容跳走 */
+    if (SYNC.dirty) flushPush();
+    AUTH.mine = mine;
+    load();
+    state.regionFilter = 'all';
+    state.selectedId = null;
+    state.keyword = '';
+    var kwEl = document.getElementById('searchInput');
+    if (kwEl) kwEl.value = '';
+    renderQuarters();
+    renderAll();
+    buildRegionLayers();
+    renderUserChip();
+    renderReadonlyBanner();
+    refreshCrmData();
+    document.getElementById('userMenu').classList.remove('on');
+    toast(mine
+      ? '已切换到「我的台账」：只有你能看到与维护'
+      : '已切换到「公共台账」：与 ' + (AUTH.user.shareFrom || '来源账号') + ' 共用一份数据');
   }
   function renderScopeSelect() {
     var wrap = document.getElementById('umScopeWrap');
@@ -6685,11 +6826,12 @@
   }
 
   function doLogout() {
-    if (SYNC.dirty) pushLedger(AUTH.user ? AUTH.user.username : '');
+    if (SYNC.dirty) flushPush();
     /* 先通知服务端注销会话，再清本地凭据（失败也要清，避免卡在残留登录态） */
     api('/auth/logout', { method: 'POST' }).then(function () {}, function () {});
     clearSession();
     SYNC.dirty = false;
+    SYNC.keys = {};
     if (SYNC.timer) { clearTimeout(SYNC.timer); SYNC.timer = null; }
     AUTH.user = null;
     AUTH.scope = '';
@@ -6747,10 +6889,13 @@
       logsScopeOwner = preScope || logsScopeOwner || (AUTH.user ? AUTH.user.username : '');
       renderLogsScopeSelect();
     } else {
-      /* 普通用户：固定查看自己（共享数据集按归属者）的日志，服务端按本人放行 */
+      /* 普通用户：固定查看自己（共享数据集按归属者）的日志，服务端按本人放行；
+         正在看「我的台账」时默认查个人台账的日志 */
       if (scopeWrap) scopeWrap.style.display = 'none';
       document.getElementById('btnLogsBack').textContent = '← 返回看板';
-      logsScopeOwner = AUTH.user ? AUTH.user.username : '';
+      logsScopeOwner = AUTH.user
+        ? (isMine() ? mineKeyOf(AUTH.user.username) : AUTH.user.username)
+        : '';
     }
     document.getElementById('usersView').classList.remove('on');
     document.getElementById('serversView').classList.remove('on');
@@ -6762,22 +6907,33 @@
     if (!isAdmin()) return;
     var sel = document.getElementById('logsScope');
     var users = userList();
+    /* 多台账账号：除公共台账外，个人台账的日志也单列一项（服务端按 ?mine=1 查询） */
     sel.innerHTML = users.map(function (u) {
-      return '<option value="' + esc(u.username) + '">' + esc(u.name) + '（' + esc(u.username) + '）</option>';
+      var opt = '<option value="' + esc(u.username) + '">' + esc(u.name) + '（' + esc(u.username) + '）</option>';
+      if (u.multiLedger && u.shareFrom && u.role !== 'admin') {
+        opt += '<option value="' + esc(mineKeyOf(u.username)) + '">' + esc(u.name) + '（个人台账）</option>';
+      }
+      return opt;
     }).join('');
-    /* 共享成员解析到数据归属者 */
+    /* 共享成员解析到数据归属者（个人台账不解析） */
     var owner = logsScopeOwner;
-    var src = findUser(owner);
+    var src = isMineKey(owner) ? null : findUser(owner);
     if (src && src.shareFrom) owner = src.shareFrom;
-    if (!users.some(function (u) { return u.username === owner; }) && users.length) owner = users[0].username;
+    var exists = users.some(function (u) {
+      return u.username === owner ||
+        (isMineKey(owner) && mineKeyOf(u.username) === owner && u.multiLedger);
+    });
+    if (!exists && users.length) owner = users[0].username;
     logsScopeOwner = owner;
     sel.value = owner;
   }
   function renderLogsPage() {
-    var owner = logsScopeOwner;
+    var raw = logsScopeOwner;
+    var mineLog = isMineKey(raw);
+    var owner = mineLog ? raw.slice(0, -MINE_SUFFIX.length) : raw;
     var u = findUser(owner);
-    /* 共享成员入口：数据归属解析到来源用户（普通用户 / 超管一致） */
-    if (u && u.shareFrom) {
+    /* 共享成员入口：数据归属解析到来源用户（普通用户 / 超管一致）；个人台账不解析 */
+    if (u && u.shareFrom && !mineLog) {
       owner = u.shareFrom;
       u = findUser(owner);
     }
@@ -6785,17 +6941,19 @@
     if (!u && AUTH.user && String(AUTH.user.username).toLowerCase() === String(owner).toLowerCase()) {
       var src = (AUTH.user.shareFrom && findUser(AUTH.user.shareFrom)) || null;
       u = { name: src ? src.name : (AUTH.user.name || owner), sharedWith: (src && src.sharedWith) || [] };
-      if (src) owner = AUTH.user.shareFrom;
+      if (src && !mineLog) owner = AUTH.user.shareFrom;
     }
     /* 兜底：普通用户看不到来源用户的资料时，至少把归属用户名展示出来 */
     if (!u) u = { name: owner, sharedWith: [] };
     var members = (u && u.sharedWith) || [];
     document.getElementById('logsSub').textContent = u
-      ? '数据归属：' + u.name + '（' + owner + '）' + (members.length ? ' · 共享成员 ' + members.length + ' 人' : '')
+      ? (mineLog
+        ? '我的台账 · 归属：' + u.name + '（' + owner + '）· 仅本人与超管可见'
+        : '数据归属：' + u.name + '（' + owner + '）' + (members.length ? ' · 共享成员 ' + members.length + ' 人' : ''))
       : '—';
     var wrap = document.getElementById('logsTableWrap');
     wrap.innerHTML = '<div class="empty">加载中…</div>';
-    api('/logs?username=' + encodeURIComponent(owner) + '&limit=300').then(function (r) {
+    api('/logs?username=' + encodeURIComponent(owner) + '&limit=300' + (mineLog ? '&mine=1' : '')).then(function (r) {
       if (!r.ok) { wrap.innerHTML = '<div class="empty">' + esc(r.error || '加载失败') + '</div>'; return; }
       var logs = (r.data && r.data.logs) || [];
       if (!logs.length) { wrap.innerHTML = '<div class="empty">该数据集暂无变更记录</div>'; return; }
@@ -8278,6 +8436,7 @@
     var sorted = users.slice().sort(cmpUser);
     var rows = sorted.map(function (u) {
       var s = userDataCount(u.username);
+      var pm = u.multiLedger ? userDataCount(mineKeyOf(u.username)) : null;
       var isSelf = u.id === AUTH.user.id;
       var lastAdmin = u.role === 'admin' && countAdmins(u.id) === 0;
       var delDisabled = isSelf || lastAdmin;
@@ -8302,12 +8461,15 @@
           ? '<span class="tag disabled" title="超级管理员默认具备全部权限：读写 / CRM 可见 / 区域统计 / 隐藏敏感">全部权限</span>'
           : permTag(u) + (u.hideSensitive ? ' <span class="tag ro" title="客户详细地址 / 联系人电话对该账号打码显示">隐藏敏感</span>' : '') +
             (u.crmVisible ? ' <span class="tag active" title="该账号可查看询盘云 CRM 现网信息与维保到期提醒">CRM可见</span>' : '') +
-            (u.statVisible ? ' <span class="tag active" title="该账号可查看区域统计（只读，不能触发检索）">区域统计</span>' : '')) + '</td>' +
+            (u.statVisible ? ' <span class="tag active" title="该账号可查看区域统计（只读，不能触发检索）">区域统计</span>' : '') +
+            (u.multiLedger ? ' <span class="tag user" title="两份台账：与共享来源共用的公共台账 + 只有自己可见的个人台账，登录后可切换">多台账</span>' : '')) + '</td>' +
         '<td><span class="tag ' + (u.role === 'admin' ? 'admin' : 'user') + '">' + roleText(u) + '</span></td>' +
         '<td><span class="tag ' + (u.status === 'active' ? 'active' : 'disabled') + '">' +
           (u.status === 'active' ? '启用中' : '已停用') + '</span></td>' +
-        '<td>' + s.customers + ' 家</td>' +
-        '<td>' + s.visits + ' 条</td>' +
+        '<td>' + s.customers + ' 家' +
+          (pm ? '<div class="sub2">个人 ' + pm.customers + ' 家</div>' : '') + '</td>' +
+        '<td>' + s.visits + ' 条' +
+          (pm ? '<div class="sub2">个人 ' + pm.visits + ' 条</div>' : '') + '</td>' +
         '<td class="sub2">' + esc(u.createdAt || '—') + '</td>' +
         '<td class="sub2">' + esc(u.lastLogin || '从未登录') + '</td>' +
         '<td><div class="uact">' +
@@ -8366,6 +8528,35 @@
         ? ('登录时把用户名与密码转发给「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + ' ' + s.host + ':' + s.port + '）校验，本站不保存密码。')
         : '还没有可用的认证服务器，请先到「认证服务器」页新增。';
     }
+    syncMultiLedgerField();
+  }
+
+  /* 多台账权限：只有「有共享来源」的非超管账号才有第二份台账，其余置灰并说明原因 */
+  function shareFromOfForm() {
+    if (editingUserId) {
+      var t = userList().filter(function (x) { return x.id === editingUserId; })[0];
+      return (t && t.shareFrom) || '';
+    }
+    return document.getElementById('uSeed').value === 'copy'
+      ? (document.getElementById('uSeedUser').value || '') : '';
+  }
+  function syncMultiLedgerField() {
+    var el = document.getElementById('uMultiLedger');
+    var hint = document.getElementById('uMultiLedgerHint');
+    if (!el) return;
+    var src = shareFromOfForm();
+    var isAdminRole = document.getElementById('uRole').value === 'admin';
+    var ok = !!src && !isAdminRole;
+    el.disabled = !ok;
+    if (!ok) el.checked = false;
+    if (!hint) return;
+    if (isAdminRole) {
+      hint.textContent = '超级管理员维护全局数据，不参与共享数据集，因此没有个人台账。';
+    } else if (ok) {
+      hint.textContent = '开启后该账号除「公共台账」（与 ' + src + ' 共用、双向同步）外，还拥有一份只有自己可见的「我的台账」，登录后在右上角账号菜单切换。个人台账恒可写（只读账号也能维护），初始为空。';
+    } else {
+      hint.textContent = '该账号没有共享来源，只有一份自己的台账——新建用户时把「初始数据」选为「与现有用户共享」即可开启。';
+    }
   }
 
   /* CRM 快照里出现过的维护人姓名（超管能看到全部客户，直接本地汇总，不用额外接口） */
@@ -8407,6 +8598,7 @@
     document.getElementById('uHideSens').checked = u ? !!u.hideSensitive : false;
     document.getElementById('uCrmVisible').checked = u ? !!u.crmVisible : false;
     document.getElementById('uStatVisible').checked = u ? !!u.statVisible : false;
+    document.getElementById('uMultiLedger').checked = u ? !!u.multiLedger : false;
     document.getElementById('uNote').value = u ? (u.note || '') : '';
     document.getElementById('uPwd').value = '';
 
@@ -8442,6 +8634,7 @@
         document.getElementById('uHideSens').checked = !!cloneFrom.hideSensitive;
         document.getElementById('uCrmVisible').checked = !!cloneFrom.crmVisible;
         document.getElementById('uStatVisible').checked = !!cloneFrom.statVisible;
+        document.getElementById('uMultiLedger').checked = !!cloneFrom.multiLedger;
         document.getElementById('uNote').value = cloneFrom.note || '';
         var cRemote = (cloneFrom.source || 'local') !== 'local';
         document.getElementById('uSourceType').value = cRemote ? 'remote' : 'local';
@@ -8528,7 +8721,8 @@
       }
       var wasRemote = (target.source || 'local') !== 'local';
       var patch = { name: name, nameCn: nameCn, crmVisible: crmVisible, statVisible: statVisible, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins,
-        hideSensitive: document.getElementById('uHideSens').checked };
+        hideSensitive: document.getElementById('uHideSens').checked,
+        multiLedger: document.getElementById('uMultiLedger').checked };
       /* 远程 → 本地：必须补一个本地初始密码，否则该账号无法再登录 */
       if (wasRemote && !remote) {
         var np = String(document.getElementById('uPwd').value || '');
@@ -8581,7 +8775,8 @@
       var payload = {
         username: username, name: name, nameCn: nameCn, crmVisible: crmVisible, statVisible: statVisible,
         role: role, note: note, perm: perm, sessionMins: mins,
-        hideSensitive: document.getElementById('uHideSens').checked
+        hideSensitive: document.getElementById('uHideSens').checked,
+        multiLedger: document.getElementById('uMultiLedger').checked
       };
       if (initData.shareFrom) payload.shareFrom = initData.shareFrom;
       else payload.data = initData;
@@ -8708,6 +8903,13 @@
     });
     document.getElementById('umUsers').addEventListener('click', openUsersPage);
     document.getElementById('umCrm').addEventListener('click', openCrmPage);
+    /* 多台账切换（两段式按钮）：切换后整份台账重载，客户 / 巡检 / 区域 / 地图一起换 */
+    document.getElementById('ledgerSeg').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-ledger]') : null;
+      if (!b) return;
+      e.stopPropagation();
+      switchLedger(b.getAttribute('data-ledger'));
+    });
     document.getElementById('btnCrmBack').addEventListener('click', function () {
       document.getElementById('crmView').classList.remove('on');
       if (CRM_STATUS_TIMER) { clearTimeout(CRM_STATUS_TIMER); CRM_STATUS_TIMER = null; }
@@ -8791,7 +8993,8 @@
     });
     document.getElementById('logsScope').addEventListener('change', function () {
       var v = this.value;
-      var src = findUser(v);
+      /* 个人台账（xxx::mine）不解析到共享来源，直接按该键查询 */
+      var src = isMineKey(v) ? null : findUser(v);
       logsScopeOwner = (src && src.shareFrom) ? src.shareFrom : v;
       renderLogsScopeSelect();                /* 回写为数据归属者 */
       renderLogsPage();
@@ -8825,9 +9028,12 @@
     /* 用户弹窗：账号类型 / 认证服务器切换 */
     document.getElementById('uSourceType').addEventListener('change', syncUserModalFields);
     document.getElementById('uServer').addEventListener('change', syncUserModalFields);
+    document.getElementById('uRole').addEventListener('change', syncMultiLedgerField);
+    document.getElementById('uSeedUser').addEventListener('change', syncMultiLedgerField);
     document.getElementById('uSeed').addEventListener('change', function () {
       document.getElementById('uSeedCopyWrap').style.display =
         this.value === 'copy' ? 'block' : 'none';
+      syncMultiLedgerField();
     });
 
     /* 客户管理页 */
@@ -8907,6 +9113,8 @@
     AUTH.user = user;
     SENS_SHOW = {};                          /* 换账号 / 重新登录后敏感明文全部恢复打码 */
     AUTH.scope = (user.role === 'admin') ? SCOPE_ALL : user.username;
+    /* 登录默认进公共台账（沿用现有习惯），需要时在账号菜单切到「我的台账」 */
+    AUTH.mine = false;
     AUTH.attachMax = (opts && opts.attachMax) || 0;
     AUTH.servers = (opts && opts.servers) || AUTH.servers || [];
     hideAuth();
@@ -8964,7 +9172,7 @@
       if (pollTimer) clearTimeout(pollTimer);
       pollTimer = setTimeout(function tick() {
         if (AUTH.user) {
-          if (SYNC.dirty) pushLedger(AUTH.user.username);   /* 先补推未成功的改动 */
+          if (SYNC.dirty) flushPush();                      /* 先补推未成功的改动（可能有多份） */
           else refreshFromServer(true);
         }
         schedulePoll();
@@ -8974,7 +9182,7 @@
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState !== 'visible') return;
       if (!AUTH.user) return;
-      if (SYNC.dirty) { pushLedger(AUTH.user.username); return; }
+      if (SYNC.dirty) { flushPush(); return; }
       refreshFromServer(true);
     });
   }

@@ -494,6 +494,132 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 8.6 多台账：公共台账 + 我的台账 ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+      mkUser({ username: 'zhangsan', name: '张三', password: 'zhang1234' }),
+      Object.assign(mkUser({ username: 'wangwu', name: '王五', password: 'wangw888', perm: 'ro' }),
+        { shareFrom: 'zhangsan', multiLedger: true })
+    ] };
+    const dom = makeDom({
+      fixture: fx,
+      sessionUser: 'wangwu',
+      data: { zhangsan: mkDB(3, 'Z-'), 'wangwu::mine': mkDB(2, 'M-') },
+      errors
+    });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    const seg = k => d.querySelector('#ledgerSeg [data-ledger="' + k + '"]');
+
+    click(w, id('userChip'));
+    check('多台账账号的菜单出现台账切换', !!id('umLedgerWrap') && id('umLedgerWrap').style.display !== 'none',
+      id('umLedgerWrap') ? id('umLedgerWrap').style.display : '无节点');
+    check('默认停在公共台账', seg('shared').classList.contains('on') && !seg('mine').classList.contains('on'),
+      seg('shared').className);
+    check('公共台账看到共享来的 3 家客户', id('stTotal').textContent === '3', id('stTotal').textContent);
+    check('提示写明当前是公共台账', id('umLedgerHint').textContent.indexOf('公共台账') >= 0,
+      id('umLedgerHint').textContent);
+
+    click(w, seg('mine'));
+    await tick(80);
+    check('切到我的台账后显示自己的 2 家客户', id('stTotal').textContent === '2', id('stTotal').textContent);
+    check('切换后两段按钮态反转', seg('mine').classList.contains('on') && !seg('shared').classList.contains('on'));
+    check('只读账号看自己的台账时不再显示「只读」', id('userRoleText').textContent !== '只读',
+      id('userRoleText').textContent);
+
+    /* 只读账号在个人台账里仍可编辑（服务端也放行） */
+    click(w, id('btnAdd'));
+    check('个人台账可打开新增客户抽屉', id('maskCust').classList.contains('on'));
+    id('fName').value = '个人新增客户';
+    click(w, id('btnSaveCust'));
+    await tick(60);
+    check('个人台账新增客户成功（3 家）', id('stTotal').textContent === '3', id('stTotal').textContent);
+
+    /* 防抖推送（800ms）后应只写到 ::mine，不碰公共台账 */
+    await tick(900);
+    const mineL = w.__SRV__.ledgers['wangwu::mine'];
+    const pubL = w.__SRV__.ledgers['zhangsan'];
+    check('写入落在 <用户>::mine 上', !!mineL && mineL.customers.length === 3
+      && mineL.customers.some(c => c.name === '个人新增客户'),
+      mineL ? mineL.customers.map(c => c.name).join(',') : '无');
+    check('公共台账未被写入污染（仍 3 家原客户）', !!pubL && pubL.customers.length === 3
+      && !pubL.customers.some(c => c.name === '个人新增客户'),
+      pubL ? pubL.customers.map(c => c.name).join(',') : '无');
+
+    /* 日志页跟随当前台账 */
+    click(w, id('userChip'));
+    click(w, id('umLogs'));
+    await tick(60);
+    check('日志页标明是个人台账', id('logsSub').textContent.indexOf('我的台账') >= 0, id('logsSub').textContent);
+    check('能读到个人台账的变更记录', d.querySelectorAll('#logsTableWrap tbody tr').length >= 1,
+      d.querySelectorAll('#logsTableWrap tbody tr').length + ' 行');
+    click(w, id('btnLogsBack'));
+    await tick(20);
+
+    /* 切回公共台账：数据回到共享那份，个人台账不丢 */
+    click(w, id('userChip'));
+    click(w, seg('shared'));
+    await tick(80);
+    check('切回公共台账恢复共享数据（3 家）', id('stTotal').textContent === '3', id('stTotal').textContent);
+    click(w, id('userChip'));
+    click(w, seg('mine'));
+    await tick(80);
+    check('再切回我的台账，个人数据仍在（3 家）', id('stTotal').textContent === '3', id('stTotal').textContent);
+    w.close();
+  }
+
+  /* ================= 8.7 多台账：超管视角（汇总与用户管理） ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+      mkUser({ username: 'zhangsan', name: '张三', password: 'zhang1234' }),
+      Object.assign(mkUser({ username: 'wangwu', name: '王五', password: 'wangw888' }),
+        { shareFrom: 'zhangsan', multiLedger: true })
+    ] };
+    const dom = makeDom({
+      fixture: fx,
+      sessionUser: 'admin',
+      data: { admin: mkDB(1, 'A-'), zhangsan: mkDB(3, 'Z-'), 'wangwu::mine': mkDB(2, 'M-') },
+      errors
+    });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+
+    /* 汇总 = 超管自己 1 + 公共 3 + 个人 2（个人台账作为独立数据集计入，不重复计公共） */
+    check('汇总把个人台账也算进去（1+3+2=6）', id('stTotal').textContent === '6', id('stTotal').textContent);
+
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    await tick(40);
+    const rows = Array.from(d.querySelectorAll('#usersTableWrap tbody tr'));
+    const wRow = rows.filter(r => r.textContent.indexOf('wangwu') >= 0)[0];
+    check('用户列表标出「多台账」', !!wRow && wRow.textContent.indexOf('多台账') >= 0,
+      wRow ? wRow.textContent.slice(0, 80) : '无行');
+    check('用户列表同时给出个人台账的数据量', !!wRow && wRow.textContent.indexOf('个人 2 家') >= 0,
+      wRow ? wRow.textContent : '无行');
+
+    click(w, wRow.querySelector('[data-ua="edit"]'));
+    await tick(40);
+    check('编辑多台账账号时开关为勾选且可用', id('uMultiLedger').checked === true && id('uMultiLedger').disabled === false);
+    check('开关说明写明公共台账与个人台账的分工', id('uMultiLedgerHint').textContent.indexOf('我的台账') >= 0,
+      id('uMultiLedgerHint').textContent);
+    click(w, d.querySelector('#maskUser [data-close="maskUser"]'));
+    await tick(20);
+
+    const zsRow = rows.filter(r => r.textContent.indexOf('zhangsan') >= 0 && r.textContent.indexOf('共享自') < 0)[0];
+    click(w, zsRow.querySelector('[data-ua="edit"]'));
+    await tick(40);
+    check('没有共享来源的账号开关被禁用', id('uMultiLedger').disabled === true && id('uMultiLedger').checked === false);
+    check('禁用原因有说明', id('uMultiLedgerHint').textContent.indexOf('没有共享来源') >= 0,
+      id('uMultiLedgerHint').textContent);
+    click(w, d.querySelector('#maskUser [data-close="maskUser"]'));
+    await tick(20);
+    w.close();
+  }
+
   /* ================= 9. 退出登录 ================= */
   {
     const dom = makeDom({ sessionUser: 'demo', errors });
