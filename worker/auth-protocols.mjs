@@ -20,13 +20,13 @@
  * ==========================================================================*/
 
 /* ---------------- 通用工具 ---------------- */
+const UTF8 = new TextEncoder();
+/* 字符串 → 字节一律按 UTF-8：协议里的 DN / 过滤器值可能含中文（如
+   「cn=冯博 上海相孚,ou=external,dc=zdns,dc=com」）。早期用 charCodeAt&0xff
+   做 Latin-1 截断，中文会变成非法字节，LDAP 直接回 34 invalidDNSyntax。 */
 function toBytes(v) {
   if (v instanceof Uint8Array) return v;
-  if (typeof v === 'string') {
-    const out = new Uint8Array(v.length);
-    for (let i = 0; i < v.length; i++) out[i] = v.charCodeAt(i) & 0xff;
-    return out;
-  }
+  if (typeof v === 'string') return UTF8.encode(v);
   if (v && v.buffer) return new Uint8Array(v.buffer, v.byteOffset || 0, v.byteLength);
   return new Uint8Array(0);
 }

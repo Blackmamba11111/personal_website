@@ -329,6 +329,29 @@ check('LDAP 缺省模板即直接用登录名', P.ldapBindDn({}, 'amy') === 'amy
   s.close();
 }
 
+/* ---- LDAP 用户 DN 含中文：字符串必须按 UTF-8 编码（曾用 Latin-1 截断 → 结果码 34） ---- */
+{
+  const s = await ldapServer({
+    expectDn: 'cn=冯博 上海相孚,ou=external,dc=zdns,dc=com',
+    password: 'Zdns@knet.cn',
+    svcDn: 'cn=admin,dc=zdns,dc=com',
+    svcPassword: 'Svc@456',
+    filterAttr: 'uid',
+    filterValue: 'xffengbo'
+  });
+  const cfg = {
+    host: '127.0.0.1', port: s.port,
+    bindDn: 'cn=admin,dc=zdns,dc=com', bindPassword: 'Svc@456',
+    baseDn: 'dc=zdns,dc=com', userAttr: 'uid'
+  };
+  const r1 = await P.ldapAuth(T, cfg, 'xffengbo', 'Zdns@knet.cn');
+  check('LDAP 用户 DN 含中文（按 UTF-8 发送）→ 通过', r1.ok === true, JSON.stringify(r1));
+  const r2 = await P.ldapAuth(T, cfg, 'xffengbo', 'wrong');
+  check('LDAP 中文 DN + 错误口令 → 拒绝（不是 34 语法错）',
+    r2.ok === false && r2.code === 'reject', JSON.stringify(r2));
+  s.close();
+}
+
 /* ---------------- 5. 分派与错误处理 ---------------- */
 {
   const r = await P.authenticate(T, { type: 'nope', host: '127.0.0.1' }, 'x', 'y');
