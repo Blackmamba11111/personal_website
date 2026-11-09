@@ -3500,7 +3500,13 @@
     if (!focusLayer) {
       focusLayer = new TMap.MultiCircle({
         map: map,
-        styles: { halo: new TMap.CircleStyle({ color: 'rgba(20,102,232,0.16)', showBorder: false }) },
+        /* 选中光晕：半透明填充 + 一圈同色细描边，边缘收得住，才像「指着这个点」而不是一层色雾 */
+        styles: { halo: new TMap.CircleStyle({
+          color: 'rgba(20,102,232,0.13)',
+          showBorder: true,
+          borderColor: 'rgba(20,102,232,0.42)',
+          borderWidth: 1.5
+        }) },
         geometries: []
       });
     }
@@ -3868,10 +3874,16 @@
     infoWindow.setContent(infoHtmlFor(c));
     infoWindow.open();
   }
-  function haloRadius() {
-    var z = 7;
+  /* 光晕半径（2026-11-09）：按「屏幕恒定 42px」反算米数，缩放时视觉大小不变。
+     旧公式 8000×1.7^(9-z) 只在 z<9 补偿、z≥9 恒为 8km —— 在选中后的 12 级视野里等于
+     265px 半径（直径 530px），整个屏幕糊成一片蓝，指向性反而没了。 */
+  var HALO_PX = 42;
+  function haloRadius(lat) {
+    var z = 12;
     try { z = map.getZoom(); } catch (e) {}
-    return 8000 * Math.pow(1.7, Math.max(0, 9 - z));
+    var la = (typeof lat === 'number' ? lat : 39) * Math.PI / 180;
+    var mPerPx = 156543.03392 * Math.cos(la) / Math.pow(2, z);   /* Web Mercator 每像素米数 */
+    return Math.max(8, mPerPx * HALO_PX);
   }
 
   /* 点选定位时至少拉到城区级：省级视野里把一个点居中，肉眼等于没动 */
@@ -3895,7 +3907,7 @@
     }
     focusLayer.setGeometries([{
       id: 'focus', styleId: 'halo',
-      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius()
+      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius(c.lat)
     }]);
     showInfoFor(c);
   }
@@ -3908,7 +3920,7 @@
     hoverId = id;
     focusLayer.setGeometries([{
       id: 'focus', styleId: 'halo',
-      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius()
+      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius(c.lat)
     }]);
     showInfoFor(c);
     if (custLabelLayer) {

@@ -156,8 +156,29 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
       !!g && !!mc && Math.abs(mc.getLng() - g.center.getLng()) < 1e-6 && Math.abs(mc.getLat() - g.center.getLat()) < 1e-6,
       mc ? mc.getLng().toFixed(4) + ',' + mc.getLat().toFixed(4) : '无中心');
     check('点选后缩放拉到城区级（≥12）', rec().map.zoom >= 12, String(rec().map.zoom));
+    /* 光晕必须按像素反算：真实地图里 8km 固定半径在 12 级＝265px，会铺满半屏 */
+    const mPerPx = zz => 156543.03392 * Math.cos(g.center.getLat() * Math.PI / 180) / Math.pow(2, zz);
+    const px12 = g ? g.radius / mPerPx(rec().map.zoom) : 0;
+    check('光晕按像素反算：12 级视觉半径 ≈42px（旧算法此时为 265px）',
+      px12 > 40 && px12 < 44, px12.toFixed(1) + 'px');
     check('点选后卡片为选中态', !!(d.querySelector('#custList .card-cust.sel')), cid || '无');
     check('点选后详情弹窗打开', id('maskDetail').classList.contains('on'));
+
+    /* 再放大到 16 级点一次：半径应随缩放缩小，否则高倍下仍是铺满屏幕的色块 */
+    rec().map.zoom = 16;
+    const card2 = [].slice.call(d.querySelectorAll('#custList .card-cust'))
+      .filter(el => el.getAttribute('data-id') === cid)[0];
+    click(w, card2 || cards[0]);
+    await tick(20);
+    const halo2 = rec().layers.filter(L => L.__kind === 'MultiCircle' && L.map && L.opts.styles && L.opts.styles.halo).pop();
+    const g2 = halo2 && halo2.geometries && halo2.geometries[0];
+    check('放大到 16 级后光晕半径随之缩小（视觉尺寸恒定）',
+      !!g2 && g2.radius > 0 && g2.radius < g.radius / 8,
+      g2 ? (g2.radius / g.radius).toFixed(3) + '×' : '无');
+    check('光晕带描边（边缘收得住，不是一团色雾）',
+      !!halo2 && halo2.opts.styles.halo.showBorder === true &&
+      halo2.opts.styles.halo.borderWidth > 0, '');
+
     /* 关掉详情，恢复后续用例的环境（详情无改动时静默关闭） */
     click(w, id('maskDetail').querySelector('[data-close="maskDetail"]'));
     await tick(30);
