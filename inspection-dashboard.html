@@ -3639,7 +3639,8 @@
   function onViewportResize() {
     closeMore();
     scheduleMapResize();
-    if (state.selectedId && document.getElementById('maskDetail').classList.contains('on')) {
+    var mk = document.getElementById('maskDetail');
+    if (state.selectedId && mk && mk.classList.contains('on')) {
       clearTimeout(mapResizeTimer);
       mapResizeTimer = setTimeout(function () { focusOn(state.selectedId, true); }, 180);
     }
