@@ -36,19 +36,19 @@ w.addEventListener('error', e => errors.push(String(e.message || e)));
   check('只读弹窗点遮罩直接关闭（不二次确认）',
     !on('maskRemind') && !on('maskConfirm'));
 
-  /* ---------- 2) 表单弹窗 · 没改动：静默关闭 ---------- */
+  /* ---------- 2) 客户详情抽屉 · 没改动：静默关闭 ---------- */
   clk(d.querySelector('#custList .card-cust'));
   check('客户详情已打开', on('maskDetail'));
-  clickMask('maskDetail');
-  check('未做任何输入时点遮罩直接关闭', !on('maskDetail'), 'still on: ' + on('maskDetail'));
+  key('Escape');
+  check('未做任何输入时按 Esc 直接关闭', !on('maskDetail'), 'still on: ' + on('maskDetail'));
   check('未改动时不弹确认框', !on('maskConfirm'));
 
-  /* ---------- 3) 表单弹窗 · 有改动：先问一句 ---------- */
+  /* ---------- 3) 客户详情抽屉 · 有改动：先问一句 ---------- */
   clk(d.querySelector('#custList .card-cust'));
   id('dVisitBy').value = '潘超';
   typeIn(id('dVisitBy'));
-  clickMask('maskDetail');
-  check('有改动时点遮罩不直接关闭', on('maskDetail'));
+  key('Escape');
+  check('有改动时 Esc 不直接关闭', on('maskDetail'));
   check('弹出「放弃填写的内容」确认', on('maskConfirm'));
   check('确认文案点名未保存内容', /没保存/.test(id('cfMsg').textContent), id('cfMsg').textContent);
   check('确认按钮为「放弃并关闭」', id('cfOk').textContent === '放弃并关闭', id('cfOk').textContent);
@@ -60,23 +60,24 @@ w.addEventListener('error', e => errors.push(String(e.message || e)));
   check('已填内容不丢', id('dVisitBy').value === '潘超', id('dVisitBy').value);
 
   /* 再来一次 → 确认放弃 */
-  clickMask('maskDetail');
-  check('二次点遮罩仍会拦截', on('maskDetail') && on('maskConfirm'));
+  key('Escape');
+  check('二次 Esc 仍会拦截', on('maskDetail') && on('maskConfirm'));
   clk(id('cfOk'));
   check('确认放弃后弹窗关闭', !on('maskDetail') && !on('maskConfirm'));
 
   /* 改动标记随关闭复位 */
   clk(d.querySelector('#custList .card-cust'));
-  clickMask('maskDetail');
+  key('Escape');
   check('关闭后改动标记复位（再开可直接关）', !on('maskDetail') && !on('maskConfirm'));
 
-  /* ---------- 4) 拖选文字不误判 ---------- */
-  clk(d.querySelector('#custList .card-cust'));
-  pressDownOn(id('dVisitBy'));      /* 在弹窗内按下 … */
-  clickMask('maskDetail');          /* … 拖到遮罩上松手 */
-  check('弹窗内按下、遮罩上松手不算点击遮罩', on('maskDetail') && !on('maskConfirm'));
-  clickMask('maskDetail');          /* 真正的点击（无按下记录） */
-  check('随后的正常点击遮罩生效', !on('maskDetail'));
+  /* ---------- 4) 拖选文字不误判（详情已改抽屉，这里用仍是居中模态的「区域设置」） ---------- */
+  clk(id('btnRegions'));
+  check('区域设置弹窗打开', on('maskRegion'));
+  pressDownOn(d.querySelector('#maskRegion input'));   /* 在弹窗内按下 … */
+  clickMask('maskRegion');                             /* … 拖到遮罩上松手 */
+  check('弹窗内按下、遮罩上松手不算点击遮罩', on('maskRegion') && !on('maskConfirm'));
+  clickMask('maskRegion');                             /* 真正的点击（无按下记录） */
+  check('随后的正常点击遮罩生效', !on('maskRegion'));
 
   /* ---------- 5) Esc 只关最上层 ---------- */
   clk(d.querySelector('#custList .card-cust'));
@@ -112,6 +113,14 @@ w.addEventListener('error', e => errors.push(String(e.message || e)));
   check('确认后抽屉关闭（分组行已丢弃）', !on('maskCust'));
 
   /* ---------- 7) 结构守卫 ---------- */
+  check('客户详情改用右侧抽屉（drawer-mask 不铺遮罩，地图保持可见可点）',
+    id('maskDetail').classList.contains('drawer-mask') &&
+    !!d.querySelector('#maskDetail .drawer.detail-drawer') &&
+    !d.querySelector('#maskDetail .modal'));
+  check('保存巡检记录落在底部操作条、编辑客户资料在头部',
+    !!d.querySelector('#maskDetail .detail-foot #btnAddVisit') &&
+    !!d.querySelector('#maskDetail .dhead-acts #btnEditCust') &&
+    !!d.querySelector('#detailMore #btnDelCust'));
   check('确认框层级压过 .high 弹窗（z-index 350）',
     /#maskConfirm\{z-index:350;\}/.test(SRC));
   check('遮罩点击记录按下位置（pointerdown）',

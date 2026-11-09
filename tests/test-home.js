@@ -359,6 +359,15 @@ async function main() {
     check('批量多台账对不合格账号只撤该项，不连坐其它字段', /delete patch\.multiLedger/.test(dash));
     check('自己那份被批量关掉时退回公共台账', /AUTH\.ledger = null;/.test(dash));
 
+    /* ---------- 客户详情抽屉（2026-11-09 晚）：宽抽屉不盖满地图 + 动作按钮重新分布 ---------- */
+    check('详情抽屉宽度随屏宽放大且留出地图',
+      /\.drawer\.detail-drawer\{width:min\(900px,64vw\)/.test(dash));
+    check('保存巡检记录固定在底部操作条',
+      /class="modal-foot detail-foot"[\s\S]{0,320}id="btnAddVisit"/.test(dash));
+    check('编辑客户资料在头部、删除客户收进「更多」',
+      /class="dhead-acts"[\s\S]{0,320}id="btnEditCust"/.test(dash) &&
+      /id="detailMore"[\s\S]{0,120}id="btnDelCust"/.test(dash));
+
     /* ---------- 省界数据拆分：主文档瘦身 + 数据文件可长期缓存 ---------- */
     const prov = fs.readFileSync(path.join(DIR, 'assets/provinces.js'), 'utf8');
     check('省界数据以 window.__PROVINCES_RAW 暴露', /window\.__PROVINCES_RAW\s*=\s*\[/.test(prov));

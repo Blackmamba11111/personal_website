@@ -158,8 +158,12 @@ setTimeout(() => {
   id('dVisitNote').value = '测试备注';
   click(id('btnAddVisit'));
   check('巡检记录写入', store().visits.length === before + 1);
+  check('保存巡检记录在底部操作条（右下角）', !!d.querySelector('#maskDetail .detail-foot #btnAddVisit'));
+  click(id('btnDetailMore'));
+  check('「更多」菜单展开并含删除客户', id('detailMore').classList.contains('on') && !!id('btnDelCust'));
   click(id('btnDelCust'));
   check('删除客户弹出自定义确认框', id('maskConfirm').classList.contains('on'));
+  check('删除后「更多」菜单自动收起', !id('detailMore').classList.contains('on'));
   click(id('cfCancel'));
 
   // ============ 提醒窗口 ============

@@ -390,6 +390,41 @@
   }
   @keyframes slideIn{from{transform:translateX(26px);opacity:.5;}to{transform:none;opacity:1;}}
 
+  /* 客户详情 / 登记巡检（2026-11-09 晚改造）：右侧宽抽屉。
+     宽度按屏宽 64% 取（上限 900），左侧地图仍可见、可点可拖 —— 抽屉层 pointer-events:none，
+     只有抽屉本体接收事件，所以不铺遮罩、不压暗地图。关闭走 ✕ / 关闭按钮 / Esc。 */
+  .drawer.detail-drawer{width:min(900px,64vw);max-width:94vw;background:var(--surface);}
+  .detail-drawer .modal-head{align-items:center;gap:9px;padding:14px 18px 12px;}
+  .detail-drawer .modal-head .sub{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .dhead-acts{display:flex;align-items:center;gap:7px;flex:0 0 auto;margin-left:4px;}
+  .dmore-wrap{position:relative;}
+  .dmore{position:absolute;right:0;top:calc(100% + 7px);min-width:150px;padding:4px;display:none;
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:var(--sh-3);z-index:6;}
+  .dmore.on{display:block;}
+  .dmore-item{display:block;width:100%;text-align:left;padding:7px 10px;border:0;background:transparent;
+    border-radius:var(--r-xs);font-size:12px;color:var(--ink);cursor:pointer;font-family:inherit;}
+  .dmore-item:hover{background:var(--surface-2);}
+  .dmore-item.danger{color:var(--danger-ink);}
+  .dmore-item.danger:hover{background:var(--danger-soft);}
+  .detail-drawer .modal-body{padding:14px 18px 18px;}
+  /* 概览 / KPI 并排：宽屏两列（概览略宽，保证地址不折行），窄屏自动叠成一列 */
+  .d-top{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:11px;margin-bottom:13px;}
+  .d-top > .readonly-box{margin-bottom:0;min-width:0;}
+  @media (max-width:1200px){.d-top{grid-template-columns:minmax(0,1fr);}}
+  .readonly-box.d-hero{align-items:flex-start;gap:14px;padding:12px 14px;}
+  .d-hero-main{flex:1;min-width:0;}
+  .d-hero-addr{font-size:13px;font-weight:600;color:var(--ink);line-height:1.5;}
+  .d-hero-meta{margin-top:6px;display:flex;flex-wrap:wrap;gap:5px 16px;font-size:11.5px;color:var(--ink-2);}
+  .d-hero-meta .k{font-family:var(--font-mono);font-size:10px;letter-spacing:.04em;color:var(--ink-3);margin-right:5px;}
+  .d-hero-side{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
+  .d-kpi .scroll-x{width:100%;}
+  /* 登记本次巡检：独立卡片，与只读信息块在视觉上分层 */
+  .visit-card{border:1px solid var(--line);border-radius:var(--r-md);padding:12px 13px 13px;
+    background:var(--surface-2);margin-bottom:13px;}
+  .visit-card > .field:last-child{margin-bottom:0;}
+  .detail-foot{align-items:center;gap:9px;padding:11px 18px;background:var(--surface);}
+  .dfoot-hint{flex:1;min-width:0;font-size:10.5px;color:var(--ink-3);}
+
   /* 区域分组管理 */
   .rg-row{border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:9px;background:var(--panel-2);}
   .rg-hd{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
@@ -1232,13 +1267,22 @@
   </div>
 </div>
 
-<!-- 客户详情 / 巡检登记 -->
-<div class="mask" id="maskDetail">
-  <div class="modal">
+<!-- 客户详情 / 巡检登记（右侧宽抽屉：左侧地图保持可见可点） -->
+<div class="drawer-mask high" id="maskDetail">
+  <div class="drawer detail-drawer">
     <div class="modal-head">
       <h3 id="dName">客户</h3>
       <div class="sub" id="dSub"></div>
-      <button type="button" class="icon-btn" data-close="maskDetail">✕</button>
+      <div class="dhead-acts">
+        <button type="button" class="btn sm" id="btnEditCust">编辑客户资料</button>
+        <div class="dmore-wrap" id="dmoreWrap">
+          <button type="button" class="icon-btn" id="btnDetailMore" title="更多操作" aria-haspopup="menu" aria-expanded="false">⋯</button>
+          <div class="dmore" id="detailMore" role="menu">
+            <button type="button" class="dmore-item danger" role="menuitem" id="btnDelCust">删除客户</button>
+          </div>
+        </div>
+        <button type="button" class="icon-btn" data-close="maskDetail" title="关闭">✕</button>
+      </div>
     </div>
     <!-- 分段导航（2026-11-09）：详情内容较长，用固定锚点行替代长滚动 -->
     <div class="dnav" id="dNav">
@@ -1248,24 +1292,28 @@
       <button type="button" data-dnav="dTimeline">历史记录</button>
     </div>
     <div class="modal-body">
-      <div class="readonly-box" style="margin-bottom:13px;">
-        <div>
-          <div style="font-weight:600;color:var(--text);" id="dAddr">—</div>
-          <div class="hint" style="margin-top:4px;">
-            <span>联系人 <span id="dContact">—</span></span><button type="button" class="sens-eye" id="dContactEye" title="点击查看" style="display:none;"></button>
-            <span style="margin-left:14px;">电话 <span id="dPhone">—</span></span><button type="button" class="sens-eye" id="dPhoneEye" title="点击查看" style="display:none;"></button>
+      <div class="d-top">
+        <div class="readonly-box d-hero">
+          <div class="d-hero-main">
+            <div class="d-hero-addr" id="dAddr">—</div>
+            <div class="d-hero-meta">
+              <span><span class="k">联系人</span><span id="dContact">—</span></span><button type="button" class="sens-eye" id="dContactEye" title="点击查看" style="display:none;"></button>
+              <span><span class="k">电话</span><span id="dPhone">—</span></span><button type="button" class="sens-eye" id="dPhoneEye" title="点击查看" style="display:none;"></button>
+            </div>
+            <div class="hint" id="dCoord" style="margin-top:5px;">—</div>
           </div>
-          <div class="hint" id="dCoord">—</div>
+          <div class="d-hero-side">
+            <span class="badge" id="dStatus">—</span>
+          </div>
         </div>
-        <span class="badge" id="dStatus">—</span>
-      </div>
 
-      <div class="readonly-box" style="margin-bottom:13px;">
-        <div class="scroll-x" style="width:100%;">
-          <table class="mini">
-            <thead><tr><th>当前季度</th><th>已巡检</th><th>季度目标</th><th>本年度累计</th><th>年度目标</th></tr></thead>
-            <tbody><tr id="dKpiRow"></tr></tbody>
-          </table>
+        <div class="readonly-box d-kpi">
+          <div class="scroll-x" style="width:100%;">
+            <table class="mini">
+              <thead><tr><th>当前季度</th><th>已巡检</th><th>季度目标</th><th>本年度累计</th><th>年度目标</th></tr></thead>
+              <tbody><tr id="dKpiRow"></tr></tbody>
+            </table>
+          </div>
         </div>
       </div>
 
@@ -1301,7 +1349,7 @@
         <div id="dCrmTechBody" class="crm-kv"></div>
       </div>
 
-      <div class="field" id="dVisitFormBlock">
+      <div class="field visit-card" id="dVisitFormBlock">
         <label>登记本次巡检</label>
         <div class="grid2">
           <div class="field">
@@ -1339,10 +1387,6 @@
           </div>
           <div class="attach-list" id="visitAttachList"></div>
         </div>
-
-        <div style="margin-top:8px;">
-          <button type="button" class="btn primary sm" id="btnAddVisit">保存巡检记录</button>
-        </div>
       </div>
 
       <div class="field">
@@ -1350,11 +1394,10 @@
         <div class="tl" id="dTimeline"></div>
       </div>
     </div>
-    <div class="modal-foot">
-      <button type="button" class="btn" id="btnDelCust" style="color:var(--miss);border-color:#F5C9C9;">删除客户</button>
-      <div style="flex:1"></div>
+    <div class="modal-foot detail-foot">
+      <div class="dfoot-hint" id="dFootHint">登记后自动计入本季度巡检统计</div>
       <button type="button" class="btn" data-close="maskDetail">关闭</button>
-      <button type="button" class="btn primary" id="btnEditCust">编辑客户资料</button>
+      <button type="button" class="btn primary" id="btnAddVisit">保存巡检记录</button>
     </div>
   </div>
 </div>
@@ -4598,6 +4641,23 @@
     if (SENS_SHOW[k]) delete SENS_SHOW[k]; else SENS_SHOW[k] = true;
     renderDetailSens(c);
   }
+  /* 「更多」菜单（详情抽屉右上角）：删除等低频动作收在这里，点击别处 / 换客户时收起 */
+  function closeDetailMore() {
+    var box = document.getElementById('detailMore');
+    var btn = document.getElementById('btnDetailMore');
+    if (!box) return;
+    box.classList.remove('on');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+  function toggleDetailMore() {
+    var box = document.getElementById('detailMore');
+    var btn = document.getElementById('btnDetailMore');
+    if (!box) return;
+    var show = !box.classList.contains('on');
+    box.classList.toggle('on', show);
+    if (btn) btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+  }
+
   function openDetail(id) {
     var c = DB.customers.filter(function (x) { return x.id === id; })[0];
     if (!c) return;
@@ -4868,7 +4928,9 @@
       }).then(function () { btn.disabled = false; });
     };
     document.getElementById('btnEditCust').onclick = function () { closeModal('maskDetail'); openCustModal(c); };
+    /* 详情抽屉的「更多」菜单：删除这类低频且不可逆的动作收进来，避免底部误触 */
     document.getElementById('btnDelCust').onclick = function () {
+      closeDetailMore();
       askConfirm('删除客户',
         '确认删除客户「<b>' + esc(c.name) + '</b>」？<br>该客户的全部巡检记录将一并删除，操作不可恢复。',
         function () {
@@ -4880,6 +4942,16 @@
           save(); renderAll(); closeModal('maskDetail'); toast('客户已删除');
         }, '确认删除');
     };
+
+    /* 只读账号 / 汇总视图：详情只用于查看，编辑与删除入口收起（服务端与捕获阶段拦截仍然生效） */
+    var writable = canWrite() && !isReadonly();
+    document.getElementById('btnEditCust').style.display = writable ? '' : 'none';
+    document.getElementById('dmoreWrap').style.display = writable ? '' : 'none';
+    document.getElementById('btnAddVisit').disabled = !writable;
+    document.getElementById('dFootHint').textContent = writable
+      ? '登记后自动计入本季度巡检统计'
+      : '当前为只读视图，不能登记巡检';
+    closeDetailMore();
 
     /* 重新打开详情时回到顶部，并复位分段导航高亮 */
     var dBody0 = document.querySelector('#maskDetail .modal-body');
@@ -6028,6 +6100,16 @@
       box.focus(); box.select();
       try { box.setSelectionRange(0, box.value.length); } catch (e) {}
     };
+    /* 详情抽屉「更多」：点按钮开合，点别处收起（菜单内点击不收起，交给菜单项自己处理） */
+    var dmoreBtn = document.getElementById('btnDetailMore');
+    if (dmoreBtn) dmoreBtn.onclick = function (e) { e.stopPropagation(); toggleDetailMore(); };
+    document.addEventListener('click', function (e) {
+      var box = document.getElementById('detailMore');
+      if (!box || !box.classList.contains('on')) return;
+      if (e.target === dmoreBtn || (box.contains && box.contains(e.target))) return;
+      closeDetailMore();
+    });
+
     /* 遮罩点击：记录按下位置，只有「按下与抬起都在遮罩上」才算一次关闭意图 */
     Array.prototype.forEach.call(document.querySelectorAll('.mask, .drawer-mask'), function (m) {
       m.addEventListener('pointerdown', function (e) {
