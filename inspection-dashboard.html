@@ -45,7 +45,7 @@
     /* ================= 精密仪表 · Instrument ================= */
     /* 品牌：ZDNS 蓝为主色；绿只作「信号灯」，永不大面积铺陈 */
     --brand:#1466E8; --brand-600:#0F55C9; --brand-700:#0B46A6; --brand-ink:#0A3A8F;
-    --brand-soft:#EBF2FE; --brand-line:#C4D7FA;
+    --brand-soft:#EBF2FE; --brand-line:#C4D7FA; --brand-wash:#F4F8FF;  /* 列表行悬停底：比 brand-soft 淡一档，密集列表不刺眼 */
     --accent:#6DBE45; --accent-soft:#F0F8EA; --accent-line:#CFE7BC;
 
     /* 语义：三色压到同一明度带，红绿并置时互不抢眼 */
@@ -257,14 +257,22 @@
   .card-cust{
     border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);
     padding:9px 11px 8px;margin-bottom:5px;cursor:pointer;position:relative;overflow:hidden;
-    transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease);
+    transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease),
+               background-color var(--dur) var(--ease);
   }
-  .card-cust:hover{border-color:#C6D1E0;box-shadow:var(--sh-1);}
+  /* 悬停高亮（2026-11-09）：整卡提亮一档 + 描边转品牌蓝 + 左侧状态条加宽，客户名跟着亮起。
+     全部走 background / absolute，不做位移，密集列表里上下扫视不会抖。 */
+  .card-cust:hover{border-color:var(--brand-line);background:var(--brand-wash);box-shadow:var(--sh-2);}
+  .card-cust:hover .cc-name{color:var(--brand-ink);}
   .card-cust.sel{border-color:var(--brand);background:#FAFCFF;box-shadow:inset 0 0 0 1px var(--brand);}
-  .card-cust::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ink-4);}
+  /* 已选中优先级最高：底色不退让，只叠一层投影表示指针停在上面 */
+  .card-cust.sel:hover{background:#FAFCFF;box-shadow:inset 0 0 0 1px var(--brand),var(--sh-2);}
+  .card-cust::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ink-4);
+    transition:width var(--dur) var(--ease);}
   .card-cust.s-ok::before{background:var(--ok);}
   .card-cust.s-part::before{background:var(--warn);}
   .card-cust.s-miss::before{background:var(--danger);}
+  .card-cust:hover::before{width:4px;}
   .cc-row1{display:flex;align-items:center;gap:7px;}
   .cc-name{font-weight:600;font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     color:var(--ink);letter-spacing:.1px;}
@@ -276,8 +284,9 @@
   /* CRM 维保三态：无底色、只留文字色 + 方形信号点，与巡检徽标分属两层信息 */
   .badge.wb-expired,.badge.wb-partial,.badge.wb-ok{
     background:var(--surface-2);border-color:var(--line);color:var(--ink-2);padding-left:5px;}
+  /* 信号点 2026-11-09 放大一档（4→6px），列表里一眼能分出到期 / 部分 / 正常 */
   .badge.wb-expired::before,.badge.wb-partial::before,.badge.wb-ok::before{
-    content:"";display:inline-block;width:4px;height:4px;border-radius:1px;margin-right:4px;vertical-align:1px;}
+    content:"";display:inline-block;width:6px;height:6px;border-radius:2px;margin-right:5px;vertical-align:0;}
   .badge.wb-expired::before{background:var(--danger);}
   .badge.wb-partial::before{background:var(--warn);}
   .badge.wb-ok::before{background:var(--ok);}
