@@ -369,8 +369,24 @@ async function main() {
     check('自己那份被批量关掉时退回公共台账', /AUTH\.ledger = null;/.test(dash));
 
     /* ---------- 客户详情抽屉（2026-11-09 晚）：宽抽屉不盖满地图 + 动作按钮重新分布 ---------- */
-    check('详情抽屉宽度随屏宽放大且留出地图',
-      /\.drawer\.detail-drawer\{width:min\(900px,64vw\)/.test(dash));
+    check('详情抽屉宽度随屏宽平滑收缩且留出地图',
+      /\.drawer\.detail-drawer\{[\s\S]{0,220}--drawer-w:clamp\(520px,46vw,900px\)/.test(dash) &&
+      /width:var\(--drawer-w\)/.test(dash));
+    check('窄屏（<1200）抽屉改底部弹出，地图仍在上方可见',
+      /@media \(max-width:1200px\)\{[\s\S]{0,320}\.drawer\.detail-drawer\{[\s\S]{0,320}top:auto;bottom:0/.test(dash));
+    check('左侧列表宽度随视口收缩（不再固定 372）',
+      /aside\{[\s\S]{0,220}width:clamp\(300px,24vw,372px\)/.test(dash));
+    check('地图跟随容器尺寸重算（门面 resize + ResizeObserver）',
+      /TMapMap\.prototype\.resize = function/.test(dash) &&
+      /new ResizeObserver\(scheduleMapResize\)/.test(dash));
+    check('选中客户按抽屉遮挡补偿定位偏移',
+      /function mapFocusOffset/.test(dash) && /function centerWithOffset/.test(dash) &&
+      /off\.dx, off\.dy/.test(dash));
+    check('视口变化时重算地图并按新遮挡重新对齐',
+      /addEventListener\('resize', onViewportResize\)/.test(dash) &&
+      /function onViewportResize/.test(dash));
+    check('关闭详情后把点拉回几何中心（不残留偏移）',
+      /id === 'maskDetail' && mapReady && state\.selectedId/.test(dash));
     check('保存巡检记录固定在底部操作条',
       /class="modal-foot detail-foot"[\s\S]{0,320}id="btnAddVisit"/.test(dash));
     check('编辑客户资料在头部、删除客户收进「更多」',
