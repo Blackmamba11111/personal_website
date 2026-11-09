@@ -2821,7 +2821,15 @@
 
     box.innerHTML = html;
     Array.prototype.forEach.call(box.querySelectorAll('.card-cust'), function (el) {
-      el.onclick = function () { openDetail(el.getAttribute('data-id')); };
+      el.onclick = function () {
+        var id = el.getAttribute('data-id');
+        /* 选中左侧客户即在地图定位（2026-11-09）：居中 + 高亮环 + 信息窗，便于对照地址与坐标。
+           renderList 放最后：重建后按 state.selectedId 补上 .sel，关闭详情时卡片仍是选中态。 */
+        state.selectedId = id;
+        focusOn(id, true);
+        openDetail(id);
+        renderList();
+      };
     });
   }
   function statusText(c, s) {
@@ -3866,17 +3874,29 @@
     return 8000 * Math.pow(1.7, Math.max(0, 9 - z));
   }
 
-  function focusOn(id) {
+  /* 点选定位时至少拉到城区级：省级视野里把一个点居中，肉眼等于没动 */
+  var FOCUS_MIN_ZOOM = 12;
+
+  /* force=true：无视当前视野，强制把该客户居中（左侧列表点选用）。
+     居中 / 缩放放在画高亮环之前，haloRadius() 才能按新的缩放级别算半径。 */
+  function focusOn(id, force) {
     if (!mapReady) return;
     var c = DB.customers.filter(function (x) { return x.id === id; })[0];
     if (!c || typeof c.lng !== 'number') return;
+    if (force) {
+      try { map.setCenter(new TMap.LatLng(c.lat, c.lng)); } catch (e) {}
+      var z = 7;
+      try { z = map.getZoom(); } catch (e) {}
+      if (!(z >= FOCUS_MIN_ZOOM)) {
+        try { map.setZoom(FOCUS_MIN_ZOOM); } catch (e) {}
+      }
+    } else if (!inView(c)) {
+      try { map.setCenter(new TMap.LatLng(c.lat, c.lng)); } catch (e) {}
+    }
     focusLayer.setGeometries([{
       id: 'focus', styleId: 'halo',
       center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius()
     }]);
-    if (!inView(c)) {
-      try { map.setCenter(new TMap.LatLng(c.lat, c.lng)); } catch (e) {}
-    }
     showInfoFor(c);
   }
 

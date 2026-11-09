@@ -137,6 +137,34 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
       zAll >= 7 && zAll < 12, zAll.toFixed(2) + ' 级');
   }
 
+  /* ---------- 3.6 左侧点选客户：地图居中到该点（2026-11-09） ---------- */
+  {
+    const cards = [].slice.call(d.querySelectorAll('#custList .card-cust'));
+    check('左侧客户卡片已渲染', cards.length > 0, String(cards.length));
+    const card = cards[0];
+    const cid = card.getAttribute('data-id');
+    /* 先摆成「省级视野 + 中心在别处」，验证点选是强制居中而不只是「不在视野才动」 */
+    rec().map.zoom = 7;
+    rec().map.center = new w.TMap.LatLng(30, 100);
+    click(w, card);
+    await tick(20);
+    const halo = rec().layers.filter(L => L.__kind === 'MultiCircle' && L.map && L.opts.styles && L.opts.styles.halo).pop();
+    const g = halo && halo.geometries && halo.geometries[0];
+    const mc = rec().map.center;
+    check('点选后该客户有高亮环', !!g && !!g.center, g ? '有' : '无高亮环');
+    check('点选后地图中心 = 该客户坐标',
+      !!g && !!mc && Math.abs(mc.getLng() - g.center.getLng()) < 1e-6 && Math.abs(mc.getLat() - g.center.getLat()) < 1e-6,
+      mc ? mc.getLng().toFixed(4) + ',' + mc.getLat().toFixed(4) : '无中心');
+    check('点选后缩放拉到城区级（≥12）', rec().map.zoom >= 12, String(rec().map.zoom));
+    check('点选后卡片为选中态', !!(d.querySelector('#custList .card-cust.sel')), cid || '无');
+    check('点选后详情弹窗打开', id('maskDetail').classList.contains('on'));
+    /* 关掉详情，恢复后续用例的环境（详情无改动时静默关闭） */
+    click(w, id('maskDetail').querySelector('[data-close="maskDetail"]'));
+    await tick(30);
+    check('关闭详情后地图仍停在该客户（视野不回退）',
+      !!mc && Math.abs(rec().map.center.getLng() - mc.getLng()) < 1e-6, '');
+  }
+
   /* ---------- 4. 退出登录：不抛错且清空 ---------- */
   let threw = null;
   try {
