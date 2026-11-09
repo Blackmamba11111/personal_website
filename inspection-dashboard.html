@@ -608,9 +608,14 @@
     background:#fff;display:block;margin:0 auto;}
   #vwBody iframe{width:100%;height:var(--vw-h);border:0;background:#fff;display:block;}
   /* PDF 原样视图：iframe 撑满面板。这里装的是浏览器自带的 PDF 阅读器，
-     缩放、翻页、搜索、全屏都由它负责，版面与原件完全一致。 */
-  #vwBody > iframe.vw-pdf{flex:1 1 auto;min-height:0;height:auto;align-self:stretch;}
-  .modal.viewer.full #vwBody > iframe.vw-pdf{height:100%;}
+     缩放、翻页、搜索、全屏都由它负责，版面与原件完全一致。
+     必须给 min-height：#vwBody 只有 max-height（内容决定高度），
+     纯 flex:1 + height:auto 会让 iframe 按空内容塌成一条。
+     减去 44px 是给可能存在的 .vw-bar 工具栏（Excel 原样视图有）留位。 */
+  #vwBody > iframe.vw-pdf{flex:1 1 auto;min-height:calc(var(--vw-h) - 44px);height:auto;align-self:stretch;}
+  /* Word / PPT 的原样视图没有工具栏，iframe 是首个子节点，直接用满高度 */
+  #vwBody > iframe.vw-pdf:first-child{min-height:calc(var(--vw-h) - 2px);}
+  .modal.viewer.full #vwBody > iframe.vw-pdf{height:100%;min-height:0;}
   #vwBody .vw-none{font-size:12.5px;color:var(--ink-3);padding:26px;text-align:center;line-height:1.8;}
   /* Excel 预览：工具栏（工作表页签 + 视图开关）常驻在表格上方 */
   #vwBody .vw-bar{display:flex;align-items:center;gap:9px;padding:7px 10px;
