@@ -99,7 +99,16 @@ async function main() {
     check('「同频」作品卡片存在且指向内网日程应用',
       !!sched && sched.tagName === 'A' && sched.getAttribute('href') === 'https://10.1.112.20' &&
       /同频/.test(sched.textContent) && /让每一份安排/.test(sched.textContent));
+    const newbie = d.getElementById('modNewbie');
+    check('「新人培养工作台」卡片存在且指向内网培养工作台（当前页跳转）',
+      !!newbie && newbie.tagName === 'A' &&
+      newbie.getAttribute('href') === 'https://10.1.114.116/' &&
+      /新人培养工作台/.test(newbie.textContent) &&
+      !newbie.getAttribute('target'));
     const mods = Array.from(d.querySelectorAll('.modules > .mod'));
+    check('作品卡片顺序为 巡检看板 → 同频 → 新人培养工作台 → 更多作品',
+      mods.map(m => m.id).join(',') === 'modMap,modSched,modNewbie,modSoon',
+      mods.map(m => m.id).join(','));
     check('「更多作品」占位框保留在后置（最后一位）',
       mods.length >= 3 && mods[mods.length - 1].id === 'modSoon');
     check('导航含实时时钟', !!d.getElementById('navClock'));

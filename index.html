@@ -159,7 +159,7 @@ main{position:relative;z-index:10;}
 .rise{opacity:0;transform:translateY(26px);animation:rise .86s var(--ease) forwards;}
 @keyframes rise{to{opacity:1;transform:none;}}
 .d1{animation-delay:.05s}.d2{animation-delay:.16s}.d3{animation-delay:.27s}
-.d4{animation-delay:.38s}.d5{animation-delay:.49s}.d6{animation-delay:.60s}
+.d4{animation-delay:.38s}.d5{animation-delay:.49s}.d6{animation-delay:.60s}.d7{animation-delay:.71s}
 
 /* ------- 左列：文案 + 照片 ------- */
 .col-left{min-width:0;display:flex;flex-direction:column;}
@@ -597,7 +597,18 @@ html.still .mote{opacity:.55;transform:none;}
           </span>
         </a>
 
-        <div class="mod disabled rise d6" id="modSoon" aria-disabled="true">
+        <a class="mod on rise d6" href="https://10.1.114.116/" id="modNewbie">
+          <span class="ico">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10 12 5 2 10l10 5 10-5z"/><path d="M6 12.5V17c0 1.66 2.69 3 6 3s6-1.34 6-3v-4.5"/><line x1="22" y1="10" x2="22" y2="16"/></svg>
+          </span>
+          <h3>新人培养工作台</h3>
+          <p>新人培养计划、成长路径与学习进度跟踪</p>
+          <span class="go">打开应用
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </span>
+        </a>
+
+        <div class="mod disabled rise d7" id="modSoon" aria-disabled="true">
           <span class="badge">开发中</span>
           <span class="ico">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg>
