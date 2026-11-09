@@ -1975,6 +1975,14 @@
         </select>
         <div class="hint">与单个用户弹窗里的「可见区域统计」是同一开关。</div>
       </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bMultiOn"> 应用多台账权限</label>
+        <select id="bMulti">
+          <option value="1">开启 — 共享关系中的账号多出一份「我的台账」</option>
+          <option value="0">关闭 — 只保留一份（个人台账数据保留，可再次开启）</option>
+        </select>
+        <div class="hint" id="bMultiHint">与单个用户弹窗里的「多台账权限」是同一开关。只有处在共享关系里的普通账号能开启（台账借自他人，或已共享给别人），其余账号会被跳过。</div>
+      </div>
     </div>
     <div class="modal-foot">
       <button type="button" class="btn" data-close="maskBatchUser">取消</button>
@@ -8235,7 +8243,7 @@
     var selfIn = targets.some(function (u) { return u.id === AUTH.user.id; });
     document.getElementById('batchUserTitle').textContent =
       '批量编辑用户（已选 ' + targets.length + ' 个' + (selfIn ? '，含当前登录账号' : '') + '）';
-    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn', 'bHideSensOn', 'bCrmOn', 'bStatOn'].forEach(function (id) {
+    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn', 'bHideSensOn', 'bCrmOn', 'bStatOn', 'bMultiOn'].forEach(function (id) {
       document.getElementById(id).checked = false;
     });
     document.getElementById('bRole').value = 'user';
@@ -8247,6 +8255,16 @@
     document.getElementById('bHideSens').value = '0';
     document.getElementById('bCrmVisible').value = '1';
     document.getElementById('bStatVisible').value = '0';
+    document.getElementById('bMulti').value = '1';
+    /* 多台账：所选账号里有几个真的能开（处在共享关系里的普通账号），提前说清楚会跳过多少 */
+    var multiOk = targets.filter(function (u) {
+      return u.role !== 'admin' && !!(u.shareFrom || (u.sharedWith && u.sharedWith.length));
+    }).length;
+    document.getElementById('bMultiHint').textContent = multiOk
+      ? ('所选账号中 ' + multiOk + ' 个处在共享关系里、可开启多台账' +
+        (multiOk < targets.length ? '；其余 ' + (targets.length - multiOk) + ' 个（独立账号 / 超级管理员）会被跳过' : '') +
+        '。与单个用户弹窗里的「多台账权限」是同一开关。')
+      : '所选账号都不在共享关系里，开启会被全部跳过。与单个用户弹窗里的「多台账权限」是同一开关。';
     /* 账号类型 / 认证服务器下拉（与新建用户弹窗同一套数据源） */
     document.getElementById('bSourceType').value = 'local';
     document.getElementById('bSourcePwd').value = '';
@@ -8297,6 +8315,10 @@
       basePatch.crmVisible = document.getElementById('bCrmVisible').value === '1';
     if (document.getElementById('bStatOn').checked)
       basePatch.statVisible = document.getElementById('bStatVisible').value === '1';
+    /* 多台账：null = 不应用；true = 开启（逐账号校验共享关系）；false = 关闭（数据保留） */
+    var multiWant = document.getElementById('bMultiOn').checked
+      ? document.getElementById('bMulti').value === '1' : null;
+    if (multiWant != null) basePatch.multiLedger = multiWant;
     if (document.getElementById('bMinsOn').checked) {
       var minsRaw = document.getElementById('bSessionMins').value.trim();
       var mins = Number(minsRaw);
@@ -8333,7 +8355,7 @@
     closeModal('maskBatchUser');
 
     var me = AUTH.user;
-    var okN = 0, skip = [];
+    var okN = 0, skip = [], multiSkip = [];
     var chain = Promise.resolve();
     targets.forEach(function (u) {
       /* 每账号独立构造请求体：名称模板展开 / 账号类型按现状裁剪 */
@@ -8352,6 +8374,17 @@
           if (!wasRemote) { skip.push(u.name + '（已是本地账号）'); return; }
           patch.serverId = '';
           patch.password = srcPwd;
+        }
+      }
+      /* 多台账只对「处在共享关系里的普通账号」成立：不合格的账号仅撤掉这一项，
+         其余字段照常写入，避免一个开不起来的开关把整条批量配置连坐掉 */
+      if (multiWant === true) {
+        var roleThen = patch.role || u.role;
+        var inShare = !!(u.shareFrom || (u.sharedWith && u.sharedWith.length));
+        if (roleThen === 'admin' || !inShare) {
+          delete patch.multiLedger;
+          multiSkip.push(u.name + (roleThen === 'admin' ? '（超级管理员没有个人台账）' : '（无共享关系）'));
+          if (!Object.keys(patch).length) return;
         }
       }
       /* 前端预检与服务端同口径：保住最后一个启用的超管；不能停用当前登录账号 */
@@ -8373,13 +8406,23 @@
         usersSyncBatchBtn();
         if (touchedSelf) {
           var meNow = findUser(me.username);
-          if (meNow) { AUTH.user = meNow; renderUserChip(); }
+          if (meNow) { AUTH.user = meNow; }
+          /* 多台账形态以服务端判定为准：这里先作废本地镜像（下次轮询会重新取），
+             再按刷新后的账号镜像回退——自己那份被关掉时不能停留在个人台账 */
+          AUTH.ledger = null;
+          if (!hasMultiLedger() && AUTH.mine) { AUTH.mine = false; load(); renderAll(); buildRegionLayers(); }
+          renderLedgerSwitch();
+          renderUserChip();
           if (!isAdmin()) applyScope(AUTH.user.username);
           renderScopeSelect();
         }
-        if (okN && skip.length) toast('已更新 ' + okN + ' 个账号；跳过 ' + skip.length + ' 个：' + skip.join('、'));
+        if (okN && (skip.length || multiSkip.length)) {
+          toast('已更新 ' + okN + ' 个账号' +
+            (skip.length ? '；跳过 ' + skip.length + ' 个：' + skip.join('、') : '') +
+            (multiSkip.length ? '；多台账未生效 ' + multiSkip.length + ' 个：' + multiSkip.join('、') : ''));
+        }
         else if (okN) toast('已批量更新 ' + okN + ' 个账号');
-        else toast('未更新任何账号：' + skip.join('、'));
+        else toast('未更新任何账号：' + skip.concat(multiSkip).join('、'));
       });
     });
   }

@@ -353,6 +353,11 @@ async function main() {
     check('汇总把 owner 的个人台账也单独计入',
       dash.indexOf('台账被共享出去的 owner 也可能开了多台账') >= 0);
     check('提供方的公共台账说明写「已共享给谁」', /function publicLedgerTip/.test(dash));
+    /* 2026-11-09 追加：批量编辑里也要能一键应用多台账（与单个弹窗同一开关） */
+    check('批量编辑提供「应用多台账权限」', /id="bMultiOn"/.test(dash) && /id="bMulti"/.test(dash));
+    check('批量开启前说明有多少账号可开', /id="bMultiHint"/.test(dash) && /可开启多台账/.test(dash));
+    check('批量多台账对不合格账号只撤该项，不连坐其它字段', /delete patch\.multiLedger/.test(dash));
+    check('自己那份被批量关掉时退回公共台账', /AUTH\.ledger = null;/.test(dash));
 
     /* ---------- 省界数据拆分：主文档瘦身 + 数据文件可长期缓存 ---------- */
     const prov = fs.readFileSync(path.join(DIR, 'assets/provinces.js'), 'utf8');

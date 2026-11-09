@@ -687,6 +687,64 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 8.9 多台账：批量编辑里一键应用 ================= */
+  {
+    const fx = { version: 1, users: [
+      mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+      mkUser({ username: 'zhangsan', name: '张三', password: 'zhang1234' }),
+      mkUser({ username: 'lisi', name: '李四', password: 'lisi1234' }),
+      Object.assign(mkUser({ username: 'wangwu', name: '王五', password: 'wangw888' }),
+        { shareFrom: 'zhangsan' })
+    ] };
+    const dom = makeDom({
+      fixture: fx, sessionUser: 'admin',
+      data: { admin: mkDB(1, 'A-'), zhangsan: mkDB(3, 'Z-') },
+      errors
+    });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    const byU = u => usersOf(w).filter(x => x.username === u)[0];
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    await tick(40);
+
+    /* 行里可能出现别人的用户名（「已共享给 wangwu」），必须按 data-uid 定位 */
+    const rowOf = u => d.querySelector('#usersTableWrap tbody tr[data-uid="' +
+      usersOf(w).filter(x => x.username === u)[0].id + '"]');
+    const check3 = ['zhangsan', 'lisi', 'wangwu'].map(rowOf);
+    check('批量勾选：三个待测账号都在列表里', check3.every(Boolean), String(check3.filter(Boolean).length));
+    check3.forEach(r => { const cb = r.querySelector('input[data-uchk]'); cb.checked = true; fire(w, cb, 'change'); });
+    click(w, id('btnUsersBatchEdit'));
+    check('批量弹窗含「应用多台账权限」', !!id('bMultiOn') && !!id('bMulti'));
+    check('打开时先说明有几个账号真的能开（3 选中里 2 个）',
+      id('bMultiHint').textContent.indexOf('2 个') >= 0 && id('bMultiHint').textContent.indexOf('1 个') >= 0,
+      id('bMultiHint').textContent);
+
+    id('bMultiOn').checked = true; id('bMulti').value = '1';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(240);
+    check('批量开启：台账提供方（已共享给别人）开上了', byU('zhangsan').multiLedger === true,
+      JSON.stringify(byU('zhangsan').multiLedger));
+    check('批量开启：台账借入方开上了', byU('wangwu').multiLedger === true,
+      JSON.stringify(byU('wangwu').multiLedger));
+    check('批量开启：独立账号被跳过（服务端也没被写脏）', !byU('lisi').multiLedger,
+      JSON.stringify(byU('lisi').multiLedger));
+    check('批量开启后列表出现「多台账」徽标', rowOf('zhangsan').textContent.indexOf('多台账') >= 0);
+
+    /* 反向：批量关闭（数据保留，服务端只把开关置 0） */
+    const cbZ = rowOf('zhangsan').querySelector('input[data-uchk]');
+    cbZ.checked = true; fire(w, cbZ, 'change');
+    click(w, id('btnUsersBatchEdit'));
+    id('bMultiOn').checked = true; id('bMulti').value = '0';
+    click(w, id('btnSaveBatchUsers'));
+    await tick(240);
+    check('批量关闭：开关被收回', byU('zhangsan').multiLedger === false,
+      JSON.stringify(byU('zhangsan').multiLedger));
+    check('批量关闭后列表不再显示「多台账」徽标', rowOf('zhangsan').textContent.indexOf('多台账') < 0);
+    w.close();
+  }
+
   /* ================= 9. 退出登录 ================= */
   {
     const dom = makeDom({ sessionUser: 'demo', errors });
