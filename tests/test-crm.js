@@ -196,6 +196,20 @@ function makeBoard(opts) {
   await A.tick(2);
   check('A20 切回「全部项目」恢复 4 家', A.cards().length === 4, String(A.cards().length));
 
+  /* 空列表提示要说清楚「谁 + 什么条件」：只写「没有维护人A 为 X 的客户」会让人以为数据没同步 */
+  A.click(A.d.querySelector('#mineChips .chip[data-mine="mine"]'));
+  await A.tick(2);
+  A.click(A.d.querySelector('#chips .chip[data-f="part"]'));
+  await A.tick(2);
+  const emptyMine = A.id('custList').textContent;
+  check('A21 我负责的项目 + 状态为空：提示点名巡检状态',
+    /没有维护人A 为「潘超」/.test(emptyMine) && /巡检状态为「部分完成」/.test(emptyMine), emptyMine);
+  check('A22 空提示不再是一句笼统的「没有…的客户」', !/^没有维护人A 为「潘超」的客户$/.test(emptyMine.trim()), emptyMine);
+  A.click(A.d.querySelector('#chips .chip[data-f="all"]'));
+  A.click(A.d.querySelector('#mineChips .chip[data-mine="all"]'));
+  await A.tick(2);
+  check('A23 清掉条件后列表恢复', A.cards().length === 4, String(A.cards().length));
+
   /* ==================== B. 关闭「可见 CRM 现网信息」的普通用户 ==================== */
   /* 口径（2026-11-06）：关闭只影响「别人负责的项目」；「维护人A = 本人」的项目对全员开放 */
   const B = makeBoard({ demoCrmVisible: false, crmMatches: MATCHES });

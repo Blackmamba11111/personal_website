@@ -368,6 +368,30 @@ async function main() {
       /class="dhead-acts"[\s\S]{0,320}id="btnEditCust"/.test(dash) &&
       /id="detailMore"[\s\S]{0,120}id="btnDelCust"/.test(dash));
 
+    /* ---------- 附件在线预览（2026-11-09）：容器不再被页签挤扁 + 按钮不再重复下载 ---------- */
+    check('预览容器是纵向 flex，页签与表格不再并排',
+      /#vwBody\{position:relative;min-height:180px;max-height:var\(--vw-h\);display:flex;flex-direction:column/.test(dash));
+    check('查看器宽度 1100px 且同时改 max-width（否则被 .modal 的 560px 卡住）',
+      /\.modal\.viewer\{width:min\(1100px,94vw\);max-width:min\(1100px,94vw\)/.test(dash));
+    check('「新窗口打开」已移除，避免与下载行为重复',
+      dash.indexOf('id="vwOpen"') < 0 && dash.indexOf('新窗口打开') < 0);
+    check('底栏提供全屏按钮与提示语',
+      /id="vwFull"/.test(dash) && /dfoot-hint" id="vwHint"/.test(dash));
+    check('表格预览按 Excel 列宽渲染（!cols → px）',
+      /function xlColPx\(wch\)/.test(dash) && /ws\['!cols'\]/.test(dash));
+    check('表格预览还原合并单元格与行高', /ws\['!merges'\]/.test(dash) && /ws\['!rows'\]/.test(dash));
+    check('表格支持冻结首行首列与适应宽度',
+      /freeze-y/.test(dash) && /function xlApplyFit/.test(dash) && /data-tool="fit"/.test(dash));
+    check('表格可复制为 TSV', /data-tool="copy"/.test(dash) && /sheet_to_csv\(ws, \{ FS: '\\t' \}\)/.test(dash));
+    check('不再用 sheet_to_html 直出', !/utils\.sheet_to_html\s*\(/.test(dash));
+
+    /* ---------- 空列表提示要说清「谁 + 什么条件」（2026-11-09） ---------- */
+    check('空列表按条件拼提示语', /function listCondText\(\)/.test(dash));
+    check('提示含区域与巡检状态两段条件',
+      /'区域为「' \+ r\.name \+ '」'/.test(dash) && /'巡检状态为「' \+ STATUS_LABEL\[state\.filter\] \+ '」'/.test(dash));
+    check('我负责的项目为空时保留「没有维护人A 为」前缀并追加条件',
+      /'没有维护人A 为「' \+ esc\(CRM_DATA\.nameCn\) \+ '」、' \+ conds\.join\('、'\)/.test(dash));
+
     /* ---------- 省界数据拆分：主文档瘦身 + 数据文件可长期缓存 ---------- */
     const prov = fs.readFileSync(path.join(DIR, 'assets/provinces.js'), 'utf8');
     check('省界数据以 window.__PROVINCES_RAW 暴露', /window\.__PROVINCES_RAW\s*=\s*\[/.test(prov));
@@ -383,8 +407,9 @@ async function main() {
        2026-11-05 CRM 台账关联（管理页 + 详情两块 + 列表维保徽标 + 项目筛选），上限放宽到 400 KB。
        2026-11-06 CRM 区域统计（战区下拉 + 明细/型号汇总 + CSV 导出 + 独立进度条），上限放宽到 440 KB。
        2026-11-09 全面视觉重设计（设计 token + 总览页 + 详情分段导航），上限放宽到 500 KB。
+       2026-11-09 晚 详情宽抽屉 + 附件预览自绘表格渲染器（列宽/合并/冻结/适应宽度），上限放宽到 520 KB。
        注意：doc97 解析器本身在 assets/vendor/doc97.js，不计入主页体积。 */
-    check('看板体积已降到 500 KB 以内', Buffer.byteLength(dash, 'utf8') < 500 * 1024,
+    check('看板体积已降到 520 KB 以内', Buffer.byteLength(dash, 'utf8') < 520 * 1024,
       Math.round(Buffer.byteLength(dash, 'utf8') / 1024) + ' KB');
   });
 

@@ -589,22 +589,60 @@
   .tl-att .att-ico{width:28px;height:22px;font-size:8.5px;}
   .tl-att:hover{border-color:#AFC4F5;}
 
-  /* 在线预览 */
-  .modal.viewer{width:min(900px,94vw);max-height:90vh;}
-  #vwBody{display:flex;align-items:center;justify-content:center;min-height:180px;background:#F7F9FC;border-radius:8px;overflow:auto;}
-  #vwBody img{max-width:100%;max-height:66vh;object-fit:contain;border-radius:6px;background:#fff;}
-  #vwBody iframe{width:100%;height:66vh;border:0;border-radius:6px;background:#fff;}
-  #vwBody .vw-none{font-size:12.5px;color:var(--text-3);padding:26px;text-align:center;}
-  /* Excel / Word 在线预览 */
-  #vwBody .vw-tabs{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:8px;}
-  #vwBody .vw-tab{border:1px solid var(--border);background:var(--panel-2);border-radius:20px;
-    padding:3px 12px;font-size:11.5px;color:var(--text-2);cursor:pointer;}
-  #vwBody .vw-tab.on{background:var(--brand);border-color:var(--brand);color:#fff;}
-  #vwBody .vw-sheet,#vwBody .vw-doc{width:100%;max-height:64vh;overflow:auto;background:#fff;
-    border-radius:6px;padding:10px 14px;text-align:left;}
-  #vwBody .vw-sheet table{border-collapse:collapse;font-size:12px;width:max-content;min-width:100%;}
-  #vwBody .vw-sheet td{border:1px solid #E3E8F0;padding:3px 9px;white-space:nowrap;color:#24303F;}
-  #vwBody .vw-doc{font-size:13px;line-height:1.75;color:#24303F;}
+  /* 在线预览（2026-11-09 重构）
+     坑：容器原先是 display:flex + 居中，而表格预览的「页签工具栏 + 表格」是两个兄弟节点，
+     被当成左右两列排——页签挤占左侧一条竖排，表格只剩一两百像素，后几列完全看不到。
+     现在容器改块级、内容各自铺满，滚动交给内层 .vw-scroll。 */
+  /* 注意 max-width 必须一起写：.modal 自带 max-width:560px，只写 width 会被它卡住 */
+  .modal.viewer{width:min(1100px,94vw);max-width:min(1100px,94vw);max-height:92vh;--vw-h:66vh;}
+  .modal.viewer.full{width:96vw;max-width:96vw;height:96vh;max-height:96vh;--vw-h:calc(96vh - 172px);}
+  /* 全屏时把 modal-body / 预览容器一路撑满，滚动交回 .vw-scroll */
+  .modal.viewer.full .modal-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+  .modal.viewer.full #vwBody{flex:1 1 auto;min-height:0;max-height:none;}
+  .modal.viewer .modal-head h3{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #vwBody{position:relative;min-height:180px;max-height:var(--vw-h);display:flex;flex-direction:column;
+    background:#F7F9FC;border-radius:var(--r-sm);overflow:hidden;}
+  #vwBody.vw-center{align-items:center;justify-content:center;}
+  #vwBody > .vw-scroll{flex:1 1 auto;min-height:0;width:100%;overflow:auto;overscroll-behavior:contain;}
+  #vwBody img{max-width:100%;max-height:var(--vw-h);object-fit:contain;border-radius:var(--r-sm);
+    background:#fff;display:block;margin:0 auto;}
+  #vwBody iframe{width:100%;height:var(--vw-h);border:0;background:#fff;display:block;}
+  #vwBody .vw-none{font-size:12.5px;color:var(--ink-3);padding:26px;text-align:center;line-height:1.8;}
+  /* Excel 预览：工具栏（工作表页签 + 视图开关）常驻在表格上方 */
+  #vwBody .vw-bar{display:flex;align-items:center;gap:9px;padding:7px 10px;
+    background:var(--surface);border-bottom:1px solid var(--line);}
+  #vwBody .vw-tabs{display:flex;gap:4px;flex-wrap:wrap;flex:1 1 auto;min-width:0;}
+  #vwBody .vw-tab{border:1px solid var(--line);background:var(--surface);border-radius:var(--r-xs);
+    padding:3px 10px;font-size:11px;color:var(--ink-2);cursor:pointer;font-family:var(--font-mono);
+    letter-spacing:.02em;transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease);}
+  #vwBody .vw-tab:hover{border-color:var(--brand-line);color:var(--ink);}
+  #vwBody .vw-tab.on{background:var(--brand-wash);border-color:var(--brand-line);color:var(--brand-ink);font-weight:600;}
+  #vwBody .vw-tools{display:flex;gap:4px;flex:0 0 auto;}
+  #vwBody .vw-tool{height:23px;padding:0 9px;border:1px solid var(--line);border-radius:var(--r-xs);
+    background:var(--surface);font-size:11px;color:var(--ink-2);cursor:pointer;white-space:nowrap;
+    font-family:var(--font-mono);letter-spacing:.02em;
+    transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease),color var(--dur) var(--ease);}
+  #vwBody .vw-tool:hover{border-color:var(--brand-line);color:var(--brand-ink);}
+  #vwBody .vw-tool.on{background:var(--brand-wash);border-color:var(--brand-line);color:var(--brand-ink);font-weight:600;}
+  /* 工作表：separate 边框而非 collapse —— collapse 下 sticky 单元格的边线会错位 */
+  #vwBody .vw-sheet{background:#fff;overflow:visible;}
+  #vwBody .vw-sheet table{border-collapse:separate;border-spacing:0;font-size:12px;
+    width:max-content;min-width:100%;table-layout:fixed;}
+  #vwBody .vw-sheet.fit table{width:100%;}
+  #vwBody .vw-sheet td{border-right:1px solid #E3E8F0;border-bottom:1px solid #E3E8F0;
+    padding:0 8px;height:26px;line-height:25px;white-space:nowrap;color:#24303F;
+    overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;}
+  #vwBody .vw-sheet tr:first-child td{border-top:1px solid #E3E8F0;}
+  #vwBody .vw-sheet td:first-child{border-left:1px solid #E3E8F0;}
+  #vwBody .vw-sheet td.num{text-align:right;font-family:var(--font-mono);font-size:11.5px;}
+  #vwBody .vw-sheet td.bold{font-weight:600;}
+  /* 冻结首行 / 首列：宽表横向纵向滚动时表头与行标签不丢 */
+  #vwBody .vw-sheet.freeze-y td.stky{position:sticky;top:0;z-index:3;background:#F4F7FE;font-weight:600;color:#1B2333;}
+  #vwBody .vw-sheet.freeze-x td.stkx{position:sticky;left:0;z-index:2;background:#FBFCFE;}
+  #vwBody .vw-sheet.freeze-y.freeze-x td.stky.stkx{z-index:4;}
+  #vwBody .vw-doc{width:100%;max-height:var(--vw-h);overflow:auto;background:#fff;
+    border-radius:var(--r-sm);padding:12px 16px;text-align:left;
+    font-size:13px;line-height:1.75;color:#24303F;}
   #vwBody .vw-doc h1,#vwBody .vw-doc h2,#vwBody .vw-doc h3{margin:10px 0 6px;}
   #vwBody .vw-doc p{margin:6px 0;}
   #vwBody .vw-doc img{max-width:100%;}
@@ -1412,11 +1450,10 @@
     </div>
     <div class="modal-body">
       <div id="vwBody"></div>
-      <div class="hint" style="margin-top:8px;" id="vwHint"></div>
     </div>
     <div class="modal-foot">
-      <div style="flex:1"></div>
-      <a class="btn" id="vwOpen" target="_blank" rel="noopener">新窗口打开</a>
+      <div class="dfoot-hint" id="vwHint"></div>
+      <button type="button" class="btn quiet" id="vwFull" title="放大到整个窗口查看">全屏</button>
       <a class="btn primary" id="vwDownload" download>下载</a>
       <button type="button" class="btn" data-close="maskViewer">关闭</button>
     </div>
@@ -2828,6 +2865,21 @@
   }
 
   /* ---------------- 渲染：客户列表 ---------------- */
+  /* 空列表时把「正在按什么筛」讲清楚：区域 / 巡检状态 / 关键词。
+     否则「我负责的项目」点了没反应，会让人以为是数据没同步。 */
+  var STATUS_LABEL = { ok: '已巡检', part: '部分完成', miss: '未巡检' };
+  function listCondText() {
+    var out = [];
+    if (state.regionFilter !== 'all') {
+      var r = DB.regions.filter(function (x) { return x.id === state.regionFilter; })[0];
+      if (r) out.push('区域为「' + r.name + '」');
+    }
+    if (state.filter !== 'all' && STATUS_LABEL[state.filter]) {
+      out.push('巡检状态为「' + STATUS_LABEL[state.filter] + '」');
+    }
+    if (state.keyword.trim()) out.push('关键词包含「' + state.keyword.trim() + '」');
+    return out;
+  }
   function renderList() {
     var qk = state.quarter;
     var kw = state.keyword.trim().toLowerCase();
@@ -2846,14 +2898,21 @@
 
     var box = document.getElementById('custList');
     if (!arr.length) {
+      var conds = listCondText();
       var emptyMsg;
       if (mineMode) {
         /* 最常见的「点了没反应」其实是账号没填中文名，直接说清楚，别让人以为是功能坏了 */
-        emptyMsg = CRM_DATA.nameCn
-          ? '没有维护人A 为「' + esc(CRM_DATA.nameCn) + '」的客户'
-          : '当前账号未设置「中文姓名」，无法与 CRM 的维护人A 比对。请管理员在用户管理里填写该账号的中文姓名';
+        if (!CRM_DATA.nameCn) {
+          emptyMsg = '当前账号未设置「中文姓名」，无法与 CRM 的维护人A 比对。请管理员在用户管理里填写该账号的中文姓名';
+        } else if (conds.length) {
+          emptyMsg = '没有维护人A 为「' + esc(CRM_DATA.nameCn) + '」、' + conds.join('、') + '的客户';
+        } else {
+          emptyMsg = '没有维护人A 为「' + esc(CRM_DATA.nameCn) + '」的客户';
+        }
+      } else if (!DB.customers.length) {
+        emptyMsg = '暂无客户，点击右上角「新增客户」开始录入';
       } else {
-        emptyMsg = DB.customers.length ? '没有符合筛选条件的客户' : '暂无客户，点击右上角「新增客户」开始录入';
+        emptyMsg = conds.length ? '没有' + conds.join('、') + '的客户' : '没有符合筛选条件的客户';
       }
       box.innerHTML = '<div class="empty">' + emptyMsg + '</div>';
       return;
@@ -4363,29 +4422,178 @@
     if (vwActive(seq)) body.innerHTML = '<div class="vw-none">' +
       esc((e && e.message) || '预览失败') + '<br>可点击下方「下载」查看</div>';
   }
+  /* ---------------- Excel 预览渲染器 ----------------
+     sheet_to_html 只输出「值 + 合并」，列宽 / 行高 / 数字格式全丢，宽表被压成等宽。
+     这里按 !ref 自己遍历，一并还原：列宽（!cols.wch → px）、合并（!merges）、
+     行高（!rows）、数字右对齐、加粗，并支持首行首列冻结与「适应宽度」。 */
+  var XL_CHAR_W = 7.4;                      /* Excel 字符宽 → 像素的近似系数 */
+  var XL_MAX_ROWS = 400, XL_MAX_COLS = 80;  /* 防畸形 !ref（如 XFD1048576）把浏览器拖死 */
+  function xlColPx(wch) { return Math.round(Math.max(4, Number(wch) || 8.43) * XL_CHAR_W + 6); }
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+  function xlDateText(d, z) {
+    var s = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    if (/[hH]|:/.test(String(z || ''))) s += ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    return s;
+  }
+  function xlCellText(c) {
+    if (!c) return '';
+    if (c.v == null && c.w == null) return '';
+    if (c.v instanceof Date) return xlDateText(c.v, c.z);
+    return c.w != null ? String(c.w) : String(c.v == null ? '' : c.v);
+  }
+  /* 生成工作表 DOM 片段；返回 { html, cols, truncated } */
+  function xlSheetHtml(ws, freezeY, freezeX) {
+    var U = window.XLSX.utils;
+    var R = U.decode_range(ws['!ref'] || 'A1');
+    var rEnd = Math.min(R.e.r, R.s.r + XL_MAX_ROWS - 1);
+    var cEnd = Math.min(R.e.c, R.s.c + XL_MAX_COLS - 1);
+    /* 合并：起点记跨度，被覆盖的格子标 skip（否则会多出空白单元格把表格撑歪） */
+    var span = {}, skip = {};
+    (ws['!merges'] || []).forEach(function (m) {
+      span[m.s.r + ',' + m.s.c] = { rs: m.e.r - m.s.r + 1, cs: m.e.c - m.s.c + 1 };
+      for (var r = m.s.r; r <= m.e.r; r++) {
+        for (var c = m.s.c; c <= m.e.c; c++) {
+          if (r !== m.s.r || c !== m.s.c) skip[r + ',' + c] = 1;
+        }
+      }
+    });
+    var cols = [], totalW = 0;
+    for (var c0 = R.s.c; c0 <= cEnd; c0++) {
+      var w = ws['!cols'] && ws['!cols'][c0];
+      var px = xlColPx(w && w.wch ? w.wch : 8.43);
+      cols.push(px); totalW += px;
+    }
+    var rows = [];
+    for (var r = R.s.r; r <= rEnd; r++) {
+      var tds = '';
+      for (var c = R.s.c; c <= cEnd; c++) {
+        if (skip[r + ',' + c]) continue;
+        var mk = span[r + ',' + c];
+        var cell = ws[U.encode_cell({ r: r, c: c })];
+        var cls = [];
+        if (freezeY && r === R.s.r) cls.push('stky');
+        if (freezeX && c === R.s.c) cls.push('stkx');
+        if (cell) {
+          if (cell.t === 'n' || cell.t === 'd') cls.push('num');
+          if (cell.s && cell.s.font && cell.s.font.bold) cls.push('bold');
+        }
+        var txt = xlCellText(cell);
+        tds += '<td' + (mk && mk.rs > 1 ? ' rowspan="' + mk.rs + '"' : '') +
+          (mk && mk.cs > 1 ? ' colspan="' + mk.cs + '"' : '') +
+          (cls.length ? ' class="' + cls.join(' ') + '"' : '') +
+          (txt ? ' title="' + esc(txt) + '"' : '') + '>' +
+          esc(txt) + '</td>';
+      }
+      var rh = ws['!rows'] && ws['!rows'][r];
+      var hp = rh && (rh.hpx || (rh.hpt ? Math.round(rh.hpt * 4 / 3) : 0));
+      rows.push('<tr' + (hp ? ' style="height:' + hp + 'px"' : '') + '>' + tds + '</tr>');
+    }
+    return {
+      html: '<table><colgroup>' + cols.map(function (px) {
+        return '<col style="width:' + px + 'px">';
+      }).join('') + '</colgroup>' + rows.join('') + '</table>',
+      cols: cols,
+      totalW: totalW,
+      truncated: rEnd < R.e.r || cEnd < R.e.c,
+      empty: !rows.length
+    };
+  }
+  /* 适应宽度：列宽按比例换成百分比；原始尺寸：还原 px */
+  function xlApplyFit(sheetEl, cols, fit) {
+    var group = sheetEl.querySelector('colgroup');
+    if (!group) return;
+    var total = cols.reduce(function (a, b) { return a + b; }, 0) || 1;
+    Array.prototype.forEach.call(group.children, function (col, i) {
+      col.style.width = fit ? (cols[i] / total * 100).toFixed(3) + '%' : cols[i] + 'px';
+    });
+    sheetEl.classList[fit ? 'add' : 'remove']('fit');
+  }
   function renderExcelPreview(att, body) {
     var seq = ++VW_SEQ;
+    body.className = '';
     body.innerHTML = '<div class="vw-none">正在加载表格预览组件…</div>';
     Promise.all([loadVendor(ATT_VENDOR.xlsx, function () { return window.XLSX; }), attBytes(att.url)])
       .then(function (r) {
         if (!vwActive(seq)) return;
-        var wb = window.XLSX.read(r[1], { type: 'array' });
-        var names = wb.SheetNames;
+        var wb = window.XLSX.read(r[1], { type: 'array', cellStyles: true });
+        var names = wb.SheetNames || [];
         if (!names.length) throw new Error('表格中没有工作表');
         var cur = names[0];
+        var fit = false;
+        var freezeOn = null;         /* null = 用默认值（有表头就冻结） */
         var draw = function () {
-          var html = window.XLSX.utils.sheet_to_html(wb.Sheets[cur], { header: '', footer: '' });
-          body.innerHTML =
-            (names.length > 1
-              ? '<div class="vw-tabs">' + names.map(function (n) {
-                  return '<button type="button" class="vw-tab' + (n === cur ? ' on' : '') +
-                    '" data-sheet="' + esc(n) + '">' + esc(n) + '</button>';
-                }).join('') + '</div>'
-              : '') +
-            '<div class="vw-sheet">' + html + '</div>';
-          Array.prototype.forEach.call(body.querySelectorAll('.vw-tab'), function (b) {
-            b.onclick = function () { cur = b.getAttribute('data-sheet') || cur; draw(); };
+          var ws = wb.Sheets[cur] || {};
+          /* 首行若有跨行合并，冻结它会和下一行错位 —— 这种表默认不冻结 */
+          var firstRowSpan = (ws['!merges'] || []).some(function (m) {
+            return m.s.r === 0 && m.e.r > 0;
           });
+          var rowCount = window.XLSX.utils.decode_range(ws['!ref'] || 'A1').e.r + 1;
+          var canFreeze = !firstRowSpan && rowCount > 2;
+          var freeze = canFreeze && (freezeOn === null ? true : freezeOn);
+          var out = xlSheetHtml(ws, freeze, freeze);
+          body.innerHTML =
+            '<div class="vw-bar">' +
+              (names.length > 1
+                ? '<div class="vw-tabs">' + names.map(function (n) {
+                    return '<button type="button" class="vw-tab' + (n === cur ? ' on' : '') +
+                      '" data-sheet="' + esc(n) + '">' + esc(n) + '</button>';
+                  }).join('') + '</div>'
+                : '<div class="vw-tabs"><span class="vw-tab on" style="cursor:default;">' +
+                  esc(cur) + '</span></div>') +
+              '<div class="vw-tools">' +
+                '<button type="button" class="vw-tool' + (fit ? ' on' : '') + '" data-tool="fit" ' +
+                  'title="把表格压缩到一屏宽度，看整体结构">' + (fit ? '原始尺寸' : '适应宽度') + '</button>' +
+                '<button type="button" class="vw-tool' + (freeze ? ' on' : '') + '" data-tool="freeze" ' +
+                  'title="滚动时表头与首列保持可见"' + (canFreeze ? '' : ' disabled') + '>冻结首行</button>' +
+                '<button type="button" class="vw-tool" data-tool="copy" title="把当前工作表复制成可粘贴进 Excel 的文本">复制</button>' +
+              '</div>' +
+            '</div>' +
+            '<div class="vw-scroll"><div class="vw-sheet' + (freeze ? ' freeze-y freeze-x' : '') + '">' +
+              out.html + '</div></div>' +
+            (out.truncated
+              ? '<div class="vw-warn" style="margin:0;border-radius:0;">表格较大，仅显示前 ' +
+                XL_MAX_ROWS + ' 行 × ' + XL_MAX_COLS + ' 列，完整内容请下载后查看。</div>'
+              : '');
+          var sheetEl = body.querySelector('.vw-sheet');
+          if (fit) xlApplyFit(sheetEl, out.cols, true);
+          Array.prototype.forEach.call(body.querySelectorAll('.vw-tab[data-sheet]'), function (b) {
+            b.onclick = function () {
+              cur = b.getAttribute('data-sheet') || cur;
+              draw();
+            };
+          });
+          body.querySelector('[data-tool="fit"]').onclick = function () {
+            fit = !fit;
+            xlApplyFit(sheetEl, out.cols, fit);
+            this.className = 'vw-tool' + (fit ? ' on' : '');
+            this.textContent = fit ? '原始尺寸' : '适应宽度';
+          };
+          var fb = body.querySelector('[data-tool="freeze"]');
+          if (fb && canFreeze) {
+            fb.onclick = function () {
+              freezeOn = !sheetEl.classList.contains('freeze-y');
+              draw();                          /* 重画一次，合并单元格的 sticky 才不会串 */
+            };
+          }
+          body.querySelector('[data-tool="copy"]').onclick = function () {
+            var tsv = window.XLSX.utils.sheet_to_csv(ws, { FS: '\t' });
+            var done = function (ok) {
+              toast(ok ? '「' + cur + '」已复制，可直接粘贴进 Excel' : '复制失败，请手动选择表格内容');
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(tsv).then(function () { done(true); },
+                function () { done(false); });
+            } else {
+              try {
+                var ta = document.createElement('textarea');
+                ta.value = tsv; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                document.body.appendChild(ta); ta.select();
+                var ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                done(ok);
+              } catch (e) { done(false); }
+            }
+          };
         };
         draw();
       })
@@ -4402,6 +4610,7 @@
   }
   function renderWordPreview(att, body) {
     var seq = ++VW_SEQ;
+    body.className = '';
     body.innerHTML = '<div class="vw-none">正在加载文档预览组件…</div>';
     attBytes(att.url).then(function (ab) {
       if (!vwActive(seq)) return;
@@ -4574,30 +4783,59 @@
     });
   }
 
+  /* 预览弹窗全屏：表格宽表 / 图片细节都靠它放大，不新开窗口 */
+  function setViewerFull(on) {
+    var m = document.querySelector('#maskViewer .modal');
+    if (m) m.classList[on ? 'add' : 'remove']('full');
+    var b = document.getElementById('vwFull');
+    if (b) b.textContent = on ? '退出全屏' : '全屏';
+  }
+  function toggleViewerFull() {
+    var m = document.querySelector('#maskViewer .modal');
+    if (m) setViewerFull(!m.classList.contains('full'));
+  }
+
   function openAttachment(att) {
     if (!att || !att.url) return;
     document.getElementById('vwName').textContent = att.name || '附件';
     document.getElementById('vwMeta').textContent =
       (att.mime || '未知类型') + (att.size ? ' · ' + fmtSize(att.size) : '');
     var body = document.getElementById('vwBody');
-    if (isImgMime(att.mime)) {
+    body.className = '';
+    var img = isImgMime(att.mime);
+    var excel = attIsExcel(att.name, att.mime);
+    var word = attIsWord(att.name, att.mime);
+    var plain = /^text\/(plain|csv)/.test(att.mime || '') || /\.(txt|csv|log)$/i.test(att.name || '');
+    var hinted = false;
+    if (img) {
+      body.className = 'vw-center';
       body.innerHTML = '<img src="' + esc(att.url) + '" alt="' + esc(att.name || '') + '">';
-    } else if (attIsExcel(att.name, att.mime)) {
+      hinted = true;
+    } else if (excel) {
       renderExcelPreview(att, body);
-    } else if (attIsWord(att.name, att.mime)) {
+      hinted = true;
+    } else if (word) {
       renderWordPreview(att, body);
-    } else if (canPreview(att.mime)) {
+      hinted = true;
+    } else if (canPreview(att.mime) || plain) {
       body.innerHTML = '<iframe src="' + esc(att.url) + '" title="' + esc(att.name || '') + '"></iframe>';
+      hinted = true;
     } else {
-      body.innerHTML = '<div class="vw-none">该类型不支持在线预览<br>可点击下方「下载」或「新窗口打开」</div>';
+      body.innerHTML = '<div class="vw-none">该类型不支持在线预览<br>请点击下方「下载」后用本机软件打开</div>';
     }
-    document.getElementById('vwOpen').href = att.url;
     var dl = document.getElementById('vwDownload');
     dl.href = att.url;
     dl.setAttribute('download', att.name || 'download');
     document.getElementById('vwHint').textContent =
-      (canPreview(att.mime) || attIsExcel(att.name, att.mime) || attIsWord(att.name, att.mime))
-        ? '附件存放于服务器，跨设备、刷新后均可查看。' : '';
+      excel ? '可切换「适应宽度」看整体结构，宽表横向滚动；表头与首列默认冻结。'
+        : word ? '按原文排版还原，复杂版式（分栏、文本框、浮动图片）可能与原件略有差异。'
+          : (img || plain) ? '附件存放于服务器，跨设备、刷新后均可查看。'
+            : '该类型需下载后查看。';
+    /* 全屏只对真能渲染的类型有意义，压缩包之类隐藏 */
+    var fb = document.getElementById('vwFull');
+    fb.style.display = hinted ? '' : 'none';
+    fb.onclick = toggleViewerFull;
+    setViewerFull(false);
     openModal('maskViewer');
   }
 
