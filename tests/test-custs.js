@@ -500,6 +500,12 @@ const seedRegions = [
   check('[借用] 「编辑客户资料」仍在', id7('btnEditCust').style.display !== 'none');
   check('[借用] 底栏提示写明共享台账不能删客户', /不能删除客户/.test(id7('dFootHint').textContent), id7('dFootHint').textContent);
 
+  /* 「恢复示例数据」会整体替换归属者台账 → 借入方也拿不到这个入口 */
+  click7(id7('maskDetail').querySelector('[data-close]'));
+  click7(id7('btnImport'));
+  check('[借用] 导入弹窗隐藏「恢复示例数据」', id7('btnResetDemo').style.display === 'none', id7('btnResetDemo').style.display);
+  click7(d7.querySelector('#maskImport [data-close]'));
+
   /* 服务端兜底：绕过 UI 直接整份覆盖、少了客户 → 403 */
   const put7 = await w7.fetch('/api/ledger', {
     method: 'PUT',
@@ -522,6 +528,8 @@ const seedRegions = [
     id8('custsTableWrap').querySelectorAll('button[data-cact="del"]').length === 2,
     id8('custsTableWrap').querySelectorAll('button[data-cact="del"]').length + '');
   check('[归属] 归属者页面无共享限制提示', id8('custsHint').textContent === '', id8('custsHint').textContent);
+  click8(id8('btnImport'));
+  check('[归属] 归属者「恢复示例数据」照常可用', id8('btnResetDemo').style.display !== 'none', id8('btnResetDemo').style.display);
   w8.close();
 
   /* ================= 输出 ================= */

@@ -6257,7 +6257,11 @@
     document.getElementById('btnSaveCust').onclick = saveCustomer;
     document.getElementById('btnRemind').onclick = openRemind;
     document.getElementById('btnExport').onclick = exportReportCsv;
-    document.getElementById('btnImport').onclick = function () { openModal('maskImport'); };
+    document.getElementById('btnImport').onclick = function () {
+      /* 借入方不能删除客户 → 也不给「恢复示例数据」（会整体替换归属者的台账） */
+      document.getElementById('btnResetDemo').style.display = canDeleteCust() ? '' : 'none';
+      openModal('maskImport');
+    };
     document.getElementById('btnDoImport').onclick = doImport;
     document.getElementById('btnExportJson').onclick = exportJson;
     document.getElementById('btnExportCsv').onclick = exportReportCsv;
@@ -6269,6 +6273,7 @@
       toast('模板已下载');
     };
     document.getElementById('btnResetDemo').onclick = function () {
+      if (!canDeleteCust()) { toast('当前台账由「' + (borrowFrom() || '他人') + '」共享，不能删除客户'); return; }
       askConfirm('恢复示例数据',
         '确认恢复为初始示例数据？<br>当前录入的客户与巡检记录将被<b>全部覆盖</b>，建议先导出备份。',
         function () {
