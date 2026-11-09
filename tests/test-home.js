@@ -317,6 +317,10 @@ async function main() {
     check('看板提供线上地图密钥配置位', /window\.AMAP_KEY/.test(dash));
     check('看板地图 SDK 由密钥配置驱动加载', /webapi\.amap\.com\/maps\?v=2\.0/.test(dash) && !/<script src="https:\/\/webapi\.amap\.com\/maps/.test(dash));
     check('看板保留 TMap 门面（AMap 实现）', /buildTMapFacade/.test(dash) && /MultiMarker: MultiMarker/.test(dash));
+    /* 维保三态配色（2026-11-09 用户口径）：全部到期必须是红色，不许退回中性灰 */
+    check('CRM「全部到期」用危险色标签（tag miss）', /wb\.status === 'expired'\) wbTxt = '<span class="tag miss">全部到期<\/span>'/.test(dash));
+    check('「维保全部到期」徽标走 danger 三元组（红底红字）',
+      /\.badge\.wb-expired\{background:var\(--danger-soft\);border-color:var\(--danger-line\);color:var\(--danger-ink\);\}/.test(dash));
 
     /* ---------- 省界数据拆分：主文档瘦身 + 数据文件可长期缓存 ---------- */
     const prov = fs.readFileSync(path.join(DIR, 'assets/provinces.js'), 'utf8');

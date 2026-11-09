@@ -290,6 +290,10 @@
   .badge.wb-expired::before{background:var(--danger);}
   .badge.wb-partial::before{background:var(--warn);}
   .badge.wb-ok::before{background:var(--ok);}
+  /* 「维保全部到期」整块走危险色（2026-11-09 用户要求红色）：中性底压不住这个量级的风险，
+     红底红字红描边；方点提深一档，否则红点在红底上看不出来。 */
+  .badge.wb-expired{background:var(--danger-soft);border-color:var(--danger-line);color:var(--danger-ink);}
+  .badge.wb-expired::before{background:var(--danger-ink);}
   .mine-chips .chip{padding:0 9px;font-size:11px;}
   .cc-row2{display:flex;align-items:center;gap:6px;margin-top:4px;color:var(--ink-3);font-size:10.5px;
     font-family:var(--font-mono);letter-spacing:.01em;}
@@ -799,6 +803,8 @@
   .tag.rw{background:var(--ok-soft);color:var(--ok-ink);border-color:var(--ok-line);}
   .tag.ro{background:var(--warn-soft);color:var(--warn-ink);border-color:var(--warn-line);}
   .tag.miss{background:var(--danger-soft);color:var(--danger-ink);border-color:var(--danger-line);}
+  /* 语义化的 warn（原先只有借 .tag.admin 表达橙色，读代码时容易被误读成角色标签） */
+  .tag.warn{background:var(--warn-soft);color:var(--warn-ink);border-color:var(--warn-line);}
   .srv-type{display:inline-block;min-width:66px;text-align:center;font-size:11px;font-weight:700;
     padding:2px 8px;border-radius:6px;background:var(--panel-2);border:1px solid var(--border);}
   .uact{display:flex;gap:6px;flex-wrap:wrap;}
@@ -3874,23 +3880,19 @@
     infoWindow.setContent(infoHtmlFor(c));
     infoWindow.open();
   }
-  /* 光晕半径（2026-11-09）：按「屏幕恒定 42px」反算米数，缩放时视觉大小不变。
-     旧公式 8000×1.7^(9-z) 只在 z<9 补偿、z≥9 恒为 8km —— 在选中后的 12 级视野里等于
-     265px 半径（直径 530px），整个屏幕糊成一片蓝，指向性反而没了。 */
-  var HALO_PX = 42;
-  function haloRadius(lat) {
-    var z = 12;
-    try { z = map.getZoom(); } catch (e) {}
-    var la = (typeof lat === 'number' ? lat : 39) * Math.PI / 180;
-    var mPerPx = 156543.03392 * Math.cos(la) / Math.pow(2, z);   /* Web Mercator 每像素米数 */
-    return Math.max(8, mPerPx * HALO_PX);
-  }
+  /* 光晕半径（2026-11-09）：固定地理半径，交给地图按比例缩放——放大时圈变大、缩小时变小，
+     像地图上的一个真实范围（而不是贴在屏幕上的固定贴片）。
+     旧公式 8000×1.7^(9-z) 只在 z<9 补偿、z≥9 恒 8km，在选中后的 12 级视野里等于
+     265px 半径（直径 530px），整个屏幕糊成一片蓝；改成 1.2km 后 12 级约 40px，
+     与标记比例相称，往上放大才逐级铺开。 */
+  var HALO_M = 1200;
+  function haloRadius() { return HALO_M; }
 
   /* 点选定位时至少拉到城区级：省级视野里把一个点居中，肉眼等于没动 */
   var FOCUS_MIN_ZOOM = 12;
 
   /* force=true：无视当前视野，强制把该客户居中（左侧列表点选用）。
-     居中 / 缩放放在画高亮环之前，haloRadius() 才能按新的缩放级别算半径。 */
+     居中 / 缩放放在画高亮环之前：先落视野再画环，避免在旧视野里闪一下。 */
   function focusOn(id, force) {
     if (!mapReady) return;
     var c = DB.customers.filter(function (x) { return x.id === id; })[0];
@@ -3907,7 +3909,7 @@
     }
     focusLayer.setGeometries([{
       id: 'focus', styleId: 'halo',
-      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius(c.lat)
+      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius()
     }]);
     showInfoFor(c);
   }
@@ -3920,7 +3922,7 @@
     hoverId = id;
     focusLayer.setGeometries([{
       id: 'focus', styleId: 'halo',
-      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius(c.lat)
+      center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius()
     }]);
     showInfoFor(c);
     if (custLabelLayer) {
@@ -4713,7 +4715,7 @@
           : w2.status === 'partial' ? '部分到期'
             : w2.status === 'ok' ? '未到期'
               : (pj.error ? '查询失败' : '无服务时间数据');
-        var cls = w2.status === 'expired' ? 'disabled' : (w2.status === 'ok' ? 'active' : 'user');
+        var cls = w2.status === 'expired' ? 'miss' : (w2.status === 'ok' ? 'active' : 'warn');
         return '<span class="tag ' + cls + '" style="margin:0 5px 4px 0;">' +
           esc(pj.name || '—') + '：' + esc(lbl) + '</span>';
       }).join('') : '';
@@ -4723,7 +4725,7 @@
         : '';
       document.getElementById('dCrmWarranty').innerHTML =
         (wb
-          ? '<span class="tag ' + (wb.cls === 'expired' ? 'disabled' : (wb.cls === 'partial' ? 'user' : 'active')) + '">维保：' + esc(wb.text) + '</span>'
+          ? '<span class="tag ' + (wb.cls === 'expired' ? 'miss' : (wb.cls === 'partial' ? 'warn' : 'active')) + '">维保：' + esc(wb.text) + '</span>'
           : '<span class="sub2">维保状态：无服务时间数据</span>') +
         (projChips ? '<div class="sub2" style="margin-top:6px;">按项目：' + projChips + '</div>' : '') + noDataTxt;
       crmTech.style.display = 'block';
@@ -7066,8 +7068,8 @@
         var wb = it.warranty;
         var wbTxt = '';
         if (it.status === 'ok') {
-          if (wb && wb.status === 'expired') wbTxt = '<span class="tag disabled">全部到期</span>';
-          else if (wb && wb.status === 'partial') wbTxt = '<span class="tag user">部分到期</span>';
+          if (wb && wb.status === 'expired') wbTxt = '<span class="tag miss">全部到期</span>';
+          else if (wb && wb.status === 'partial') wbTxt = '<span class="tag warn">部分到期</span>';
           else if (wb) wbTxt = '<span class="tag active">未到期</span>';
         }
         var stTag = it.status === 'ok'
