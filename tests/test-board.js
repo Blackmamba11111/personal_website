@@ -222,6 +222,43 @@ setTimeout(() => {
   fire(id('quarterSel'), 'change');
   check('切到 2026Q3 统计刷新', id('stOk').textContent !== '0', '已巡检 ' + id('stOk').textContent);
 
+  // ============ 总览页（2026-11-09 重设计新增） ============
+  click(d.querySelector('#navSeg button[data-nav="overview"]'));
+  check('总览页打开', id('overviewView').classList.contains('on'));
+  check('顶栏分段切到「总览」', d.querySelector('#navSeg button[data-nav="overview"]').classList.contains('on'));
+  check('总览 KPI 共 4 张', d.querySelectorAll('#ovKpis .ov-kpi').length === 4,
+    d.querySelectorAll('#ovKpis .ov-kpi').length + ' 张');
+  check('总览客户总数与看板一致', d.querySelector('#ovKpis .k-brand .val').textContent === '14家',
+    d.querySelector('#ovKpis .k-brand .val').textContent);
+  check('达标率卡带三段构成条', d.querySelectorAll('#ovKpis .k-ok .subbar i').length === 3);
+  check('区域覆盖按区域分行', d.querySelectorAll('#ovRegions .ov-r-row').length === 3,
+    d.querySelectorAll('#ovRegions .ov-r-row').length + ' 行');
+  check('区域行含 达标/总数 · 百分比', /\d+\/\d+ · \d+%/.test(
+    (d.querySelector('#ovRegions .ov-r-num') || {}).textContent || ''));
+  check('待办区已渲染', id('ovTodo').children.length > 0);
+  check('最近巡检最多 8 条', d.querySelectorAll('#ovRecent .ov-rec').length <= 8,
+    d.querySelectorAll('#ovRecent .ov-rec').length + ' 条');
+
+  id('ovQuarter').value = '2026Q3';
+  fire(id('ovQuarter'), 'change');
+  check('总览切季度同步看板下拉', id('quarterSel').value === '2026Q3', id('quarterSel').value);
+
+  const firstTodo = d.querySelector('#ovTodo .ov-todo-item');
+  const todoName = firstTodo ? firstTodo.querySelector('.ov-t-name').textContent : '';
+  click(firstTodo);
+  check('待办点击后打开客户详情', id('maskDetail').classList.contains('on'));
+  check('详情客户名与待办一致', id('dName').textContent === todoName, todoName);
+  check('详情分段导航 4 项', d.querySelectorAll('#dNav button').length === 4,
+    d.querySelectorAll('#dNav button').length + ' 项');
+  click(d.querySelector('#dNav button[data-dnav="dTimeline"]'));
+  check('点「历史记录」后该段高亮',
+    d.querySelector('#dNav button[data-dnav="dTimeline"]').classList.contains('on'));
+  click(d.querySelector('#maskDetail [data-close="maskDetail"]'));
+
+  click(id('btnOverviewBack'));
+  check('返回看板后总览关闭', !id('overviewView').classList.contains('on'));
+  check('顶栏分段切回「看板」', d.querySelector('#navSeg button[data-nav="board"]').classList.contains('on'));
+
   // ============ 输出 ============
   const pass = results.filter(r => r[0] === 'PASS').length;
   const fail = results.filter(r => r[0] === 'FAIL');
