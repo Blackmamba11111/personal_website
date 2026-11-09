@@ -1405,10 +1405,26 @@ async function handleApi(req, res, url) {
       if (!exists) return bad(res, '目标账号不存在', 404);
     }
     const newData = sanitizeLedger(body.data);
+    /* 借入方（share_from 指向他人 = 引用别人的数据）不得删除客户。
+       台账是整份覆盖式保存，服务端看不到「删除动作」，只能比对客户 id：
+       旧数据里有、新数据里没有 → 视为删除请求，整份拒绝（个人台账是自己的数据，不受限）。 */
+    const borrowFrom = isAdmin ? '' : String(me.shareFrom || me.share_from || '');
+    let oldSnap = null;
+    if (borrowFrom && !wantMine) {
+      oldSnap = readLedger(scope);
+      const newIds = {};
+      (newData.customers || []).forEach(function (c) { if (c && c.id) newIds[c.id] = 1; });
+      const gone = ((oldSnap && oldSnap.customers) || []).filter(function (c) {
+        return c && c.id && !newIds[c.id];
+      });
+      if (gone.length) {
+        return bad(res, '当前台账由他人共享，不能删除客户（' + (gone[0].name || '未命名') + '）。', 403);
+      }
+    }
     /* 敏感字段隐藏的账号：已存在客户的 contact/phone 回填库内原值，
        防止前端把 **** 占位（或清空值）写回破坏数据；新建客户占位值不落库 */
     if (me.hideSensitive) {
-      const oldD = readLedger(scope, wantMine);
+      const oldD = oldSnap || readLedger(scope, wantMine);
       const om = {};
       ((oldD && oldD.customers) || []).forEach(function (c) { if (c && c.id) om[c.id] = c; });
       const stripMask = function (v) { return /^\*{2,}$/.test(String(v == null ? '' : v).trim()) ? '' : v; };

@@ -455,6 +455,75 @@ const seedRegions = [
   check('[去重] 数据范围不含借用共享数据的 bob', scopeVals6.indexOf('bob') < 0, scopeVals6.join(','));
   w6.close();
 
+  /* ================= 七、借入方（引用他人数据）不能删除客户 ================= */
+  const borrowSeed = {
+    regions: seedRegions,
+    customers: [
+      { id: 'b1', name: '借用客户一', regionId: 'r-bj', province: '北京', city: '', addr: '', lng: 116.4, lat: 39.9, freq: 'y4', contact: '', phone: '', note: '' },
+      { id: 'b2', name: '借用客户二', regionId: 'r-hb', province: '河北', city: '', addr: '', lng: 115.7, lat: 37.7, freq: 'y4', contact: '', phone: '', note: '' }
+    ],
+    visits: []
+  };
+  const fx7 = {
+    version: 1,
+    users: [
+      mkUser({ username: 'admin', name: '超级管理员', role: 'admin', password: 'admin888' }),
+      mkUser({ username: 'owner', name: '台账归属者', password: 'owner888' }),
+      Object.assign(mkUser({ username: 'borrower', name: '借入者', password: 'borrow88' }), { shareFrom: 'owner' })
+    ]
+  };
+  const dom7 = makeDom({ errors, sessionUser: 'borrower', fixture: fx7, data: { owner: JSON.parse(JSON.stringify(borrowSeed)) } });
+  const w7 = dom7.window, d7 = w7.document;
+  const id7 = x => d7.getElementById(x);
+  const click7 = el => el && el.dispatchEvent(new w7.MouseEvent('click', { bubbles: true, cancelable: true }));
+  const fire7 = (el, t) => el.dispatchEvent(new w7.Event(t, { bubbles: true }));
+  const rows7 = () => id7('custsTableWrap').querySelectorAll('table.custs tbody tr');
+
+  await tick(80);
+  click7(id7('btnCusts'));
+  check('[借用] 借入方仍能看到共享台账的客户（2 家）', rows7().length === 2, rows7().length + '');
+  check('[借用] 行内没有「删除」按钮，编辑仍在',
+    id7('custsTableWrap').querySelectorAll('button[data-cact="del"]').length === 0 &&
+    id7('custsTableWrap').querySelectorAll('button[data-cact="edit"]').length === 2);
+  check('[借用] 页面提示说明来源与限制',
+    /共享/.test(id7('custsHint').textContent) && /不能删除客户/.test(id7('custsHint').textContent),
+    id7('custsHint').textContent);
+
+  const ck7 = id7('custsTableWrap').querySelector('input[data-chkid]');
+  ck7.checked = true; fire7(ck7, 'change');
+  check('[借用] 勾选客户后「删除选中」仍不出现', id7('btnCustsBatchDel').style.display === 'none',
+    id7('btnCustsBatchDel').style.display);
+
+  click7(d7.querySelector('#custList .card-cust'));
+  check('[借用] 详情仍可打开（可编辑、可登记巡检）', id7('maskDetail').classList.contains('on'));
+  check('[借用] 详情「⋯」删除入口整组隐藏', id7('dmoreWrap').style.display === 'none', id7('dmoreWrap').style.display);
+  check('[借用] 「编辑客户资料」仍在', id7('btnEditCust').style.display !== 'none');
+  check('[借用] 底栏提示写明共享台账不能删客户', /不能删除客户/.test(id7('dFootHint').textContent), id7('dFootHint').textContent);
+
+  /* 服务端兜底：绕过 UI 直接整份覆盖、少了客户 → 403 */
+  const put7 = await w7.fetch('/api/ledger', {
+    method: 'PUT',
+    body: JSON.stringify({ scope: 'borrower', data: { regions: [], customers: [borrowSeed.customers[1]], visits: [] } }),
+    headers: { 'content-type': 'application/json', authorization: 'Bearer test-token' }
+  });
+  check('[借用] 绕过 UI 少写一个客户被服务端拒绝（403）', put7.status === 403, String(put7.status));
+  check('[借用] 被拒后台账数据未被改动',
+    (w7.__SRV__.ledgers.owner.customers || []).length === 2, (w7.__SRV__.ledgers.owner.customers || []).length + '');
+  w7.close();
+
+  /* 台账归属者本人：删除入口照常 */
+  const dom8 = makeDom({ errors, sessionUser: 'owner', fixture: fx7, data: { owner: JSON.parse(JSON.stringify(borrowSeed)) } });
+  const w8 = dom8.window, d8 = w8.document;
+  const id8 = x => d8.getElementById(x);
+  const click8 = el => el && el.dispatchEvent(new w8.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await tick(80);
+  click8(id8('btnCusts'));
+  check('[归属] 台账归属者行内仍有「删除」按钮',
+    id8('custsTableWrap').querySelectorAll('button[data-cact="del"]').length === 2,
+    id8('custsTableWrap').querySelectorAll('button[data-cact="del"]').length + '');
+  check('[归属] 归属者页面无共享限制提示', id8('custsHint').textContent === '', id8('custsHint').textContent);
+  w8.close();
+
   /* ================= 输出 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));

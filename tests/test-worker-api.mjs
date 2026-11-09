@@ -179,6 +179,19 @@ check('日志记录 actor 与字段级明细', lg.some(l => l.actor === 'member2
 r = await api('/logs?username=viewer', {}, mk);
 check('成员不能看他人日志', r.status === 403, JSON.stringify(r));
 
+/* 8.1 借入方（引用他人数据）不得删除客户：整份覆盖保存时按客户 id 比对 */
+const keepCust = ownerData.customers[0];
+r = await api('/ledger', { method: 'PUT', body: { scope: 'member2', data: { regions: ownerData.regions, customers: [], visits: [] } } }, mk);
+check('借入方清空客户被拒 403', r.status === 403 && /不能删除客户/.test(r.error), JSON.stringify(r));
+r = await api('/ledger', { method: 'PUT', body: { scope: 'member2', data: { regions: ownerData.regions, customers: [keepCust, { id: 'c2', name: '客户乙' }], visits: [] } } }, mk);
+check('借入方新增客户仍可写（只拦删除不拦新增）', r.ok === true, JSON.stringify(r));
+r = await api('/ledger', { method: 'PUT', body: { scope: 'member2', data: { regions: ownerData.regions, customers: [{ id: 'c2', name: '客户乙' }], visits: [] } } }, mk);
+check('借入方删掉其中一个客户被拒 403 并点出客户名', r.status === 403 && /客户甲/.test(r.error), JSON.stringify(r));
+r = await api('/ledger', { method: 'PUT', body: { scope: 'member2', data: { regions: ownerData.regions, customers: [keepCust, { id: 'c2', name: '客户乙' }], visits: [] } } }, mk);
+check('借入方原样回写（客户未减少）不被误拦', r.ok === true, JSON.stringify(r));
+r = await api('/ledger', { method: 'PUT', body: { scope: 'sharer', data: { regions: ownerData.regions, customers: [keepCust], visits: [] } } }, tk);
+check('台账归属者/超管删除客户不受限', r.ok === true, JSON.stringify(r));
+
 /* 删除归属者 → 数据/日志/成员转移给最早成员 */
 r = await api('/users/sharer', { method: 'DELETE' }, tk);
 check('删除归属者成功', r.ok === true, JSON.stringify(r));
@@ -371,6 +384,12 @@ check('个人台账落在 <用户>::mine 键上', !!r.data.ledgers['multi1::mine
   r.data.ledgers['multi1::mine'].customers[0].name === '承德银行', Object.keys(r.data.ledgers).join(','));check('公共台账未被个人台账污染（仍只有客户甲）',
   r.data.ledgers.multi1.customers.length === 1 && r.data.ledgers.multi1.customers[0].name === '客户甲',
   JSON.stringify(r.data.ledgers.multi1.customers.map(c => c.name)));
+
+/* 借入方的「我的台账」是自己的数据 → 删客户不受限（只有公共台账禁止删） */
+r = await api('/ledger', { method: 'PUT', body: { mine: true, data: { regions: [], customers: [], visits: [] } } }, qk);
+check('借入方可删除「我的台账」里的客户（个人数据不受限）', r.ok === true, JSON.stringify(r));
+r = await api('/ledger', { method: 'PUT', body: { mine: true, data: mineData } }, qk);
+check('个人台账数据写回成功', r.ok === true, JSON.stringify(r));
 
 /* 附件归属「人」：有多台账的只读账号也要能给自己那份台账配图 */
 r = await api('/attach', { method: 'POST', body: { name: 'p.txt', mime: 'text/plain', data: 'aGVsbG8=' } }, qk);

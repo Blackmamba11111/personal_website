@@ -439,6 +439,14 @@ function installApiStub(window, opts) {
       if (wantMine && !hasMulti(auth)) return bad('当前账号没有多台账权限', 403);
       const owner = ledgerKeyOf(scope, wantMine);
       const newData = body.data || { regions: [], customers: [], visits: [] };
+      /* 借入方（引用他人数据）不得删除客户：旧有新无即视为删除请求 */
+      if (auth.role !== 'admin' && auth.shareFrom && !wantMine) {
+        const newIds = {};
+        (newData.customers || []).forEach(c => { if (c && c.id) newIds[c.id] = 1; });
+        const gone = ((srv.ledgers[owner] && srv.ledgers[owner].customers) || [])
+          .filter(c => c && c.id && !newIds[c.id]);
+        if (gone.length) return bad('当前台账由他人共享，不能删除客户（' + (gone[0].name || '未命名') + '）。', 403);
+      }
       /* 敏感字段隐藏的账号：已存在客户的 contact/phone 回填库内原值（防 **** 写回） */
       if (auth.hideSensitive) {
         const om = {};

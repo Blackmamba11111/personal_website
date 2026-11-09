@@ -5169,6 +5169,7 @@
     /* 详情抽屉的「更多」菜单：删除这类低频且不可逆的动作收进来，避免底部误触 */
     document.getElementById('btnDelCust').onclick = function () {
       closeDetailMore();
+      if (!canDeleteCust()) { toast('当前台账由「' + (borrowFrom() || '他人') + '」共享，不能删除客户'); return; }
       askConfirm('删除客户',
         '确认删除客户「<b>' + esc(c.name) + '</b>」？<br>该客户的全部巡检记录将一并删除，操作不可恢复。',
         function () {
@@ -5181,13 +5182,16 @@
         }, '确认删除');
     };
 
-    /* 只读账号 / 汇总视图：详情只用于查看，编辑与删除入口收起（服务端与捕获阶段拦截仍然生效） */
+    /* 只读账号 / 汇总视图：详情只用于查看，编辑与删除入口收起（服务端与捕获阶段拦截仍然生效）
+       借入方（引用他人数据）：可编辑可登记，但不给删除入口；菜单里只剩「删除客户」一项，
+       因此整组 ⋯ 一起收起，避免点开空菜单 */
     var writable = canWrite() && !isReadonly();
+    var delOk = writable && canDeleteCust();
     document.getElementById('btnEditCust').style.display = writable ? '' : 'none';
-    document.getElementById('dmoreWrap').style.display = writable ? '' : 'none';
+    document.getElementById('dmoreWrap').style.display = delOk ? '' : 'none';
     document.getElementById('btnAddVisit').disabled = !writable;
     document.getElementById('dFootHint').textContent = writable
-      ? '登记后自动计入本季度巡检统计'
+      ? (delOk ? '登记后自动计入本季度巡检统计' : '共享台账：可登记巡检，不能删除客户')
       : '当前为只读视图，不能登记巡检';
     closeDetailMore();
 
@@ -6469,6 +6473,19 @@
     return AUTH.user.role === 'admin' || AUTH.user.perm !== 'ro';
   }
   function isRoUser()   { return !!AUTH.user && AUTH.user.role !== 'admin' && AUTH.user.perm === 'ro'; }
+  /* 台账是「借来的」（引用他人数据）：非超管账号被设置了「共享自某人」。
+     借入方可以查看、编辑共享台账，但**不能删除客户**（删除等于让数据归属者丢数据）；
+     自己的「我的台账」（::mine）是自己的数据，不受此限。 */
+  function borrowFrom() {
+    if (!AUTH.user || AUTH.user.role === 'admin') return '';
+    var sf = AUTH.user.shareFrom || (AUTH.ledger && AUTH.ledger.shareFrom) || '';
+    return String(sf || '');
+  }
+  function canDeleteCust() {
+    if (!canWrite()) return false;
+    if (isMine()) return true;
+    return !borrowFrom();
+  }
   function dataKeyOf(u) { return DATA_PREFIX + u; }
   function prefKeyOf()  { return PREF_KEY + '::' + (AUTH.scope || 'default'); }
   function seedData()   { return JSON.parse(JSON.stringify(SEED)); }
@@ -8377,7 +8394,8 @@
       scopeLabel + ' · 客户 ' + all + ' 家' + (rows.length !== all ? ' · 命中 ' + rows.length + ' 家' : '');
     document.getElementById('custsHint').textContent = merged
       ? '汇总视图为只读：可跨账号检索全部客户，新增 / 编辑 / 删除请先在上方「数据范围」选择具体账号。'
-      : '';
+      : (canDeleteCust() ? ''
+        : '当前台账由「' + (borrowFrom() || '他人') + '」共享，可查看与编辑，不能删除客户。');
 
     var dis = merged ? ' disabled title="汇总视图只读"' : '';
     var cols = 11 + (merged ? 1 : 0);
@@ -8410,7 +8428,9 @@
         '<td>' + esc(custsFreqLabel(c.freq)) + '</td>' +
         '<td class="op">' +
           '<button type="button" class="btn sm" data-cact="edit" data-id="' + esc(c.id) + '"' + dis + '>编辑</button>' +
-          '<button type="button" class="btn sm" data-cact="del" data-id="' + esc(c.id) + '"' + dis + ' style="color:var(--miss);border-color:#F5C9C9;">删除</button>' +
+          (canDeleteCust()
+            ? '<button type="button" class="btn sm" data-cact="del" data-id="' + esc(c.id) + '"' + dis + ' style="color:var(--miss);border-color:#F5C9C9;">删除</button>'
+            : '') +
         '</td></tr>';
     }).join('') : '<tr><td colspan="' + cols + '"><div class="custs-empty">' +
       (all ? '没有符合搜索条件的客户' : '该账号还没有客户，点击右上角「+ 新增客户」开始录入') +
@@ -8449,6 +8469,7 @@
     var c = (DB.customers || []).filter(function (x) { return x.id === id; })[0];
     if (!c) return;
     if (el.getAttribute('data-cact') === 'edit') { openCustModal(c); return; }
+    if (!canDeleteCust()) { toast('当前台账由「' + (borrowFrom() || '他人') + '」共享，不能删除客户'); return; }
     askConfirm('删除客户',
       '确认删除客户「<b>' + esc(c.name) + '</b>」？<br>该客户的全部巡检记录将一并删除，操作不可恢复。',
       function () {
@@ -8488,7 +8509,7 @@
     var n = Object.keys(CUSTS_SEL).length;
     var btn = document.getElementById('btnCustsBatchDel');
     if (btn) {
-      btn.style.display = n ? '' : 'none';
+      btn.style.display = (n && canDeleteCust()) ? '' : 'none';
       btn.textContent = '删除选中（' + n + '）';
     }
     var all = document.getElementById('custsSelAll');
@@ -8501,6 +8522,7 @@
   }
   function custsBatchDelete() {
     if (!custsGuardEdit()) return;
+    if (!canDeleteCust()) { toast('当前台账由「' + (borrowFrom() || '他人') + '」共享，不能删除客户'); return; }
     var targets = (DB.customers || []).filter(function (c) { return CUSTS_SEL[c.id]; });
     if (!targets.length) { toast('请先勾选要删除的客户'); return; }
     var names = targets.slice(0, 5).map(function (c) { return esc(c.name || '（未命名）'); }).join('、') +
