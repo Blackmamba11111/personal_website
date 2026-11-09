@@ -259,6 +259,19 @@ setTimeout(() => {
   check('返回看板后总览关闭', !id('overviewView').classList.contains('on'));
   check('顶栏分段切回「看板」', d.querySelector('#navSeg button[data-nav="board"]').classList.contains('on'));
 
+  // ============ 顶栏「更多」收纳（2026-11-09 重设计） ============
+  check('低频动作收进「更多」弹层',
+    !!d.querySelector('#morePop #btnRegions') && !!d.querySelector('#morePop #btnCusts'),
+    d.querySelectorAll('#morePop .btn').length + ' 项');
+  check('「更多」默认收起', !id('morePop').classList.contains('on'));
+  click(id('btnMore'));
+  check('点「更多」展开弹层', id('morePop').classList.contains('on'));
+  check('展开后 aria-expanded=true', id('btnMore').getAttribute('aria-expanded') === 'true');
+  click(id('btnRegions'));
+  check('从「更多」进入区域设置', id('maskRegion').classList.contains('on'));
+  check('打开后弹层自动收起', !id('morePop').classList.contains('on'));
+  click(d.querySelector('#maskRegion [data-close]'));
+
   // ============ 输出 ============
   const pass = results.filter(r => r[0] === 'PASS').length;
   const fail = results.filter(r => r[0] === 'FAIL');
