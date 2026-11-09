@@ -1265,9 +1265,10 @@ function convertToPdf(attId, srcFile) {
       throw new Error('源文件复制失败：' + (e && e.message ? e.message : ''));
     }
     const fmt = pdfFilterOf(ext);
+    /* 只用实测通过的最小参数集。多带 --nodefault / --nofileext / --norecent 之类
+       会让 soffice 以非零码退出（参数不被识别），转换本身却是好的。 */
     const args = [
-      '--headless', '--norestore', '--nolockcheck', '--nodefault', '--nofirststartwizard',
-      '--nologo', '--norecent', '--invisible',
+      '--headless', '--norestore', '--nolockcheck',
       '-env:UserInstallation=file://' + path.join(tmpDir, 'profile'),
       '--convert-to', 'pdf:' + fmt,
       '--outdir', tmpDir, tmpSrc
@@ -1279,15 +1280,19 @@ function convertToPdf(attId, srcFile) {
           const cleanup = function () {
             try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
           };
-          if (err) {
+          /* 以产物是否存在为准，而不是退出码：soffice 常带无关键告警
+             （如 javaldx 找不到 java）退出非 0，PDF 却是好的。 */
+          let buf = null;
+          try { buf = fs.readFileSync(outPdf); } catch (e) { buf = null; }
+          if (!buf || !buf.length) {
             cleanup();
-            const tail = String(stderr || '').trim().split('\n').pop() || (err && err.message) || '转换失败';
-            return reject(new Error(tail.slice(0, 300)));
-          }
-          let buf;
-          try { buf = fs.readFileSync(outPdf); } catch (e) {
-            cleanup();
-            return reject(new Error('转换未产出 PDF（该文件可能已损坏或受密码保护）'));
+            const msg = String(stderr || '')
+              .split('\n')
+              .map(function (s) { return s.trim(); })
+              .filter(function (s) { return s && !/javaldx|Java may not function/i.test(s); })
+              .pop()
+              || (err && err.message) || '转换未产出 PDF（该文件可能已损坏或受密码保护）';
+            return reject(new Error(msg.slice(0, 300)));
           }
           try {
             /* 先写临时文件再改名：避免并发读到写了一半的 PDF */
