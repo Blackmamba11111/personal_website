@@ -167,6 +167,8 @@ function installApiStub(window, opts) {
       ledger: { multi: hasMulti(u), mineKey: mineKey(u.username), shareFrom: u.shareFrom || '', sharedTo: sharedTo(u) },
       token: TOKEN,
       attachMax: 20 * 1024 * 1024,
+      /* 内网服务端会把 Office 附件转 PDF 做原样预览；公网 Worker 没有这个能力 */
+      officePreview: !!opts.officePreview,
       authServers: isAdmin ? srv.servers.map(serverView) : []
     };
   };
@@ -268,6 +270,19 @@ function installApiStub(window, opts) {
       return new Response(Buffer.from(rec.data, 'base64'), {
         status: 200,
         headers: { 'content-type': rec.mime }
+      });
+    }
+
+    /* Office 附件转 PDF（内网容器装了 LibreOffice 才有）。
+       桩不真跑转换，只按 officePreview 开关回一个占位 PDF，
+       用于验证前端「能用则切原样视图、不能用则回落本地解析」。 */
+    const mpv = /^\/preview\/([A-Za-z0-9]+)$/.exec(p);
+    if (mpv && (method === 'GET' || method === 'HEAD')) {
+      if (!opts.officePreview) return jsonRes({ ok: false, error: '该类型无需转换' }, 400);
+      if (!srv.attachments[mpv[1]]) return jsonRes({ ok: false, error: '附件已删除' }, 404);
+      return new Response(method === 'HEAD' ? null : Buffer.from('%PDF-1.4\n%%EOF\n'), {
+        status: 200,
+        headers: { 'content-type': 'application/pdf' }
       });
     }
 

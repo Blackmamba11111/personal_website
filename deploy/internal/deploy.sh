@@ -16,9 +16,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TS=$(date +%Y%m%d-%H%M)
 # 源文件 → 服务器上的文件名（auth-protocols.mjs / crm-client.mjs 是被 server.js
 # 动态加载的共享模块，必须与 server.js 同级；源文件放在 worker/ 下供两版服务端共用）
-SRC_FILES=(deploy/internal/server.js index.html inspection-dashboard.html worker/auth-protocols.mjs worker/crm-client.mjs)
-DST_FILES=(server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs)
-REMOTE_LIST="server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs"
+# Dockerfile / office-cjk.conf 决定镜像是否带 LibreOffice + 中文字体（附件转 PDF 预览），
+# 必须一起同步，否则服务器永远用旧镜像、转换功能不生效。
+SRC_FILES=(deploy/internal/server.js index.html inspection-dashboard.html worker/auth-protocols.mjs worker/crm-client.mjs deploy/internal/Dockerfile deploy/internal/office-cjk.conf)
+DST_FILES=(server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs Dockerfile office-cjk.conf)
+REMOTE_LIST="server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs Dockerfile office-cjk.conf"
 
 # --verify：只做 git ↔ 内网一致性校验，不上传、不重建
 VERIFY_ONLY=false
@@ -107,6 +109,11 @@ echo "==> 部署前校验：远程认证协议模块必须存在（RADIUS / TACA
 
 echo "==> 部署前校验：CRM 客户端模块必须存在（询盘云台账关联依赖它）"
 [ -f "$REPO_ROOT/worker/crm-client.mjs" ] || { echo '!! worker/crm-client.mjs 缺失，终止'; exit 1; }
+
+echo "==> 部署前校验：Dockerfile 必须安装 LibreOffice 与中文字体（附件原样预览依赖它）"
+grep -q 'libreoffice-writer' "$REPO_ROOT/deploy/internal/Dockerfile" || { echo '!! Dockerfile 缺少 LibreOffice，终止'; exit 1; }
+grep -q 'fonts-noto-cjk' "$REPO_ROOT/deploy/internal/Dockerfile" || { echo '!! Dockerfile 缺少中文字体，终止'; exit 1; }
+[ -f "$REPO_ROOT/deploy/internal/office-cjk.conf" ] || { echo '!! office-cjk.conf 缺失，终止'; exit 1; }
 
 echo "==> 服务器端备份到 backup/src-$TS/"
 $SSH "cd $REMOTE_DIR && mkdir -p backup/src-$TS && for f in $REMOTE_LIST; do [ -f \"\$f\" ] && cp -a \"\$f\" backup/src-$TS/; done; true" </dev/null

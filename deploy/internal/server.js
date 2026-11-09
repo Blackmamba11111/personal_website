@@ -29,6 +29,8 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const crypto = require('node:crypto');
+const os = require('node:os');
+const { execFile } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
 
 const PORT = parseInt(process.env.PORT || '8443', 10);
@@ -68,6 +70,10 @@ fs.mkdirSync(PHOTO_DIR, { recursive: true });
 /* 巡检附件（图片/文件）：同样必须落在挂载卷内 */
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+/* Office 文档转 PDF 的缓存目录：与附件同卷，重建镜像不丢；
+   源附件删除时一并清理，避免残留孤儿。 */
+const PREVIEW_DIR = path.join(DATA_DIR, 'preview');
+fs.mkdirSync(PREVIEW_DIR, { recursive: true });
 const DB_FILE = path.join(DATA_DIR, 'inspection.db');
 const db = new DatabaseSync(DB_FILE);
 db.exec('PRAGMA journal_mode = WAL');
@@ -997,6 +1003,9 @@ function bundleFor(u) {
   return {
     user: mapUser(u, srvMap), users: users, ledgers: ledgers, admin: isAdmin,
     canWrite: canWriteUser(u), attachMax: ATTACH_MAX,
+    /* 本端支持把 Office 附件转 PDF 做「原样预览」（内网容器装了 LibreOffice）。
+       公网 Worker 跑不了二进制，不返回该字段，前端据此隐藏相关入口。 */
+    officePreview: true,
     /* 当前账号的台账形态：multi=true 时前端才显示「公共 / 我的」切换 */
     ledger: {
       multi: multi,
@@ -1190,6 +1199,182 @@ function serveAttachment(req, res, row) {
   res.end(req.method === 'HEAD' ? undefined : buf);
 }
 
+/* ---------------- Office 文档转 PDF（在线预览） ----------------
+   浏览器没有 Office 渲染引擎，前端解析出来的永远只是「近似排版」。
+   要让 Word / Excel / PPT 像微信里那样「内容完整、格式不变」，只能由服务端
+   用 LibreOffice 转成 PDF，再交给浏览器自带的 PDF 阅读器渲染。
+
+   设计要点：
+   - 缓存：DATA_DIR/preview/<attId>.pdf。源附件更新（mtime 变新）才重转。
+   - 并发：LibreOffice 不支持多实例同时起，统一走串行队列。
+   - 去重：同一附件同时被多人打开，只转一次，其余等同一个 Promise。
+   - 隔离：每次转换用独立 UserInstallation 目录，避免 profile 锁冲突；
+     转换完连同临时目录一起删掉，不在磁盘留垃圾。 */
+const SOFFICE_BIN = process.env.SOFFICE_BIN || '/usr/bin/soffice';
+const PREVIEW_TIMEOUT = 90 * 1000;
+/* 这些扩展名交给 LibreOffice；图片 / PDF / 纯文本本身浏览器就能原样展示，不必转换 */
+const PDF_CONVERT_EXT = {
+  '.doc': 1, '.docx': 1, '.dot': 1, '.dotx': 1,
+  '.wps': 1, '.wpt': 1, '.rtf': 1,
+  '.xls': 1, '.xlsx': 1, '.xlt': 1, '.xltx': 1, '.et': 1, '.ett': 1,
+  '.ppt': 1, '.pptx': 1, '.pps': 1, '.ppsx': 1, '.pot': 1, '.potx': 1, '.dps': 1, '.dpt': 1,
+  '.odt': 1, '.ods': 1, '.odp': 1
+};
+
+function previewFileOf(id) { return path.join(PREVIEW_DIR, id + '.pdf'); }
+
+/* 单槽串行队列：保证同一时刻只有一个 soffice 在跑 */
+let sofficeChain = Promise.resolve();
+const previewInflight = new Map();
+
+/* 选导出过滤器：表格走 calc_pdf_Export，其余（Writer / Impress）走 writer_pdf_Export。
+   表格保持文件自身的打印设置与分页，不强行压成一页 —— 那会把字号缩到看不清。
+   宽表更适合前端的「表格视图」（可横向滚动），原样视图用于核对打印效果。 */
+function pdfFilterOf(ext) {
+  return ext === '.xls' || ext === '.xlsx' || ext === '.xlt' || ext === '.xltx' ||
+    ext === '.et' || ext === '.ett' || ext === '.ods'
+    ? 'calc_pdf_Export' : 'writer_pdf_Export';
+}
+
+/* 把 srcFile 转成 PDF，返回 PDF 文件路径（缓存命中直接返回）。 */
+function convertToPdf(attId, srcFile) {
+  const out = previewFileOf(attId);
+  let srcSt;
+  try { srcSt = fs.statSync(srcFile); } catch (e) { return Promise.reject(new Error('附件已不存在')); }
+  try {
+    const pvSt = fs.statSync(out);
+    if (pvSt.size > 0 && pvSt.mtimeMs >= srcSt.mtimeMs) return Promise.resolve(out);
+  } catch (e) { /* 没有缓存，继续转 */ }
+
+  if (previewInflight.has(attId)) return previewInflight.get(attId);
+
+  const job = sofficeChain.then(function () {
+    /* 出队后可能已被别人转好（等待期间），再查一次缓存 */
+    try {
+      const pvSt = fs.statSync(out);
+      if (pvSt.size > 0 && pvSt.mtimeMs >= srcSt.mtimeMs) return out;
+    } catch (e) {}
+    const ext = path.extname(srcFile).toLowerCase();
+    /* soffice 靠扩展名判断输入格式，临时文件名必须保留原扩展名 */
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'insp-pv-'));
+    const tmpSrc = path.join(tmpDir, 'src' + (ext || '.docx'));
+    try {
+      fs.copyFileSync(srcFile, tmpSrc);
+    } catch (e) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e2) {}
+      throw new Error('源文件复制失败：' + (e && e.message ? e.message : ''));
+    }
+    const fmt = pdfFilterOf(ext);
+    const args = [
+      '--headless', '--norestore', '--nolockcheck', '--nodefault', '--nofirststartwizard',
+      '--nologo', '--norecent', '--invisible',
+      '-env:UserInstallation=file://' + path.join(tmpDir, 'profile'),
+      '--convert-to', 'pdf:' + fmt,
+      '--outdir', tmpDir, tmpSrc
+    ];
+    return new Promise(function (resolve, reject) {
+      execFile(SOFFICE_BIN, args, { timeout: PREVIEW_TIMEOUT, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 },
+        function (err, stdout, stderr) {
+          const outPdf = path.join(tmpDir, 'src.pdf');
+          const cleanup = function () {
+            try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+          };
+          if (err) {
+            cleanup();
+            const tail = String(stderr || '').trim().split('\n').pop() || (err && err.message) || '转换失败';
+            return reject(new Error(tail.slice(0, 300)));
+          }
+          let buf;
+          try { buf = fs.readFileSync(outPdf); } catch (e) {
+            cleanup();
+            return reject(new Error('转换未产出 PDF（该文件可能已损坏或受密码保护）'));
+          }
+          try {
+            /* 先写临时文件再改名：避免并发读到写了一半的 PDF */
+            const tmpOut = out + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+            fs.writeFileSync(tmpOut, buf);
+            fs.renameSync(tmpOut, out);
+          } catch (e) {
+            cleanup();
+            return reject(new Error('预览缓存写入失败：' + (e && e.message ? e.message : '')));
+          }
+          cleanup();
+          resolve(out);
+        });
+    });
+  });
+
+  /* 队列不能因为一次失败就断掉 */
+  sofficeChain = job.then(function () {}, function () {});
+  const tracked = job.then(function (v) {
+    previewInflight.delete(attId);
+    return v;
+  }, function (e) {
+    previewInflight.delete(attId);
+    throw e;
+  });
+  previewInflight.set(attId, tracked);
+  return tracked;
+}
+
+function dropPreview(attId) {
+  try { fs.unlinkSync(previewFileOf(attId)); } catch (e) {}
+}
+
+/* 启动时清理没有对应附件的孤儿 PDF（历史上附件删除失败可能残留） */
+function sweepPreviewCache() {
+  let names = [];
+  try { names = fs.readdirSync(PREVIEW_DIR); } catch (e) { return; }
+  let removed = 0;
+  names.forEach(function (n) {
+    if (!/\.pdf$/.test(n)) return;
+    const id = n.replace(/\.pdf$/, '');
+    try {
+      const hit = db.prepare('SELECT 1 FROM attachments WHERE id = ? LIMIT 1').get(id);
+      if (!hit) { fs.unlinkSync(path.join(PREVIEW_DIR, n)); removed++; }
+    } catch (e) {}
+  });
+  if (removed) console.log('[preview] 清理孤儿预览缓存 ' + removed + ' 个');
+}
+
+/* 附件预览：把 Office 文档转成 PDF 返回，供前端 iframe 内嵌。
+   鉴权口径与 /api/attach/:id 一致 —— 附件 id 不可猜，公开可读。 */
+function servePreview(req, res, row) {
+  const src = findAttachFile(row);
+  if (!src) return sendJson(res, { ok: false, error: '附件已不存在' }, 404);
+  const ext = path.extname(src).toLowerCase();
+  if (!PDF_CONVERT_EXT[ext]) {
+    return sendJson(res, { ok: false, error: '该类型无需转换' }, 400);
+  }
+  const started = Date.now();
+  convertToPdf(row.id, src).then(function (pdfFile) {
+    let st;
+    try { st = fs.statSync(pdfFile); } catch (e) { return sendJson(res, { ok: false, error: '预览文件不存在' }, 404); }
+    const etag = 'W/"pv-' + row.id + '-' + st.size.toString(16) + '"';
+    const headers = {
+      'content-type': 'application/pdf',
+      'cache-control': 'private, max-age=3600',
+      'etag': etag,
+      'x-content-type-options': 'nosniff',
+      'content-disposition': 'inline; filename="preview.pdf"'
+    };
+    const inm = req.headers['if-none-match'];
+    if (inm && inm.split(',').some(function (v) { return v.trim() === etag; })) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    let buf;
+    try { buf = fs.readFileSync(pdfFile); } catch (e) { return sendJson(res, { ok: false, error: '预览读取失败' }, 500); }
+    headers['content-length'] = buf.length;
+    console.log('[preview] ' + row.name + ' → PDF ' + Math.round(buf.length / 1024) + 'KB / ' + (Date.now() - started) + 'ms');
+    res.writeHead(200, headers);
+    res.end(req.method === 'HEAD' ? undefined : buf);
+  }).catch(function (e) {
+    console.warn('[preview] 转换失败 ' + row.name + '：' + (e && e.message));
+    sendJson(res, { ok: false, error: '预览转换失败：' + ((e && e.message) || '未知错误') }, 500);
+  });
+}
+
 /* ---------------- API 路由 ---------------- */
 async function handleApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, '') || '/api';
@@ -1306,6 +1491,14 @@ async function handleApi(req, res, url) {
     return serveAttachment(req, res, row);
   }
 
+  /* --- Office 附件转 PDF 预览（同上，公开、按不可猜 id） --- */
+  const mp = /^\/api\/preview\/([A-Za-z0-9]{8,40})$/.exec(p);
+  if (mp && (method === 'GET' || method === 'HEAD')) {
+    const row = db.prepare('SELECT id, name, mime, size, ext FROM attachments WHERE id = ?').get(mp[1]);
+    if (!row) return sendJson(res, { ok: false, error: '附件已删除' }, 404);
+    return servePreview(req, res, row);
+  }
+
   /* --- 以下均需登录 --- */
   const me = currentUser(req);
   if (!me) return bad(res, '登录已失效，请重新登录。', 401);
@@ -1384,6 +1577,7 @@ async function handleApi(req, res, url) {
     if (!isAdmin && row.owner !== me.username) return bad(res, '无权删除该附件', 403);
     const fp = findAttachFile(row);
     if (fp) { try { fs.unlinkSync(fp); } catch (e) {} }
+    dropPreview(row.id);
     db.prepare('DELETE FROM attachments WHERE id = ?').run(row.id);
     return ok(res, { removed: true });
   }
@@ -1842,6 +2036,7 @@ async function handleApi(req, res, url) {
         atts.forEach(function (a) {
           const fp = findAttachFile(a);
           if (fp) { try { fs.unlinkSync(fp); } catch (e) {} }
+          dropPreview(a.id);
         });
         db.prepare('DELETE FROM attachments WHERE owner = ?').run(target);
         db.prepare('DELETE FROM sessions WHERE username = ?').run(target);
@@ -2249,6 +2444,9 @@ if (REDIRECT_PORT) {
     console.log('HTTP 跳转已启用: http://0.0.0.0:' + REDIRECT_PORT + ' → https://…' + suffix);
   });
 }
+
+/* 启动 3 秒后清理孤儿预览缓存（延后执行，不拖慢启动） */
+setTimeout(sweepPreviewCache, 3000).unref();
 
 function shutdown(sig) {
   console.log('[shutdown] 收到 ' + sig + '，正在关闭…');

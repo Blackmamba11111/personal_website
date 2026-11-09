@@ -206,6 +206,51 @@ const store = () => JSON.parse(w.localStorage.getItem(dataKey('demo')));
       })());
   }
 
+  /* ---------- 10) 原样视图（服务端 Office → PDF）：内网专属能力 ---------- */
+  {
+    const fsn = require('fs'), pn = require('path');
+    const srcHtml = fsn.readFileSync(pn.join(__dirname, '..', 'inspection-dashboard.html'), 'utf8');
+    check('[原样] Excel 工具条有「原样视图」入口（仅在服务端能转 PDF 时）',
+      /data-tool="raw"/.test(srcHtml) && /AUTH\.officePreview/.test(srcHtml));
+    check('[原样] 预览分派含演示文稿分支', /renderPptPreview\s*\(/.test(srcHtml));
+    check('[原样] PDF 视图用 iframe.vw-pdf 承载浏览器阅读器', /iframe class="vw-pdf"/.test(srcHtml));
+    check('[原样] 服务端不支持时直接短路，不发无效请求',
+      /if \(!AUTH\.officePreview \|\| !att\.id \|\| !attCanPdf\(att\)\)/.test(srcHtml));
+    check('[原样] 服务端提供 /api/preview/:id 路由', (function () {
+      const s = fsn.readFileSync(pn.join(__dirname, '..', 'deploy', 'internal', 'server.js'), 'utf8');
+      return /api\\\/preview\\\//.test(s) && /function servePreview/.test(s) && /soffice/.test(s);
+    })());
+
+    const dom2 = makeDom({ officePreview: true });
+    const w2 = dom2.window, d2 = w2.document;
+    const id2 = x => d2.getElementById(x);
+    const click2 = el => el && el.dispatchEvent(new w2.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await tick(240);
+    click2(d2.querySelector('#custList .card-cust'));
+    check('[原样] 客户详情已打开', id2('maskDetail').classList.contains('on'));
+    id2('dVisitBy').value = '潘超';
+    /* 内容不必是真 docx：officePreview=true 时前端不解析文件，只探测服务端能否出 PDF */
+    const docx = new w2.File([new Uint8Array([0x50, 0x4B, 0x03, 0x04, 0, 0, 0, 0])], '巡检方案.docx',
+      { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    w2.__visitAtts.add([docx]);
+    await tick(80);
+    click2(id2('btnAddVisit'));
+    await tick(200);
+    const chip2 = Array.from(d2.querySelectorAll('#dTimeline .tl-att'))
+      .filter(el => /巡检方案\.docx/.test(el.textContent))[0];
+    check('[原样] Word 附件已挂到时间线', !!chip2);
+    click2(chip2);
+    await tick(200);
+    const pdfFrame = d2.querySelector('#vwBody iframe.vw-pdf');
+    check('[原样] 支持转 PDF 时切到原样视图（iframe.vw-pdf）', !!pdfFrame);
+    check('[原样] iframe 指向 /api/preview',
+      /\/api\/preview\//.test((pdfFrame && pdfFrame.getAttribute('src')) || ''),
+      (pdfFrame && pdfFrame.getAttribute('src')) || '');
+    check('[原样] 提示说明按原件版式渲染', /原件版式/.test(id2('vwHint').textContent), id2('vwHint').textContent);
+    check('[原样] 运行期无 JS 错误', !dom2.__errors || dom2.__errors.length === 0,
+      (dom2.__errors || []).join(' | ').slice(0, 160));
+  }
+
   check('运行期无 JS 错误', !dom.__errors || dom.__errors.length === 0,
     (dom.__errors || []).join(' | ').slice(0, 200));
 

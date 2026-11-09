@@ -607,10 +607,14 @@
   #vwBody img{max-width:100%;max-height:var(--vw-h);object-fit:contain;border-radius:var(--r-sm);
     background:#fff;display:block;margin:0 auto;}
   #vwBody iframe{width:100%;height:var(--vw-h);border:0;background:#fff;display:block;}
+  /* PDF 原样视图：iframe 撑满面板。这里装的是浏览器自带的 PDF 阅读器，
+     缩放、翻页、搜索、全屏都由它负责，版面与原件完全一致。 */
+  #vwBody > iframe.vw-pdf{flex:1 1 auto;min-height:0;height:auto;align-self:stretch;}
+  .modal.viewer.full #vwBody > iframe.vw-pdf{height:100%;}
   #vwBody .vw-none{font-size:12.5px;color:var(--ink-3);padding:26px;text-align:center;line-height:1.8;}
   /* Excel 预览：工具栏（工作表页签 + 视图开关）常驻在表格上方 */
   #vwBody .vw-bar{display:flex;align-items:center;gap:9px;padding:7px 10px;
-    background:var(--surface);border-bottom:1px solid var(--line);}
+    background:var(--surface);border-bottom:1px solid var(--line);flex:0 0 auto;}
   #vwBody .vw-tabs{display:flex;gap:4px;flex-wrap:wrap;flex:1 1 auto;min-width:0;}
   #vwBody .vw-tab{border:1px solid var(--line);background:var(--surface);border-radius:var(--r-xs);
     padding:3px 10px;font-size:11px;color:var(--ink-2);cursor:pointer;font-family:var(--font-mono);
@@ -4392,6 +4396,30 @@
     return e === 'docx' || e === 'doc' || e === 'wps' || e === 'wpt' || e === 'rtf'
       || /wordprocessingml\.document|msword|ms-works/i.test(m);
   }
+  function attIsPpt(name, mime) {
+    var m = String(mime || ''), e = attExt(name);
+    return e === 'ppt' || e === 'pptx' || e === 'pps' || e === 'ppsx' || e === 'pot' || e === 'potx'
+      || /presentationml|ms-powerpoint/i.test(m);
+  }
+  /* 能交给服务端 LibreOffice 转 PDF 的类型。内网服务器装了 LibreOffice，
+     公网 Worker 跑不了二进制 → 会回 404，前端自动回落到本地解析。 */
+  function attPdfUrl(att) { return '/api/preview/' + encodeURIComponent(att.id || ''); }
+  function attCanPdf(att) {
+    var e = attExt(att.name);
+    return attIsWord(att.name, att.mime) || attIsExcel(att.name, att.mime) || attIsPpt(att.name, att.mime)
+      || e === 'odt' || e === 'ods' || e === 'odp' || e === 'dot' || e === 'dotx'
+      || e === 'xlt' || e === 'xltx' || e === 'et' || e === 'ett' || e === 'dps' || e === 'dpt';
+  }
+  /* 探测服务端能否提供原样 PDF：走 HEAD（服务端只回头不传体，
+     第一次会顺带触发转换，之后命中缓存秒回）。
+     服务端在登录包里给了 officePreview=false（公网 Worker）时不发请求，直接走本地解析。 */
+  function probePdf(att) {
+    if (!AUTH.officePreview || !att.id || !attCanPdf(att)) return Promise.resolve('');
+    var url = attPdfUrl(att);
+    return fetch(url, { method: 'HEAD' }).then(function (r) {
+      return r.ok && /pdf/i.test(r.headers.get('content-type') || '') ? url : '';
+    }).catch(function () { return ''; });
+  }
   /* 预览组件延迟加载：只有真正预览 Excel / Word 时才拉取（xlsx ≈ 950KB、mammoth ≈ 630KB） */
   var VW_SEQ = 0;
   var ATT_VENDOR = {
@@ -4421,6 +4449,27 @@
   function vwFail(seq, body, e) {
     if (vwActive(seq)) body.innerHTML = '<div class="vw-none">' +
       esc((e && e.message) || '预览失败') + '<br>可点击下方「下载」查看</div>';
+  }
+  /* ---------------- 原样视图（服务端转 PDF） ----------------
+     这才是「跟微信里看附件一样」的效果：服务端用 LibreOffice 把文档转成 PDF，
+     前端用浏览器自带的 PDF 阅读器打开，版式与原件完全一致，
+     缩放 / 翻页 / 搜索 / 全屏都由阅读器负责。
+
+     onFail 在两种情况下被调用，由调用方回落到本地解析：
+       1. 公网（Cloudflare Worker）跑不了二进制，/api/preview 直接 404；
+       2. 文件本身转不出来（加密文档、损坏、字体缺失导致的异常）。 */
+  function renderPdfPreview(att, body, hint, onFail) {
+    var seq = ++VW_SEQ;
+    body.className = '';
+    body.innerHTML = '<div class="vw-none">正在按原样渲染…<br>首次打开需要转换，请稍候</div>';
+    probePdf(att).then(function (url) {
+      if (!vwActive(seq)) return;
+      if (!url) { onFail(); return; }
+      body.innerHTML = '<iframe class="vw-pdf" src="' + esc(url) +
+        '#view=FitH&pagemode=none" title="' + esc(att.name || '附件') + '"></iframe>';
+      var h = document.getElementById('vwHint');
+      if (h && hint) h.textContent = hint;
+    });
   }
   /* ---------------- Excel 预览渲染器 ----------------
      sheet_to_html 只输出「值 + 合并」，列宽 / 行高 / 数字格式全丢，宽表被压成等宽。
@@ -4546,6 +4595,10 @@
                 '<button type="button" class="vw-tool' + (freeze ? ' on' : '') + '" data-tool="freeze" ' +
                   'title="滚动时表头与首列保持可见"' + (canFreeze ? '' : ' disabled') + '>冻结首行</button>' +
                 '<button type="button" class="vw-tool" data-tool="copy" title="把当前工作表复制成可粘贴进 Excel 的文本">复制</button>' +
+                (AUTH.officePreview
+                  ? '<button type="button" class="vw-tool" data-tool="raw" ' +
+                    'title="按原始排版显示：保留字体、边框、背景色与打印分页">原样视图</button>'
+                  : '') +
               '</div>' +
             '</div>' +
             '<div class="vw-scroll"><div class="vw-sheet' + (freeze ? ' freeze-y freeze-x' : '') + '">' +
@@ -4594,10 +4647,35 @@
               } catch (e) { done(false); }
             }
           };
+          var rawB = body.querySelector('[data-tool="raw"]');
+          if (rawB) rawB.onclick = function () { renderExcelRaw(att, body, draw); };
         };
         draw();
       })
       .catch(function (e) { vwFail(seq, body, e); });
+  }
+  /* Excel 原样视图：服务端转 PDF，保留字体、边框、背景色与打印分页。
+     宽表在这里会按打印区域被切成几页 —— 想看全部数据用「表格视图」，
+     这一视图用于核对原件排版与打印效果。 */
+  function renderExcelRaw(att, body, back) {
+    var seq = ++VW_SEQ;
+    body.className = '';
+    body.innerHTML = '<div class="vw-none">正在按原样渲染…<br>首次打开需要转换，请稍候</div>';
+    probePdf(att).then(function (url) {
+      if (!vwActive(seq)) return;
+      if (!url) { toast('当前环境不支持原样视图'); if (back) back(); return; }
+      body.innerHTML =
+        '<div class="vw-bar"><div class="vw-tabs">' +
+          '<span class="vw-tab on" style="cursor:default;">原样视图</span>' +
+        '</div><div class="vw-tools">' +
+          '<button type="button" class="vw-tool" data-tool="back">表格视图</button>' +
+        '</div></div>' +
+        '<iframe class="vw-pdf" src="' + esc(url) + '#view=FitH&pagemode=none" title="' +
+          esc(att.name || '附件') + '"></iframe>';
+      body.querySelector('[data-tool="back"]').onclick = function () { if (back) back(); };
+      var h = document.getElementById('vwHint');
+      if (h) h.textContent = '原样视图：保留字体、边框与背景色；宽表按打印区域分页，看全部数据请切回「表格视图」。';
+    });
   }
   /* Word 预览：先按文件头判断真实格式，再决定用哪套解析器。
      PK 开头 = OOXML（docx，含被改名成 .doc/.wps 的），交给 mammoth；
@@ -4609,9 +4687,19 @@
     return 'other';
   }
   function renderWordPreview(att, body) {
+    /* 优先原样渲染；拿不到 PDF（公网 / 转换失败）再退回本地解析 */
+    renderPdfPreview(att, body,
+      '按原件版式渲染，可缩放、翻页、搜索；需要留档请点「下载」。',
+      function () { renderWordLocal(att, body); });
+  }
+  /* 本地解析兜底：docx 交给 mammoth，doc/wps 交给内置 doc97 解析器。
+     只能还原「内容与大致结构」，分栏 / 文本框 / 页眉页脚会丢失 —— 所以只作备选。 */
+  function renderWordLocal(att, body) {
     var seq = ++VW_SEQ;
     body.className = '';
     body.innerHTML = '<div class="vw-none">正在加载文档预览组件…</div>';
+    var h = document.getElementById('vwHint');
+    if (h) h.textContent = '本地解析预览：内容完整，复杂版式（分栏、文本框、页眉页脚）可能与原件有差异。';
     attBytes(att.url).then(function (ab) {
       if (!vwActive(seq)) return;
       var u8 = new Uint8Array(ab);
@@ -4643,6 +4731,19 @@
           body.innerHTML = showWarn(out.warn) + '<div class="vw-doc">' + (out.html || '<p>（空白文档）</p>') + '</div>';
         });
     }).catch(function (e) { vwFail(seq, body, e); });
+  }
+  /* PPT 预览：只有「原样视图」这一条路。
+     前端没有可用的演示文稿渲染引擎，纯文本提取出来的东西没有可读性，
+     所以服务端转不出 PDF 时直接给下载提示，不做好看不了的劣质兜底。 */
+  function renderPptPreview(att, body) {
+    renderPdfPreview(att, body, '按原件版式渲染，可缩放、翻页；需要留档请点「下载」。',
+      function () {
+        body.className = '';
+        body.innerHTML = '<div class="vw-none">当前环境无法在线渲染演示文稿' +
+          '<br>请点击下方「下载」后用 PowerPoint / WPS 打开</div>';
+        var h = document.getElementById('vwHint');
+        if (h) h.textContent = '演示文稿需在内网访问才能按原样预览。';
+      });
   }
 
   function renderPendingAtts() {
@@ -4805,6 +4906,7 @@
     var img = isImgMime(att.mime);
     var excel = attIsExcel(att.name, att.mime);
     var word = attIsWord(att.name, att.mime);
+    var ppt = attIsPpt(att.name, att.mime);
     var plain = /^text\/(plain|csv)/.test(att.mime || '') || /\.(txt|csv|log)$/i.test(att.name || '');
     var hinted = false;
     if (img) {
@@ -4817,6 +4919,9 @@
     } else if (word) {
       renderWordPreview(att, body);
       hinted = true;
+    } else if (ppt) {
+      renderPptPreview(att, body);
+      hinted = true;
     } else if (canPreview(att.mime) || plain) {
       body.innerHTML = '<iframe src="' + esc(att.url) + '" title="' + esc(att.name || '') + '"></iframe>';
       hinted = true;
@@ -4828,9 +4933,10 @@
     dl.setAttribute('download', att.name || 'download');
     document.getElementById('vwHint').textContent =
       excel ? '可切换「适应宽度」看整体结构，宽表横向滚动；表头与首列默认冻结。'
-        : word ? '按原文排版还原，复杂版式（分栏、文本框、浮动图片）可能与原件略有差异。'
-          : (img || plain) ? '附件存放于服务器，跨设备、刷新后均可查看。'
-            : '该类型需下载后查看。';
+        : word ? '正在按原件版式渲染…'
+          : ppt ? '正在按原件版式渲染…'
+            : (img || plain) ? '附件存放于服务器，跨设备、刷新后均可查看。'
+              : '该类型需下载后查看。';
     /* 全屏只对真能渲染的类型有意义，压缩包之类隐藏 */
     var fb = document.getElementById('vwFull');
     fb.style.display = hinted ? '' : 'none';
@@ -6430,7 +6536,7 @@
   /* 服务端签发的会话令牌；取代了旧版用于本地会话的 inspection_board_session_v1 */
   var TOKEN_KEY   = 'inspection_board_token_v1';
 
-  var AUTH = { user: null, scope: '', attachMax: 0, servers: [], mine: false, ledger: null };
+  var AUTH = { user: null, scope: '', attachMax: 0, servers: [], mine: false, ledger: null, officePreview: false };
   var appBooted = false;
   /* 与服务端的同步状态：dirty 表示本地有尚未推送成功的改动；
      keys 记录「哪几份台账」待推送（多台账时公共 / 我的各自独立，不能互相覆盖） */
@@ -7186,7 +7292,7 @@
         }, 700);
       }
       document.getElementById('loginPwd').value = '';
-      signIn(d.user, { welcome: true, attachMax: d.attachMax, servers: d.authServers || [], ledger: d.ledger });
+      signIn(d.user, { welcome: true, attachMax: d.attachMax, officePreview: d.officePreview, servers: d.authServers || [], ledger: d.ledger });
     });
   }
 
@@ -9543,6 +9649,8 @@
     /* 登录默认进公共台账（沿用现有习惯），需要时在账号菜单切到「我的台账」 */
     AUTH.mine = false;
     AUTH.attachMax = (opts && opts.attachMax) || 0;
+    /* 服务端是否支持 Office 附件转 PDF 原样预览（内网 true，公网 Worker 无此能力） */
+    AUTH.officePreview = !!(opts && opts.officePreview);
     AUTH.servers = (opts && opts.servers) || AUTH.servers || [];
     hideAuth();
     if (!appBooted) {
@@ -9623,7 +9731,7 @@
         if (r.ok && r.data) {
           applyServerUsers(r.data.users);
           applyServerLedgers(r.data.ledgers);
-          signIn(r.data.user, { attachMax: r.data.attachMax, servers: r.data.authServers || [], ledger: r.data.ledger });
+          signIn(r.data.user, { attachMax: r.data.attachMax, officePreview: r.data.officePreview, servers: r.data.authServers || [], ledger: r.data.ledger });
         } else {
           clearToken();
           AUTH.user = null;
