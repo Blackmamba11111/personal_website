@@ -16,10 +16,64 @@ import * as CRM_P from './crm-client.mjs';
 
 const HASH_ROUNDS = 400;
 
-/* 认证服务器默认端口 / 展示名 */
-const AUTH_TYPES = ['radius', 'tacacs', 'ldap'];
+/* 认证服务器默认端口 / 展示名
+   两类认证源：
+   · 口令校验（radius / tacacs / ldap）—— 本站转发用户名与口令；
+   · 免认证登录（oidc / oauth2 / saml / cas / ticket / header）—— 统一身份平台认证后
+     把身份带回本站，本站不接触口令。本轮只做「配置 + 绑定 + 连通性自检」。 */
+const PWD_AUTH_TYPES = ['radius', 'tacacs', 'ldap'];
+const SSO_AUTH_TYPES = ['oidc', 'oauth2', 'saml', 'cas', 'ticket', 'header'];
+const AUTH_TYPES = PWD_AUTH_TYPES.concat(SSO_AUTH_TYPES);
 const AUTH_DEFAULT_PORT = { radius: 1812, tacacs: 49, ldap: 389 };
-const AUTH_LABEL = { local: '本地', radius: 'RADIUS', tacacs: 'TACACS+', ldap: 'LDAP' };
+const AUTH_LABEL = {
+  local: '本地', radius: 'RADIUS', tacacs: 'TACACS+', ldap: 'LDAP',
+  oidc: 'OIDC', oauth2: 'OAuth 2.0', saml: 'SAML 2.0',
+  cas: 'CAS', ticket: '票据直跳', header: '反向代理头'
+};
+function isSsoType(t) { return SSO_AUTH_TYPES.indexOf(t) >= 0; }
+/* 密钥字段只落库、不回传，列表接口只给 secretKeys（哪些已设置） */
+const SSO_SECRET_KEYS = ['clientSecret', 'sharedSecret', 'headerSecret', 'spKey'];
+const SSO_CFG_KEYS = [
+  'timeout', 'insecure', 'extraParams',
+  'issuer', 'clientId', 'scope', 'redirectUri', 'pkce', 'jwksUri',
+  'authorizeUrl', 'tokenUrl', 'userinfoUrl', 'tokenAuth', 'userinfoMethod',
+  'idpMetadataUrl', 'idpEntityId', 'idpSsoUrl', 'idpCert', 'spEntityId',
+  'nameIdFormat', 'signAuthn', 'spCert',
+  'casServerUrl', 'casVersion', 'serviceUrl', 'renew', 'gateway',
+  'ticketValidateUrl', 'ticketParam', 'ticketMethod',
+  'headerAccount', 'headerName', 'headerDept', 'headerSecretName', 'allowIps',
+  'accountClaim', 'nameClaim', 'deptClaim', 'accountAttr', 'nameAttr', 'deptAttr',
+  'accountField', 'nameField', 'deptField'
+];
+const SSO_LONG_KEYS = ['idpCert', 'spCert', 'spKey'];
+function ssoCfgView(cfg) {
+  const out = {};
+  SSO_CFG_KEYS.forEach(function (k) {
+    if (cfg[k] === undefined || cfg[k] === null) return;
+    out[k] = cfg[k];
+  });
+  return out;
+}
+function ssoSecretSet(cfg) {
+  return SSO_SECRET_KEYS.filter(function (k) { return !!String(cfg[k] || ''); });
+}
+function hostOfUrl(u) {
+  const m = /^https?:\/\/([^\/:?#]+)/i.exec(String(u || ''));
+  return m ? m[1] : '';
+}
+function ssoPrimaryUrl(type, cfg) {
+  if (type === 'oidc') return cfg.issuer || '';
+  if (type === 'oauth2') return cfg.authorizeUrl || '';
+  if (type === 'saml') return cfg.idpSsoUrl || cfg.idpMetadataUrl || '';
+  if (type === 'cas') return cfg.casServerUrl || '';
+  if (type === 'ticket') return cfg.ticketValidateUrl || '';
+  return '';
+}
+function joinUrl(base, tail) {
+  const b = String(base || '').replace(/\/+$/, '');
+  const t = String(tail || '');
+  return b + (t.charAt(0) === '/' ? t : '/' + t);
+}
 
 /* 高德地图 Key（Web 服务 + JS API 同一 Key，页面已公开，此处仅作服务端默认值；
    可用 Worker 环境变量 AMAP_KEY 覆盖）。restapi.amap.com 不返回跨域头，
@@ -193,18 +247,21 @@ async function serversMap(env) {
 /* cfg 里可能含共享密钥：只回传非敏感项 + hasSecret 标记 */
 function serverView(row, userCount) {
   const cfg = parseCfg(row.cfg);
+  const sso = isSsoType(row.type);
   return {
     id: row.id,
     name: row.name,
     type: row.type,
+    sso: sso,
     host: row.host,
     port: row.port || AUTH_DEFAULT_PORT[row.type] || 0,
     enabled: !!row.enabled,
     createdAt: (row.created_at || '').slice(0, 10),
     updatedAt: row.updated_at || '',
     userCount: userCount || 0,
-    hasSecret: !!String(cfg.secret || ''),
-    cfg: {
+    hasSecret: !!String(cfg.secret || '') || ssoSecretSet(cfg).length > 0,
+    secretKeys: sso ? ssoSecretSet(cfg) : [],
+    cfg: sso ? ssoCfgView(cfg) : {
       timeout: cfg.timeout || 5,
       nasId: cfg.nasId || '',
       plain: cfg.plain ? 1 : 0,
@@ -233,7 +290,11 @@ function canWriteUser(u) { return u.role === 'admin' || (u.perm !== 'ro'); }
 function ensureServerInput(body, base) {
   body = body || {};
   const type = String(body.type || (base && base.type) || '').toLowerCase();
-  if (AUTH_TYPES.indexOf(type) < 0) return { err: '认证类型需为 RADIUS / TACACS+ / LDAP 之一' };
+  if (AUTH_TYPES.indexOf(type) < 0) {
+    return { err: '认证类型需为 RADIUS / TACACS+ / LDAP / OIDC / OAuth 2.0 / SAML 2.0 / CAS / 票据直跳 / 反向代理头 之一' };
+  }
+  /* 免认证登录源：字段完全不同，走独立分支 */
+  if (isSsoType(type)) return ensureSsoInput(body, base, type);
 
   const name = body.name == null ? (base ? base.name : '') : String(body.name).trim();
   if (!name) return { err: '请填写认证服务器名称' };
@@ -271,6 +332,255 @@ function ensureServerInput(body, base) {
   if (type === 'ldap' && cfg.tls && port === AUTH_DEFAULT_PORT.ldap) port = 636;
 
   return { row: { name: name, type: type, host: host, port: port, enabled: enabled, cfg: JSON.stringify(cfg) } };
+}
+
+/* 免认证登录源：按协议校验必填项，并把 cfg 规范成「只保留该协议用得上的键」。
+   secret 类字段留空 = 沿用旧值（前端拿不到原值）。与内部部署版逐条一致。 */
+function ssoStr(v, max) { return String(v == null ? '' : v).trim().slice(0, max || 500); }
+function isHttpUrl(v) { return /^https?:\/\/[^\s]+$/i.test(String(v || '')); }
+function ensureSsoInput(body, base, type) {
+  const name = body.name == null ? (base ? base.name : '') : String(body.name).trim();
+  if (!name) return { err: '请填写认证源名称' };
+  if (name.length > 40) return { err: '名称请控制在 40 个字符以内' };
+
+  const enabled = body.enabled == null ? (base ? (base.enabled ? 1 : 0) : 1) : (body.enabled ? 1 : 0);
+  const oldCfg = base ? parseCfg(base.cfg) : {};
+  const inCfg = parseCfg(body.cfg);
+  const pick = function (k, dft) { return inCfg[k] == null ? (oldCfg[k] == null ? dft : oldCfg[k]) : inCfg[k]; };
+  const cfg = {};
+  const text = function (k, max) { cfg[k] = ssoStr(pick(k, ''), max || (SSO_LONG_KEYS.indexOf(k) >= 0 ? 4000 : 500)); };
+  const bool = function (k, dft) { cfg[k] = pick(k, dft) ? 1 : 0; };
+  const secret = function (k) {
+    const v = inCfg[k] === undefined ? (oldCfg[k] || '') : String(inCfg[k] || '');
+    cfg[k] = v.trim().slice(0, 4000);
+  };
+
+  cfg.timeout = Math.min(30, Math.max(1, parseInt(pick('timeout', 8), 10) || 8));
+  bool('insecure', 0);
+  text('extraParams');
+
+  if (type === 'oidc') {
+    text('issuer'); text('clientId'); secret('clientSecret');
+    text('scope'); text('redirectUri'); bool('pkce', 1);
+    text('jwksUri'); text('authorizeUrl'); text('tokenUrl'); text('userinfoUrl');
+    text('accountClaim'); text('nameClaim'); text('deptClaim');
+    if (!cfg.issuer) return { err: 'OIDC 需要填写 Issuer（如 https://sso.zdns.cn）' };
+    if (!isHttpUrl(cfg.issuer)) return { err: 'Issuer 需以 http:// 或 https:// 开头' };
+    if (!cfg.clientId) return { err: 'OIDC 需要填写 Client ID' };
+    if (!cfg.clientSecret) return { err: 'OIDC 需要填写 Client Secret' };
+    if (!cfg.scope) cfg.scope = 'openid profile';
+    if (!cfg.accountClaim) cfg.accountClaim = 'preferred_username';
+    [['jwksUri', 'JWKS 地址'], ['authorizeUrl', '授权地址'], ['tokenUrl', '令牌地址'], ['userinfoUrl', '用户信息地址']]
+      .forEach(function (p) { if (cfg[p[0]] && !isHttpUrl(cfg[p[0]])) cfg.__err = cfg.__err || (p[1] + '需以 http/https 开头'); });
+  } else if (type === 'oauth2') {
+    text('authorizeUrl'); text('tokenUrl'); text('userinfoUrl');
+    text('clientId'); secret('clientSecret'); text('scope');
+    text('tokenAuth'); text('userinfoMethod');
+    text('accountClaim'); text('nameClaim'); text('deptClaim');
+    if (!isHttpUrl(cfg.authorizeUrl)) return { err: '请填写授权地址（Authorize URL，需 http/https）' };
+    if (!isHttpUrl(cfg.tokenUrl)) return { err: '请填写令牌地址（Token URL，需 http/https）' };
+    if (!cfg.clientId) return { err: '请填写 Client ID' };
+    if (!cfg.accountClaim) cfg.accountClaim = 'username';
+    if (cfg.tokenAuth !== 'post') cfg.tokenAuth = 'basic';
+    if (cfg.userinfoMethod !== 'POST') cfg.userinfoMethod = 'GET';
+  } else if (type === 'saml') {
+    text('idpMetadataUrl'); text('idpEntityId'); text('idpSsoUrl'); text('idpCert', 4000);
+    text('spEntityId'); text('nameIdFormat'); bool('signAuthn', 0); text('spCert', 4000); secret('spKey');
+    text('accountAttr'); text('nameAttr'); text('deptAttr');
+    if (!cfg.idpMetadataUrl && !cfg.idpSsoUrl) {
+      return { err: 'SAML 需填写 IdP Metadata 地址，或直接填写 IdP SSO 地址' };
+    }
+    if (cfg.idpSsoUrl && !isHttpUrl(cfg.idpSsoUrl)) return { err: 'IdP SSO 地址需以 http/https 开头' };
+    if (cfg.idpMetadataUrl && !isHttpUrl(cfg.idpMetadataUrl)) return { err: 'IdP Metadata 地址需以 http/https 开头' };
+    if (cfg.signAuthn && !cfg.spKey) return { err: '勾选「签名 AuthnRequest」时必须填写 SP 私钥' };
+    if (!cfg.nameIdFormat) cfg.nameIdFormat = 'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified';
+    if (!cfg.accountAttr) cfg.accountAttr = 'NameID';
+  } else if (type === 'cas') {
+    text('casServerUrl'); text('casVersion'); text('serviceUrl'); bool('renew', 0); bool('gateway', 0);
+    text('accountAttr'); text('nameAttr'); text('deptAttr');
+    if (!isHttpUrl(cfg.casServerUrl)) return { err: '请填写 CAS 服务器地址（需 http/https）' };
+    if (cfg.casVersion !== '2.0') cfg.casVersion = '3.0';
+    if (!cfg.accountAttr) cfg.accountAttr = 'user';
+  } else if (type === 'ticket') {
+    text('ticketValidateUrl'); text('ticketParam'); text('ticketMethod'); secret('sharedSecret');
+    text('accountField'); text('nameField'); text('deptField');
+    if (!isHttpUrl(cfg.ticketValidateUrl)) return { err: '请填写票据校验地址（需 http/https）' };
+    if (!cfg.ticketParam) cfg.ticketParam = 'ticket';
+    if (cfg.ticketMethod !== 'POST') cfg.ticketMethod = 'GET';
+    if (!cfg.accountField) cfg.accountField = 'username';
+  } else if (type === 'header') {
+    text('headerAccount'); text('headerName'); text('headerDept');
+    text('headerSecretName'); secret('headerSecret'); text('allowIps');
+    if (!cfg.headerAccount) cfg.headerAccount = 'X-Auth-User';
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(cfg.headerAccount)) return { err: '账号请求头名称只能包含字母、数字与连字符' };
+    if (cfg.headerName && !/^[A-Za-z0-9-]{1,64}$/.test(cfg.headerName)) return { err: '姓名请求头名称不合法' };
+    if (cfg.headerDept && !/^[A-Za-z0-9-]{1,64}$/.test(cfg.headerDept)) return { err: '部门请求头名称不合法' };
+    if (cfg.headerSecretName && !/^[A-Za-z0-9-]{1,64}$/.test(cfg.headerSecretName)) return { err: '密钥请求头名称不合法' };
+    if (cfg.allowIps && !/^[0-9a-fA-F:.\/,\s-]+$/.test(cfg.allowIps)) return { err: '来源 IP 白名单格式不正确（逗号分隔，可写网段）' };
+  }
+
+  if (cfg.__err) return { err: cfg.__err };
+  const primary = ssoPrimaryUrl(type, cfg);
+  return {
+    row: {
+      name: name,
+      type: type,
+      host: hostOfUrl(primary),
+      port: 0,
+      enabled: enabled,
+      cfg: JSON.stringify(cfg)
+    }
+  };
+}
+
+/* ---------------- 免认证源：连通性自检（Worker 版） ----------------
+ * Workers 只能走公网 fetch，访问不到内网地址；也不支持跳过 TLS 校验，
+ * 因此内网自签平台的自检请在内网部署版上做。这里只做公网可达平台的检查。 */
+async function fetchProbe(url, opts) {
+  opts = opts || {};
+  const timeout = Math.min(15000, Math.max(3000, opts.timeout || 8000));
+  const ac = new AbortController();
+  const timer = setTimeout(function () { ac.abort(); }, timeout);
+  try {
+    const r = await fetch(url, {
+      method: opts.method || 'GET',
+      headers: Object.assign({
+        'user-agent': 'inspection-ledger-probe/1.0',
+        accept: 'application/json, application/xml, text/html;q=0.8, */*;q=0.5'
+      }, opts.headers || {}),
+      body: opts.body || undefined,
+      redirect: 'follow',
+      signal: ac.signal
+    });
+    let text = '';
+    try { text = (await r.text()).slice(0, 300000); } catch (e) {}
+    return { ok: true, status: r.status, body: text };
+  } catch (e) {
+    const msg = (e && e.name === 'AbortError') ? ('连接超时（' + timeout + 'ms）')
+      : ((e && e.message) || '连接失败（公网环境无法访问内网地址）');
+    return { ok: false, detail: msg };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function pemCheck(pem) {
+  const txt = String(pem || '');
+  const m = /-----BEGIN ([A-Z0-9 ]+)-----/.exec(txt);
+  if (!m) return { ok: false, detail: '不是 PEM 格式（缺少 -----BEGIN ...----- 头）' };
+  return { ok: true, detail: m[1] + '（公网版无法解析有效期，以平台实际为准）' };
+}
+async function probeSso(type, cfg) {
+  const steps = [];
+  const add = function (label, ok, detail) { steps.push({ label: label, ok: !!ok, detail: String(detail || '') }); };
+  const timeout = Math.min(15000, Math.max(3000, (parseInt(cfg.timeout, 10) || 8) * 1000));
+  const done = function () { return { ok: steps.every(function (s) { return s.ok; }), steps: steps }; };
+
+  if (type === 'header') {
+    add('参数自洽性', true, '反向代理头由前置网关注入，没有外部端点可探测。');
+    add('安全前提', true, cfg.allowIps
+      ? ('仅信任来源 IP：' + cfg.allowIps)
+      : '未限制来源 IP —— 请务必确保本站只能经由网关访问，否则请求头可被伪造');
+    return done();
+  }
+
+  if (type === 'oidc') {
+    const discoUrl = joinUrl(cfg.issuer, '/.well-known/openid-configuration');
+    const d = await fetchProbe(discoUrl, { timeout: timeout });
+    if (!d.ok) { add('OpenID 配置文档', false, discoUrl + ' → ' + d.detail); return done(); }
+    let doc = null;
+    try { doc = JSON.parse(d.body); } catch (e) {}
+    if (!doc) {
+      add('OpenID 配置文档', false, '已连通（HTTP ' + d.status + '），但返回不是 JSON。请确认 Issuer 填的是平台根地址');
+      return done();
+    }
+    add('OpenID 配置文档', true, 'HTTP ' + d.status + '，issuer=' + (doc.issuer || '—'));
+    if (doc.issuer && cfg.issuer &&
+        String(doc.issuer).replace(/\/+$/, '') !== String(cfg.issuer).replace(/\/+$/, '')) {
+      add('Issuer 一致性', false, '配置为 ' + cfg.issuer + '，平台声明为 ' + doc.issuer);
+    } else {
+      add('Issuer 一致性', true, '与平台声明一致');
+    }
+    if (!doc.authorization_endpoint || !doc.token_endpoint) {
+      add('端点声明', false, '配置文档缺少 authorization_endpoint / token_endpoint');
+    } else {
+      add('端点声明', true, '授权与令牌端点齐全' + (doc.userinfo_endpoint ? '，含 userinfo' : ''));
+    }
+    const jwks = cfg.jwksUri || doc.jwks_uri || '';
+    if (!jwks) add('签名公钥（JWKS）', false, '未填写 JWKS 地址，配置文档里也没有 jwks_uri');
+    else {
+      const j = await fetchProbe(jwks, { timeout: timeout });
+      let jd = null; try { jd = JSON.parse(j.body); } catch (e) {}
+      if (!j.ok) add('签名公钥（JWKS）', false, jwks + ' → ' + j.detail);
+      else if (!jd || !Array.isArray(jd.keys) || !jd.keys.length) add('签名公钥（JWKS）', false, 'HTTP ' + j.status + ' 但未取到 keys');
+      else add('签名公钥（JWKS）', true, '共 ' + jd.keys.length + ' 个密钥');
+    }
+    add('客户端凭据', true, 'Client ID 已填写' + (cfg.clientSecret ? '，Secret 已设置' : '，但未设置 Secret'));
+    return done();
+  }
+
+  if (type === 'oauth2') {
+    const targets = [['授权地址', cfg.authorizeUrl], ['令牌地址', cfg.tokenUrl], ['用户信息地址', cfg.userinfoUrl]];
+    for (let i = 0; i < targets.length; i++) {
+      const label = targets[i][0], url = targets[i][1];
+      if (!url) continue;
+      const r = await fetchProbe(url, { timeout: timeout });
+      if (!r.ok) add(label, false, url + ' → ' + r.detail);
+      else add(label, true, 'HTTP ' + r.status + '（400/401 属正常，说明地址有效但缺参数）');
+    }
+    add('客户端凭据', true, 'Client ID 已填写' + (cfg.clientSecret ? '，Secret 已设置' : '，按公共客户端处理'));
+    return done();
+  }
+
+  if (type === 'saml') {
+    if (cfg.idpMetadataUrl) {
+      const m = await fetchProbe(cfg.idpMetadataUrl, { timeout: timeout });
+      const xml = m.body || '';
+      if (!m.ok) add('IdP Metadata', false, cfg.idpMetadataUrl + ' → ' + m.detail);
+      else if (!/<(md:)?EntityDescriptor/i.test(xml)) add('IdP Metadata', false, 'HTTP ' + m.status + ' 但内容不像 SAML Metadata');
+      else {
+        const ent = /entityID=["']([^"']+)["']/i.exec(xml);
+        add('IdP Metadata', true, 'HTTP ' + m.status + (ent ? '，EntityID=' + ent[1] : ''));
+      }
+    }
+    if (cfg.idpSsoUrl) {
+      const r = await fetchProbe(cfg.idpSsoUrl, { timeout: timeout });
+      add('IdP SSO 地址', r.ok, r.ok ? ('HTTP ' + r.status) : (cfg.idpSsoUrl + ' → ' + r.detail));
+    }
+    if (cfg.idpCert) { const c = pemCheck(cfg.idpCert); add('IdP 签名证书', c.ok, c.detail); }
+    else add('IdP 签名证书', false, '未填写 IdP 签名证书（PEM），SAML 断言无法验签');
+    if (cfg.signAuthn) {
+      if (!cfg.spKey) add('SP 私钥', false, '勾选了签名 AuthnRequest 但未填写私钥');
+      else { const k = pemCheck(cfg.spKey); add('SP 私钥', k.ok, k.detail); }
+    }
+    return done();
+  }
+
+  if (type === 'cas') {
+    const loginUrl = joinUrl(cfg.casServerUrl, '/login');
+    const r = await fetchProbe(loginUrl, { timeout: timeout });
+    if (!r.ok) add('CAS 登录页', false, loginUrl + ' → ' + r.detail);
+    else add('CAS 登录页', r.status >= 200 && r.status < 400, 'HTTP ' + r.status);
+    add('校验端点', true, cfg.casVersion === '2.0' ? '将使用 /serviceValidate（CAS 2.0）' : '将使用 /p3/serviceValidate（CAS 3.0）');
+    return done();
+  }
+
+  if (type === 'ticket') {
+    const isPost = cfg.ticketMethod === 'POST';
+    const r = await fetchProbe(cfg.ticketValidateUrl, {
+      timeout: timeout,
+      method: isPost ? 'POST' : 'GET',
+      headers: isPost ? { 'content-type': 'application/x-www-form-urlencoded' } : {},
+      body: isPost ? (encodeURIComponent(cfg.ticketParam || 'ticket') + '=probe') : ''
+    });
+    if (!r.ok) add('票据校验端点', false, cfg.ticketValidateUrl + ' → ' + r.detail);
+    else add('票据校验端点', r.status < 500, 'HTTP ' + r.status + '（用假票据探测；4xx 说明端点可达且会拒绝非法票据）');
+    if (!cfg.sharedSecret) add('响应签名密钥', false, '未设置共享密钥 —— 无法确认票据校验响应来自平台');
+    else add('响应签名密钥', true, '已设置');
+    return done();
+  }
+
+  add('类型', false, '未知的免认证类型：' + type);
+  return done();
 }
 
 /* ---------------- 远程认证：传输层（Workers 只有 TCP） ---------------- */
@@ -1105,6 +1415,10 @@ async function route(request, env) {
       if (u.status !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
       const srv = await env.DB.prepare('SELECT * FROM auth_servers WHERE id = ?').bind(u.server_id || '').first();
       if (!srv || !srv.enabled) return bad('认证服务暂时不可用，请联系超级管理员。', 503);
+      /* 免认证源没有口令可校验：给出明确指引 */
+      if (isSsoType(srv.type)) {
+        return bad('该账号使用「' + (AUTH_LABEL[srv.type] || srv.type) + '」免认证登录，请使用登录页的「统一身份登录」入口。', 400);
+      }
       const r = await remoteAuth(srv, u.username, password);
       if (!r.ok) {
         if (r.code === 'reject' || r.code === 'nouser') return bad('用户名或密码不正确。', 401);
@@ -1370,11 +1684,25 @@ async function route(request, env) {
     if (sid && !base) return bad('认证服务器不存在', 404);
     const v = ensureServerInput(body, base);
     if (v.err) return bad(v.err);
+    if (isSsoType(v.row.type)) return bad('该类型是免认证登录，请用「自检」验证参数');
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
     if (!username || !password) return bad('请填写用于测试的账号与密码');
     const r = await remoteAuth({ type: v.row.type, host: v.row.host, port: v.row.port, cfg: v.row.cfg }, username, password);
     return ok({ ok: !!r.ok, code: r.code, message: r.message });
+  }
+
+  /* 免认证源自检：拉配置文档 / Metadata / 登录页。仅做连通性与自洽性检查。 */
+  if (p === '/api/auth-servers/probe' && method === 'POST') {
+    if (!isAdmin) return bad('仅超级管理员可自检免认证源', 403);
+    const psid = String(body.id || '').trim();
+    const pbase = psid ? await env.DB.prepare('SELECT * FROM auth_servers WHERE id = ?').bind(psid).first() : null;
+    if (psid && !pbase) return bad('认证服务器不存在', 404);
+    const pv = ensureServerInput(body, pbase);
+    if (pv.err) return bad(pv.err);
+    if (!isSsoType(pv.row.type)) return bad('该类型是口令校验型，请用「测试」校验账号口令');
+    const pr = await probeSso(pv.row.type, parseCfg(pv.row.cfg));
+    return ok(pr);
   }
 
   const msv = /^\/api\/auth-servers\/([A-Za-z0-9_-]{4,40})$/.exec(p);
@@ -1636,7 +1964,9 @@ async function route(request, env) {
         mustChange = 1;
       }
     } else if (body.password) {
-      return bad('远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，请不要在本地设置密码');
+      return bad(isSsoType(source)
+        ? '该账号使用「' + (AUTH_LABEL[source] || source) + '」免认证登录，不需要在本站设置密码'
+        : '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，请不要在本地设置密码');
     }
     /* 多台账：处在共享关系里的账号才有第二份台账（借入 = 设了共享来源；借出 = 有下家指向它）。
        超管维护全局数据，不参与共享数据集，永远没有第二份台账。 */
@@ -1692,7 +2022,9 @@ async function route(request, env) {
       const wantsLocalWithoutPwd = source === 'local' && !row.hash && !(body.password && String(body.password).length);
       if (wantsLocalWithoutPwd) return bad('改为本地账号时需要设置初始密码（至少 6 位）');
       if (source !== 'local' && body.password) {
-        return bad('远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
+        return bad(isSsoType(source)
+          ? '该账号使用「' + (AUTH_LABEL[source] || source) + '」免认证登录，不需要在本站设置密码'
+          : '远程账号的密码由「' + AUTH_LABEL[source] + '」服务器校验，不能在本地重置');
       }
 
       /* 多台账：既没有共享来源、也没有下家指向它，或降级为超管时自动关掉

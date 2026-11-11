@@ -509,6 +509,27 @@
     background:var(--surface-2);
   }
 
+  /* 免认证登录（SSO）配置：分组 / 两列 / 自检结果 */
+  .sso-note{margin:0 0 12px;padding:9px 11px;border-radius:var(--r-xs);background:var(--surface-2);
+    border:1px solid var(--line);color:var(--ink-2);font-size:11.5px;line-height:1.7;}
+  .sso-sec{margin:14px 0 10px;padding-top:12px;border-top:1px dashed var(--line);}
+  .sso-sec.first{margin-top:8px;padding-top:0;border-top:0;}
+  .sso-sec > .sso-cap{font-size:10px;font-family:var(--font-mono);letter-spacing:.06em;text-transform:uppercase;
+    color:var(--ink-3);font-weight:600;margin-bottom:8px;}
+  .sso-row{display:flex;gap:10px;}
+  .sso-row > .field{flex:1 1 0;min-width:0;}
+  .sso-row > .field.f-w110{flex:0 0 110px;}
+  .sso-row > .field.f-w150{flex:0 0 150px;}
+  .sso-cb{display:flex;gap:6px;}
+  .sso-cb input{flex:1 1 auto;font-family:var(--font-mono);font-size:11.5px;background:var(--surface-2);}
+  .sso-tip{font-size:11px;color:var(--ink-3);line-height:1.7;margin:-4px 0 10px;}
+  .probe-list{margin:8px 0 0;padding:0;list-style:none;font-size:11.5px;line-height:1.75;}
+  .probe-list li{display:flex;gap:6px;align-items:flex-start;}
+  .probe-list .pi{flex:0 0 auto;font-family:var(--font-mono);font-weight:700;}
+  .probe-list .pi.ok{color:var(--ok-ink);}
+  .probe-list .pi.bad{color:var(--danger-ink);}
+  .probe-list .pl{flex:1 1 auto;min-width:0;word-break:break-all;}
+
   .field{margin-bottom:13px;}
   .field label{display:block;font-size:11.5px;color:var(--ink-2);font-weight:600;margin-bottom:5px;letter-spacing:.1px;}
   .field label .req{color:var(--danger);}
@@ -1689,7 +1710,7 @@
     <h2>用户管理</h2>
     <span class="sub" id="usersSub">—</span>
     <div class="spacer"></div>
-    <button type="button" class="btn" id="btnAuthServers">认证服务器</button>
+    <button type="button" class="btn" id="btnAuthServers">认证管理</button>
     <button type="button" class="btn" id="btnDataLogs">数据日志</button>
     <button type="button" class="btn" id="btnUsersBatchEdit" style="display:none;">批量编辑（0）</button>
     <button type="button" class="btn primary" id="btnNewUser">+ 新建用户</button>
@@ -1710,18 +1731,19 @@
 <div class="page" id="serversView">
   <div class="page-head">
     <button type="button" class="btn" id="btnServersBack">← 返回用户管理</button>
-    <h2>认证服务器</h2>
+    <h2>认证管理</h2>
     <span class="sub" id="serversSub">—</span>
     <div class="spacer"></div>
-    <button type="button" class="btn primary" id="btnNewServer">+ 新增服务器</button>
+    <button type="button" class="btn primary" id="btnNewServer">+ 新增认证源</button>
   </div>
   <div class="page-body">
     <div class="ucard">
       <div id="serversTableWrap"></div>
     </div>
     <p class="hint" style="margin:12px 2px 0;">
-      远程用户登录时，本站把用户名与密码转发给这里配置的服务器校验，校验通过后在本站签发会话。
-      共享密钥只保存在服务端，列表里不会回显；编辑时留空表示「不修改」。
+      两类认证源：<b>口令校验</b>（RADIUS / TACACS+ / LDAP）把用户名与密码转发给对方校验；
+      <b>免认证登录</b>（OIDC / OAuth 2.0 / SAML 2.0 / CAS / 票据直跳 / 反向代理头）由统一身份平台完成认证，
+      本站不接触密码。密钥只保存在服务端，列表里不会回显；编辑时留空表示「不修改」。
     </p>
   </div>
 </div>
@@ -1925,11 +1947,11 @@
         <label for="uSourceType">账号类型</label>
         <select id="uSourceType">
           <option value="local">本地用户 — 口令保存在本站</option>
-          <option value="remote">远程用户 — 口令由认证服务器校验</option>
+          <option value="remote">远程 / 免认证 — 身份由认证源确认</option>
         </select>
       </div>
       <div class="field" id="uServerField" style="display:none;">
-        <label for="uServer">认证服务器 <span class="req">*</span></label>
+        <label for="uServer">认证源 <span class="req">*</span></label>
         <select id="uServer"></select>
         <div class="hint" id="uServerHint">登录时把用户名与密码转发给该服务器校验，本站不保存密码。</div>
       </div>
@@ -2020,7 +2042,7 @@
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bSourceOn"> 应用账号类型 / 认证服务器</label>
         <select id="bSourceType">
           <option value="local">本地用户 — 口令保存在本站</option>
-          <option value="remote">远程用户 — 口令由认证服务器校验</option>
+          <option value="remote">远程 / 免认证 — 身份由认证源确认</option>
         </select>
         <div id="bSourceExtra" style="margin-top:8px;display:none;">
           <select id="bServer" style="display:none;"></select>
@@ -2104,9 +2126,9 @@
 
 <!-- ==================== V3：认证服务器 新建 / 编辑 ==================== -->
 <div class="mask high" id="maskServer">
-  <div class="modal" style="max-width:560px;">
+  <div class="modal" style="max-width:760px;">
     <div class="modal-head">
-      <h3 id="serverModalTitle">新增认证服务器</h3>
+      <h3 id="serverModalTitle">新增认证源</h3>
       <button type="button" class="icon-btn" data-close="maskServer">✕</button>
     </div>
     <div class="modal-body">
@@ -2117,11 +2139,23 @@
       <div class="field">
         <label for="sType">协议类型</label>
         <select id="sType">
-          <option value="radius">RADIUS — UDP 1812</option>
-          <option value="tacacs">TACACS+ — TCP 49</option>
-          <option value="ldap">LDAP — TCP 389 / 636</option>
+          <optgroup label="口令校验（转发用户名与口令）">
+            <option value="radius">RADIUS — UDP 1812</option>
+            <option value="tacacs">TACACS+ — TCP 49</option>
+            <option value="ldap">LDAP — TCP 389 / 636</option>
+          </optgroup>
+          <optgroup label="免认证登录（统一身份平台）">
+            <option value="oidc">OIDC — OpenID Connect（授权码 + PKCE）</option>
+            <option value="oauth2">OAuth 2.0 — 通用授权码</option>
+            <option value="saml">SAML 2.0</option>
+            <option value="cas">CAS 2.0 / 3.0</option>
+            <option value="ticket">票据直跳 — 平台一次性 ticket</option>
+            <option value="header">反向代理头 — 网关注入身份</option>
+          </optgroup>
         </select>
       </div>
+      <!-- ========== 口令校验型（RADIUS / TACACS+ / LDAP） ========== -->
+      <div id="sPwdWrap">
       <div style="display:flex;gap:10px;">
         <div class="field" style="flex:1 1 auto;">
           <label for="sHost">服务器地址 <span class="req">*</span></label>
@@ -2188,11 +2222,313 @@
         </label>
       </div>
 
-      <div class="field" style="margin:4px 0 18px;">
+      </div><!-- /sPwdWrap -->
+
+      <!-- ========== 免认证登录型（统一身份平台） ========== -->
+      <div id="sSsoWrap" style="display:none;">
+        <div class="sso-note">
+          免认证登录：用户从统一身份平台跳回本站，身份由平台确认，本站不接触密码。
+          保存后到「用户管理」把账号的认证服务器指向这里，该账号就只能用统一身份登录；
+          平台里有、本站没建的账号会被拒绝并提示联系管理员添加。
+        </div>
+
+        <div class="sso-sec">
+          <div class="sso-cap">回调地址（需登记到平台白名单）</div>
+          <div class="sso-cb">
+            <input type="text" id="ssoCallback" readonly>
+            <button type="button" class="btn" id="btnCopyCallback" style="flex:0 0 auto;">复制</button>
+          </div>
+          <div class="sso-tip">平台侧回调 / ACS 白名单必须与此地址完全一致（含协议、IP 与端口）。当前站点未域名化，登记的就是这个 IP 地址。</div>
+        </div>
+
+        <!-- OIDC -->
+        <div id="sOidcWrap" class="sso-proto">
+          <div class="sso-sec first">
+            <div class="sso-cap">OpenID Connect</div>
+            <div class="field">
+              <label for="soIssuer">Issuer（平台根地址）<span class="req">*</span></label>
+              <input type="text" id="soIssuer" autocomplete="off" placeholder="https://sso.zdns.cn">
+              <div class="sso-tip">不带 /authorize 等路径。自检会拉 <code>/.well-known/openid-configuration</code> 并核对 issuer。</div>
+            </div>
+            <div class="sso-row">
+              <div class="field">
+                <label for="soClientId">Client ID <span class="req">*</span></label>
+                <input type="text" id="soClientId" autocomplete="off" placeholder="平台分配的 client_id">
+              </div>
+              <div class="field">
+                <label for="soClientSecret">Client Secret <span class="req">*</span></label>
+                <input type="password" id="soClientSecret" autocomplete="new-password" placeholder="平台分配的 client_secret">
+              </div>
+            </div>
+            <div class="sso-row">
+              <div class="field">
+                <label for="soScope">Scope</label>
+                <input type="text" id="soScope" autocomplete="off" placeholder="openid profile">
+              </div>
+              <div class="field">
+                <label for="soJwks">JWKS 地址（可选）</label>
+                <input type="text" id="soJwks" autocomplete="off" placeholder="留空由配置文档提供">
+              </div>
+            </div>
+            <div class="sso-row">
+              <div class="field">
+                <label for="soAuthorize">授权地址（可选覆盖）</label>
+                <input type="text" id="soAuthorize" autocomplete="off" placeholder="https://…/authorize">
+              </div>
+              <div class="field">
+                <label for="soToken">令牌地址（可选覆盖）</label>
+                <input type="text" id="soToken" autocomplete="off" placeholder="https://…/token">
+              </div>
+            </div>
+            <div class="field">
+              <label for="soUserinfo">用户信息地址（可选覆盖）</label>
+              <input type="text" id="soUserinfo" autocomplete="off" placeholder="https://…/userinfo">
+            </div>
+            <label class="switch"><input type="checkbox" id="soPkce" checked><span class="track"></span><span>启用 PKCE（推荐；平台不支持授权码 + PKCE 时取消）</span></label>
+          </div>
+        </div>
+
+        <!-- OAuth 2.0 -->
+        <div id="sOauth2Wrap" class="sso-proto" style="display:none;">
+          <div class="sso-sec first">
+            <div class="sso-cap">OAuth 2.0（通用授权码）</div>
+            <div class="field">
+              <label for="saAuthorize">授权地址 Authorize URL <span class="req">*</span></label>
+              <input type="text" id="saAuthorize" autocomplete="off" placeholder="https://…/oauth2/authorize">
+            </div>
+            <div class="field">
+              <label for="saToken">令牌地址 Token URL <span class="req">*</span></label>
+              <input type="text" id="saToken" autocomplete="off" placeholder="https://…/oauth2/token">
+            </div>
+            <div class="field">
+              <label for="saUserinfo">用户信息地址（推荐填写）</label>
+              <input type="text" id="saUserinfo" autocomplete="off" placeholder="https://…/oauth2/userinfo">
+            </div>
+            <div class="sso-row">
+              <div class="field">
+                <label for="saClientId">Client ID <span class="req">*</span></label>
+                <input type="text" id="saClientId" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="saClientSecret">Client Secret</label>
+                <input type="password" id="saClientSecret" autocomplete="new-password" placeholder="公共客户端可留空">
+              </div>
+            </div>
+            <div class="sso-row">
+              <div class="field">
+                <label for="saScope">Scope</label>
+                <input type="text" id="saScope" autocomplete="off" placeholder="openid profile">
+              </div>
+              <div class="field f-w150">
+                <label for="saTokenAuth">客户端认证方式</label>
+                <select id="saTokenAuth">
+                  <option value="basic">client_secret_basic</option>
+                  <option value="post">client_secret_post</option>
+                </select>
+              </div>
+              <div class="field f-w110">
+                <label for="saUserinfoMethod">取用户方式</label>
+                <select id="saUserinfoMethod">
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SAML 2.0 -->
+        <div id="sSamlWrap" class="sso-proto" style="display:none;">
+          <div class="sso-sec first">
+            <div class="sso-cap">SAML 2.0</div>
+            <div class="field">
+              <label for="smMetadata">IdP Metadata 地址</label>
+              <input type="text" id="smMetadata" autocomplete="off" placeholder="https://…/metadata">
+              <div class="sso-tip">填了 Metadata 地址就不必手填 EntityID / SSO 地址 / 证书，自检会去拉取并核对。</div>
+            </div>
+            <div class="sso-row">
+              <div class="field">
+                <label for="smEntityId">IdP EntityID</label>
+                <input type="text" id="smEntityId" autocomplete="off" placeholder="https://idp.example.com/saml">
+              </div>
+              <div class="field">
+                <label for="smSsoUrl">IdP SSO 地址</label>
+                <input type="text" id="smSsoUrl" autocomplete="off" placeholder="https://…/sso/redirect">
+              </div>
+            </div>
+            <div class="field">
+              <label for="smCert">IdP 签名证书（PEM）</label>
+              <textarea id="smCert" rows="3" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+            </div>
+            <div class="sso-row">
+              <div class="field">
+                <label for="smSpEntityId">SP EntityID（留空用回调地址）</label>
+                <input type="text" id="smSpEntityId" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="smNameIdFormat">NameID 格式</label>
+                <select id="smNameIdFormat">
+                  <option value="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified">unspecified</option>
+                  <option value="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">persistent</option>
+                  <option value="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">emailAddress</option>
+                  <option value="urn:oasis:names:tc:SAML:2.0:nameid-format:transient">transient</option>
+                </select>
+              </div>
+            </div>
+            <label class="switch" style="margin-bottom:10px;"><input type="checkbox" id="smSignAuthn"><span class="track"></span><span>签名 AuthnRequest（平台要求时勾选）</span></label>
+            <div class="sso-row" id="smSpKeyRow" style="display:none;">
+              <div class="field">
+                <label for="smSpCert">SP 证书（PEM）</label>
+                <textarea id="smSpCert" rows="2" spellcheck="false"></textarea>
+              </div>
+              <div class="field">
+                <label for="smSpKey">SP 私钥（PEM）</label>
+                <textarea id="smSpKey" rows="2" spellcheck="false"></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CAS -->
+        <div id="sCasWrap" class="sso-proto" style="display:none;">
+          <div class="sso-sec first">
+            <div class="sso-cap">CAS 2.0 / 3.0</div>
+            <div class="field">
+              <label for="scServerUrl">CAS 服务器地址 <span class="req">*</span></label>
+              <input type="text" id="scServerUrl" autocomplete="off" placeholder="https://cas.zdns.cn/cas">
+            </div>
+            <div class="sso-row">
+              <div class="field f-w150">
+                <label for="scVersion">协议版本</label>
+                <select id="scVersion">
+                  <option value="3.0">CAS 3.0（/p3/serviceValidate）</option>
+                  <option value="2.0">CAS 2.0（/serviceValidate）</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="scService">Service 参数（留空用回调地址）</label>
+                <input type="text" id="scService" autocomplete="off">
+              </div>
+            </div>
+            <label class="switch" style="margin-bottom:6px;"><input type="checkbox" id="scRenew"><span class="track"></span><span>强制重新登录（renew=true）</span></label>
+            <label class="switch"><input type="checkbox" id="scGateway"><span class="track"></span><span>静默校验（gateway=true，未登录不跳转）</span></label>
+          </div>
+        </div>
+
+        <!-- 票据直跳 -->
+        <div id="sTicketWrap" class="sso-proto" style="display:none;">
+          <div class="sso-sec first">
+            <div class="sso-cap">票据直跳（平台生成一次性 ticket）</div>
+            <div class="field">
+              <label for="stValidateUrl">票据校验地址 <span class="req">*</span></label>
+              <input type="text" id="stValidateUrl" autocomplete="off" placeholder="https://portal.zdns.cn/api/ticket/validate">
+              <div class="sso-tip">平台跳转到本站时携带 <code>?ticket=…</code>，本站后端拿它向该地址换取身份。</div>
+            </div>
+            <div class="sso-row">
+              <div class="field f-w110">
+                <label for="stMethod">请求方式</label>
+                <select id="stMethod">
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                </select>
+              </div>
+              <div class="field f-w150">
+                <label for="stParam">票据参数名</label>
+                <input type="text" id="stParam" autocomplete="off" placeholder="ticket">
+              </div>
+              <div class="field">
+                <label for="stSecret">共享密钥（校验响应签名）</label>
+                <input type="password" id="stSecret" autocomplete="new-password" placeholder="平台约定的密钥">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 反向代理头 -->
+        <div id="sHeaderWrap" class="sso-proto" style="display:none;">
+          <div class="sso-sec first">
+            <div class="sso-cap">反向代理头（前置网关注入身份）</div>
+            <div class="sso-note" style="background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn-ink);">
+              仅在「本站只能经由可信网关访问」时使用。若浏览器能直连本站，请求头可被伪造，必须同时配置来源 IP 白名单与共享密钥。
+            </div>
+            <div class="sso-row">
+              <div class="field">
+                <label for="shAccount">账号请求头 <span class="req">*</span></label>
+                <input type="text" id="shAccount" autocomplete="off" placeholder="X-Auth-User">
+              </div>
+              <div class="field">
+                <label for="shName">姓名请求头</label>
+                <input type="text" id="shName" autocomplete="off" placeholder="X-Auth-Name">
+              </div>
+              <div class="field">
+                <label for="shDept">部门请求头</label>
+                <input type="text" id="shDept" autocomplete="off" placeholder="X-Auth-Dept">
+              </div>
+            </div>
+            <div class="sso-row">
+              <div class="field f-w150">
+                <label for="shSecretName">密钥请求头</label>
+                <input type="text" id="shSecretName" autocomplete="off" placeholder="X-Auth-Token">
+              </div>
+              <div class="field">
+                <label for="shSecret">共享密钥</label>
+                <input type="password" id="shSecret" autocomplete="new-password" placeholder="网关与本站约定">
+              </div>
+            </div>
+            <div class="field">
+              <label for="shAllowIps">来源 IP 白名单</label>
+              <input type="text" id="shAllowIps" autocomplete="off" placeholder="10.1.114.0/24, 10.1.114.116">
+              <div class="sso-tip">逗号分隔，可写网段。留空表示不限制（不建议）。</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 公共：身份映射 -->
+        <div class="sso-sec">
+          <div class="sso-cap">身份映射</div>
+          <div class="sso-row" id="ssoMapRow">
+            <div class="field">
+              <label for="ssoAccount" id="ssoAccountLabel">账号标识 <span class="req">*</span></label>
+              <input type="text" id="ssoAccount" autocomplete="off" placeholder="preferred_username">
+            </div>
+            <div class="field">
+              <label for="ssoName">姓名</label>
+              <input type="text" id="ssoName" autocomplete="off" placeholder="可选">
+            </div>
+            <div class="field">
+              <label for="ssoDept">部门</label>
+              <input type="text" id="ssoDept" autocomplete="off" placeholder="可选">
+            </div>
+          </div>
+          <div class="sso-tip" id="ssoAccountTip">
+            平台返回的账号标识会与本站「登录名」精确比对；找不到账号则拒绝登录并提示联系管理员添加。
+          </div>
+          <div class="sso-row">
+            <div class="field f-w110">
+              <label for="sSsoTimeout">超时(秒)</label>
+              <input type="number" id="sSsoTimeout" min="3" max="30" value="8">
+            </div>
+            <div class="field" style="flex:1 1 auto;">
+              <label class="switch" style="margin-top:22px;"><input type="checkbox" id="ssoInsecure"><span class="track"></span><span>跳过 TLS 证书校验（内网自签平台）</span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="field" id="sProbeWrap" style="border-top:1px dashed var(--line);padding-top:14px;margin-bottom:4px;">
+          <label>连通性自检</label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button type="button" class="btn" id="btnProbeServer">开始自检</button>
+            <span class="hint" style="margin:0;">只验证地址可达与参数自洽，不发起真实登录。</span>
+          </div>
+          <ul class="probe-list" id="sProbeResult"></ul>
+        </div>
+      </div><!-- /sSsoWrap -->
+
+      <div class="field" style="margin:14px 0 18px;border-top:1px dashed var(--line);padding-top:12px;">
         <label class="switch" style="line-height:19px;"><input type="checkbox" id="sEnabled" checked><span class="track"></span><span>启用该服务器</span></label>
       </div>
 
-      <div class="field" style="border-top:1px dashed var(--border);padding-top:14px;">
+      <div class="field" id="sTestWrap" style="border-top:1px dashed var(--border);padding-top:14px;">
         <label>测试连接</label>
         <div style="display:flex;gap:8px;">
           <input type="text" id="sTestUser" autocomplete="off" placeholder="测试账号" style="flex:1 1 50%;">
@@ -6060,7 +6396,7 @@
   var MASK_LABEL = {
     maskCust: '「新增 / 编辑客户」', maskDetail: '「客户详情」', maskImport: '「导入数据」',
     maskRegion: '「区域设置」', maskUser: '「用户信息」', maskBatchUser: '「批量编辑用户」',
-    maskServer: '「认证服务器」', maskPwd: '「修改密码」'
+    maskServer: '「认证管理」', maskPwd: '「修改密码」'
   };
   function requestCloseMask(id) {
     if (!id) return;
@@ -6658,6 +6994,11 @@
   var API_BASE    = '/api';
   /* 服务端签发的会话令牌；取代了旧版用于本地会话的 inspection_board_session_v1 */
   var TOKEN_KEY   = 'inspection_board_token_v1';
+
+  /* 认证源类型：口令校验（radius/tacacs/ldap）+ 免认证登录（下列 6 类）。
+     放在状态区顶部，保证列表与弹窗首次渲染时已初始化。 */
+  var SSO_TYPES = ['oidc', 'oauth2', 'saml', 'cas', 'ticket', 'header'];
+  function isSsoServer(s) { return !!s && SSO_TYPES.indexOf(s.type) >= 0; }
 
   var AUTH = { user: null, scope: '', attachMax: 0, servers: [], mine: false, ledger: null, officePreview: false };
   var appBooted = false;
@@ -8294,7 +8635,7 @@
 
   /* ---------- 认证服务器管理（RADIUS / TACACS+ / LDAP） ---------- */
   function openServersPage() {
-    if (!isAdmin()) { toast('仅超级管理员可访问认证服务器'); return; }
+    if (!isAdmin()) { toast('仅超级管理员可访问认证管理'); return; }
     document.getElementById('usersView').classList.remove('on');
     renderServersPage();               /* 先用缓存快出一屏，随后拉最新（绑定账号数会变） */
     document.getElementById('serversView').classList.add('on');
@@ -8316,16 +8657,18 @@
   function renderServersPage() {
     var list = serversList();
     var used = list.filter(function (s) { return s.userCount > 0; }).length;
+    var ssoN = list.filter(isSsoServer).length;
     document.getElementById('serversSub').textContent =
-      '共 ' + list.length + ' 台 · 已启用 ' + list.filter(function (s) { return s.enabled; }).length +
-      ' 台 · 已绑定账号 ' + used + ' 台';
+      '共 ' + list.length + ' 个认证源 · 口令校验 ' + (list.length - ssoN) + ' · 免认证 ' + ssoN +
+      ' · 已启用 ' + list.filter(function (s) { return s.enabled; }).length +
+      ' · 已绑定账号 ' + used;
 
     if (!list.length) {
       document.getElementById('serversTableWrap').innerHTML =
         '<div class="empty" style="padding:34px 18px;text-align:center;">' +
-        '<div style="font-weight:600;margin-bottom:6px;">还没有配置认证服务器</div>' +
-        '<div class="hint" style="margin-bottom:14px;">配置之后即可创建「远程用户」，其登录口令由该服务器校验。</div>' +
-        '<button type="button" class="btn primary" id="btnNewServerEmpty">+ 新增认证服务器</button></div>';
+        '<div style="font-weight:600;margin-bottom:6px;">还没有配置认证源</div>' +
+        '<div class="hint" style="margin-bottom:14px;">口令校验型用于转发账号口令；免认证型用于对接统一身份平台。</div>' +
+        '<button type="button" class="btn primary" id="btnNewServerEmpty">+ 新增认证源</button></div>';
       var eb = document.getElementById('btnNewServerEmpty');
       if (eb) eb.addEventListener('click', function () { openServerModal(null); });
       return;
@@ -8333,21 +8676,24 @@
 
     var rows = list.map(function (s) {
       var t = AUTH_LABELS[s.type] || s.type;
+      var sso = isSsoServer(s);
+      var sub = sso
+        ? ('免认证 · 账号字段 ' + (s.cfg.accountClaim || s.cfg.accountAttr || s.cfg.accountField || '—'))
+        : (s.type === 'ldap'
+            ? (s.cfg.bindPattern ? ('绑定模板 ' + s.cfg.bindPattern) : '绑定模板：登录名直连' + (s.cfg.tls ? ' · TLS' : ''))
+            : ('共享密钥 ' + (s.hasSecret ? '已设置' : '未设置')));
       return '<tr data-sid="' + esc(s.id) + '">' +
         '<td><div style="font-weight:600;">' + esc(s.name) + '</div>' +
-          '<div class="sub2" style="font-size:11px;color:var(--text-3);">' +
-          (s.type === 'ldap'
-            ? esc(s.cfg.bindPattern ? ('绑定模板 ' + s.cfg.bindPattern) : '绑定模板：登录名直连' + (s.cfg.tls ? ' · TLS' : ''))
-            : ('共享密钥 ' + (s.hasSecret ? '已设置' : '未设置'))) +
-          '</div></td>' +
+          '<div class="sub2" style="font-size:11px;color:var(--text-3);">' + esc(sub) + '</div></td>' +
         '<td><span class="srv-type">' + esc(t) + '</span></td>' +
-        '<td class="sub2" style="font-size:12px;">' + esc(s.host) + ':' + s.port + '</td>' +
+        '<td class="sub2" style="font-size:12px;">' +
+          (sso ? esc(s.host || '统一身份平台') : (esc(s.host) + ':' + s.port)) + '</td>' +
         '<td>' + (s.userCount ? s.userCount + ' 个账号' : '<span class="sub2">未绑定</span>') + '</td>' +
         '<td><span class="tag ' + (s.enabled ? 'active' : 'disabled') + '">' + (s.enabled ? '已启用' : '已停用') + '</span></td>' +
         '<td class="sub2" style="font-size:11.5px;">' + esc(fmtTs(s.updatedAt || s.createdAt, true)) + '</td>' +
         '<td><div class="uact">' +
           '<button type="button" class="btn sm" data-sact="edit">编辑</button>' +
-          '<button type="button" class="btn sm" data-sact="test">测试</button>' +
+          '<button type="button" class="btn sm" data-sact="test">' + (sso ? '自检' : '测试') + '</button>' +
           '<button type="button" class="btn sm" data-sact="del"' +
             (s.userCount ? ' disabled title="仍有账号绑定，需先改绑"' : '') + '>删除</button>' +
         '</div></td></tr>';
@@ -8361,8 +8707,31 @@
 
   var editingServerId = null;
   var editingHasBindPwd = false;
+  var editingSecretKeys = [];
+  /* 各协议的账号字段标准叫法不同（claim / 属性 / JSON 字段 / 请求头），
+     表单统一用三个输入，保存时按类型映射到对应键。 */
+  var SSO_FIELD_KEYS = {
+    oidc: { account: 'accountClaim', name: 'nameClaim', dept: 'deptClaim', dft: 'preferred_username', unit: 'claim' },
+    oauth2: { account: 'accountClaim', name: 'nameClaim', dept: 'deptClaim', dft: 'username', unit: 'JSON 字段' },
+    saml: { account: 'accountAttr', name: 'nameAttr', dept: 'deptAttr', dft: 'NameID', unit: '属性' },
+    cas: { account: 'accountAttr', name: 'nameAttr', dept: 'deptAttr', dft: 'user', unit: '属性' },
+    ticket: { account: 'accountField', name: 'nameField', dept: 'deptField', dft: 'username', unit: 'JSON 字段' },
+    header: { account: 'headerAccount', name: 'headerName', dept: 'headerDept', dft: 'X-Auth-User', unit: '请求头' }
+  };
+  var SSO_SUB_WRAP = {
+    oidc: 'sOidcWrap', oauth2: 'sOauth2Wrap', saml: 'sSamlWrap',
+    cas: 'sCasWrap', ticket: 'sTicketWrap', header: 'sHeaderWrap'
+  };
+  function ssoCallbackUrl() { return location.origin + '/api/auth/sso/callback'; }
+
   function syncServerModalFields() {
     var t = document.getElementById('sType').value;
+    var sso = SSO_TYPES.indexOf(t) >= 0;
+    /* 两类表单互斥：口令校验型 vs 免认证登录型 */
+    document.getElementById('sPwdWrap').style.display = sso ? 'none' : 'block';
+    document.getElementById('sSsoWrap').style.display = sso ? 'block' : 'none';
+    document.getElementById('sTestWrap').style.display = sso ? 'none' : 'block';
+
     document.getElementById('sSecretWrap').style.display = (t === 'ldap') ? 'none' : 'block';
     document.getElementById('sLdapWrap').style.display = (t === 'ldap') ? 'block' : 'none';
     document.getElementById('sPlainWrap').style.display = (t === 'tacacs') ? 'block' : 'none';
@@ -8370,29 +8739,89 @@
     if (!portEl.value) {
       portEl.placeholder = t === 'radius' ? '1812' : (t === 'tacacs' ? '49' : (document.getElementById('sTls').checked ? '636' : '389'));
     }
+    if (!sso) return;
+
+    /* 只显示当前协议自己的参数区 */
+    Object.keys(SSO_SUB_WRAP).forEach(function (k) {
+      var el = document.getElementById(SSO_SUB_WRAP[k]);
+      if (el) el.style.display = (k === t) ? 'block' : 'none';
+    });
+    document.getElementById('ssoCallback').value = ssoCallbackUrl();
+
+    var f = SSO_FIELD_KEYS[t] || SSO_FIELD_KEYS.oidc;
+    document.getElementById('ssoAccountLabel').innerHTML = '账号标识（' + f.unit + '） <span class="req">*</span>';
+    /* 反代头类型的账号/姓名/部门就是请求头名，已在上面填过，这里不再重复一遍 */
+    document.getElementById('ssoMapRow').style.display = (t === 'header') ? 'none' : 'flex';
+    document.getElementById('ssoAccount').placeholder = f.dft;
+    document.getElementById('ssoName').placeholder = t === 'header' ? 'X-Auth-Name' : '可选';
+    document.getElementById('ssoDept').placeholder = t === 'header' ? 'X-Auth-Dept' : '可选';
+    document.getElementById('ssoAccountTip').textContent = t === 'header'
+      ? '网关注入的账号会与本站「登录名」精确比对；找不到账号则拒绝登录。'
+      : '平台返回的账号标识会与本站「登录名」精确比对；找不到账号则拒绝登录并提示联系管理员添加。';
+    document.getElementById('smSpKeyRow').style.display = document.getElementById('smSignAuthn').checked ? 'flex' : 'none';
   }
   function openServerModal(s) {
     editingServerId = s ? s.id : null;
     editingHasBindPwd = !!(s && s.hasBindPwd);
-    document.getElementById('serverModalTitle').textContent = s ? ('编辑认证服务器 · ' + s.name) : '新增认证服务器';
+    editingSecretKeys = (s && Array.isArray(s.secretKeys)) ? s.secretKeys : [];
+    var c = (s && s.cfg) || {};
+    var setv = function (id, v) { var el = document.getElementById(id); if (el) el.value = (v == null ? '' : v); };
+    var setc = function (id, v) { var el = document.getElementById(id); if (el) el.checked = !!v; };
+    var sets = function (id, v) { var el = document.getElementById(id); if (el) { el.value = ''; el.placeholder = v; } };
+
+    document.getElementById('serverModalTitle').textContent = s ? ('编辑认证源 · ' + s.name) : '新增认证源';
     document.getElementById('sName').value = s ? s.name : '';
     document.getElementById('sType').value = s ? s.type : 'ldap';
     document.getElementById('sHost').value = s ? s.host : '';
-    document.getElementById('sPort').value = s ? s.port : '';
-    document.getElementById('sTimeout').value = s ? (s.cfg.timeout || 5) : 5;
+    document.getElementById('sPort').value = s ? (s.port || '') : '';
+    document.getElementById('sTimeout').value = s ? (c.timeout || 5) : 5;
     document.getElementById('sSecret').value = '';
     document.getElementById('sSecret').placeholder = (s && s.hasSecret) ? '已设置，留空表示不修改' : 'RADIUS / TACACS+ 的共享密钥';
     document.getElementById('sSecretHint').textContent = (s && s.hasSecret)
       ? '该服务器已保存共享密钥；留空即保持原值，填写则覆盖。'
       : '与服务端设备上配置的一致。';
-    document.getElementById('sBind').value = s ? (s.cfg.bindPattern || '') : '';
-    document.getElementById('sBindDn').value = s ? (s.cfg.bindDn || '') : '';
+    document.getElementById('sBind').value = s ? (c.bindPattern || '') : '';
+    document.getElementById('sBindDn').value = s ? (c.bindDn || '') : '';
     document.getElementById('sBindPwd').value = '';
     document.getElementById('sBindPwd').placeholder = (s && s.hasBindPwd) ? '已设置，留空表示不修改' : '服务账号密码';
-    document.getElementById('sBaseDn').value = s ? (s.cfg.baseDn || '') : '';
-    document.getElementById('sUserAttr').value = s ? (s.cfg.userAttr || '') : '';
-    document.getElementById('sTls').checked = !!(s && s.cfg.tls);
-    document.getElementById('sPlain').checked = !!(s && s.cfg.plain);
+    document.getElementById('sBaseDn').value = s ? (c.baseDn || '') : '';
+    document.getElementById('sUserAttr').value = s ? (c.userAttr || '') : '';
+    document.getElementById('sTls').checked = !!(s && c.tls);
+    document.getElementById('sPlain').checked = !!(s && c.plain);
+
+    /* ---- 免认证登录字段 ---- */
+    setv('soIssuer', c.issuer); setv('soClientId', c.clientId);
+    setv('soScope', c.scope || 'openid profile'); setv('soJwks', c.jwksUri);
+    setv('soAuthorize', c.authorizeUrl); setv('soToken', c.tokenUrl); setv('soUserinfo', c.userinfoUrl);
+    setc('soPkce', c.pkce == null ? true : !!c.pkce);
+    setv('saAuthorize', c.authorizeUrl); setv('saToken', c.tokenUrl); setv('saUserinfo', c.userinfoUrl);
+    setv('saClientId', c.clientId); setv('saScope', c.scope);
+    setv('saTokenAuth', c.tokenAuth || 'basic'); setv('saUserinfoMethod', c.userinfoMethod || 'GET');
+    setv('smMetadata', c.idpMetadataUrl); setv('smEntityId', c.idpEntityId); setv('smSsoUrl', c.idpSsoUrl);
+    setv('smCert', c.idpCert); setv('smSpEntityId', c.spEntityId);
+    setv('smNameIdFormat', c.nameIdFormat || 'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified');
+    setc('smSignAuthn', c.signAuthn); setv('smSpCert', c.spCert);
+    setv('scServerUrl', c.casServerUrl); setv('scVersion', c.casVersion || '3.0'); setv('scService', c.serviceUrl);
+    setc('scRenew', c.renew); setc('scGateway', c.gateway);
+    setv('stValidateUrl', c.ticketValidateUrl); setv('stParam', c.ticketParam || 'ticket');
+    setv('stMethod', c.ticketMethod || 'GET');
+    setv('shAccount', c.headerAccount || 'X-Auth-User'); setv('shName', c.headerName); setv('shDept', c.headerDept);
+    setv('shSecretName', c.headerSecretName); setv('shAllowIps', c.allowIps);
+
+    /* 密钥类：留空 = 不修改，只提示是否已设置 */
+    var secP = '已设置，留空表示不修改';
+    sets('soClientSecret', editingSecretKeys.indexOf('clientSecret') >= 0 ? secP : '平台分配的 client_secret');
+    sets('saClientSecret', editingSecretKeys.indexOf('clientSecret') >= 0 ? secP : '公共客户端可留空');
+    sets('stSecret', editingSecretKeys.indexOf('sharedSecret') >= 0 ? secP : '平台约定的密钥');
+    sets('shSecret', editingSecretKeys.indexOf('headerSecret') >= 0 ? secP : '网关与本站约定');
+    sets('smSpKey', editingSecretKeys.indexOf('spKey') >= 0 ? secP : '-----BEGIN PRIVATE KEY-----');
+
+    /* 身份映射：按协议读对应键 */
+    var fk = SSO_FIELD_KEYS[s ? s.type : 'oidc'] || SSO_FIELD_KEYS.oidc;
+    setv('ssoAccount', c[fk.account]); setv('ssoName', c[fk.name]); setv('ssoDept', c[fk.dept]);
+    setv('sSsoTimeout', c.timeout || 8); setc('ssoInsecure', c.insecure);
+    document.getElementById('sProbeResult').innerHTML = '';
+
     document.getElementById('sEnabled').checked = s ? !!s.enabled : true;
     document.getElementById('sTestUser').value = '';
     document.getElementById('sTestPwd').value = '';
@@ -8404,6 +8833,72 @@
 
   function serverPayload() {
     var type = document.getElementById('sType').value;
+    var name = document.getElementById('sName').value.trim();
+    var enabled = document.getElementById('sEnabled').checked ? 1 : 0;
+    var g = function (id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; };
+    var ck = function (id) { var el = document.getElementById(id); return el && el.checked ? 1 : 0; };
+
+    /* ---- 免认证登录型 ---- */
+    if (SSO_TYPES.indexOf(type) >= 0) {
+      var f = SSO_FIELD_KEYS[type] || SSO_FIELD_KEYS.oidc;
+      var c = {};
+      c.timeout = parseInt(g('sSsoTimeout'), 10) || 8;
+      c.insecure = ck('ssoInsecure');
+      /* 反代头类型的三个「字段」就是请求头名，直接取参数区；其余协议取身份映射区 */
+      if (type === 'header') {
+        c.headerAccount = g('shAccount') || 'X-Auth-User';
+        c.headerName = g('shName');
+        c.headerDept = g('shDept');
+      } else {
+        c[f.account] = g('ssoAccount');
+        c[f.name] = g('ssoName');
+        c[f.dept] = g('ssoDept');
+      }
+
+      if (type === 'oidc') {
+        c.issuer = g('soIssuer'); c.clientId = g('soClientId'); c.scope = g('soScope');
+        c.jwksUri = g('soJwks'); c.authorizeUrl = g('soAuthorize');
+        c.tokenUrl = g('soToken'); c.userinfoUrl = g('soUserinfo');
+        c.pkce = ck('soPkce');
+        c.redirectUri = ssoCallbackUrl();
+      } else if (type === 'oauth2') {
+        c.authorizeUrl = g('saAuthorize'); c.tokenUrl = g('saToken'); c.userinfoUrl = g('saUserinfo');
+        c.clientId = g('saClientId'); c.scope = g('saScope');
+        c.tokenAuth = g('saTokenAuth') || 'basic';
+        c.userinfoMethod = g('saUserinfoMethod') || 'GET';
+      } else if (type === 'saml') {
+        c.idpMetadataUrl = g('smMetadata'); c.idpEntityId = g('smEntityId'); c.idpSsoUrl = g('smSsoUrl');
+        c.idpCert = g('smCert'); c.spEntityId = g('smSpEntityId'); c.spCert = g('smSpCert');
+        c.nameIdFormat = g('smNameIdFormat');
+        c.signAuthn = ck('smSignAuthn');
+      } else if (type === 'cas') {
+        c.casServerUrl = g('scServerUrl'); c.casVersion = g('scVersion') || '3.0';
+        c.serviceUrl = g('scService');
+        c.renew = ck('scRenew'); c.gateway = ck('scGateway');
+      } else if (type === 'ticket') {
+        c.ticketValidateUrl = g('stValidateUrl');
+        c.ticketParam = g('stParam') || 'ticket';
+        c.ticketMethod = g('stMethod') || 'GET';
+      } else if (type === 'header') {
+        c.headerSecretName = g('shSecretName'); c.allowIps = g('shAllowIps');
+      }
+
+      /* 密钥留空 = 不修改（新建时由服务端报「必须填写」） */
+      var secMap = {
+        oidc: ['soClientSecret', 'clientSecret'],
+        oauth2: ['saClientSecret', 'clientSecret'],
+        saml: ['smSpKey', 'spKey'],
+        ticket: ['stSecret', 'sharedSecret'],
+        header: ['shSecret', 'headerSecret']
+      };
+      var sm = secMap[type];
+      if (sm) { var sv = document.getElementById(sm[0]).value; if (sv) c[sm[1]] = sv; }
+
+      /* host / port 由服务端从各协议的地址里解析，前端不填 */
+      return { name: name, type: type, host: '', port: 0, enabled: enabled, cfg: c };
+    }
+
+    /* ---- 口令校验型 ---- */
     var cfg = {
       timeout: parseInt(document.getElementById('sTimeout').value, 10) || 5,
       bindPattern: document.getElementById('sBind').value.trim(),
@@ -8420,22 +8915,36 @@
     var bp = document.getElementById('sBindPwd').value;
     if (bp) cfg.bindPassword = bp;
     return {
-      name: document.getElementById('sName').value.trim(),
+      name: name,
       type: type,
       host: document.getElementById('sHost').value.trim(),
       port: parseInt(document.getElementById('sPort').value, 10) || 0,
-      enabled: document.getElementById('sEnabled').checked ? 1 : 0,
+      enabled: enabled,
       cfg: cfg
     };
   }
 
   function saveServer() {
     var p = serverPayload();
-    if (!p.name) { toast('请填写认证服务器名称'); return; }
-    if (!p.host) { toast('请填写服务器地址'); return; }
-    if (p.type !== 'ldap' && !p.cfg.secret && !editingServerId) { toast('请填写共享密钥'); return; }
-    if (p.type === 'ldap' && p.cfg.bindDn && !p.cfg.bindPassword && !editingHasBindPwd) {
-      toast('填写了 Bind DN 还需填写 Bind 密码（两者都填才启用服务账号搜索）'); return;
+    var sso = SSO_TYPES.indexOf(p.type) >= 0;
+    if (!p.name) { toast(sso ? '请填写认证源名称' : '请填写认证服务器名称'); return; }
+    if (!sso) {
+      if (!p.host) { toast('请填写服务器地址'); return; }
+      if (p.type !== 'ldap' && !p.cfg.secret && !editingServerId) { toast('请填写共享密钥'); return; }
+      if (p.type === 'ldap' && p.cfg.bindDn && !p.cfg.bindPassword && !editingHasBindPwd) {
+        toast('填写了 Bind DN 还需填写 Bind 密码（两者都填才启用服务账号搜索）'); return;
+      }
+    } else {
+      /* 前端只做「最少必填」的即时提示，完整校验仍在服务端（含各协议的 URL 格式） */
+      var c0 = p.cfg;
+      if (p.type === 'oidc' && !c0.issuer) { toast('请填写 Issuer（平台根地址）'); return; }
+      if (p.type === 'oidc' && !c0.clientId) { toast('请填写 Client ID'); return; }
+      if (p.type === 'oidc' && !c0.clientSecret && !editingServerId) { toast('请填写 Client Secret'); return; }
+      if (p.type === 'oauth2' && !c0.authorizeUrl) { toast('请填写授权地址'); return; }
+      if (p.type === 'oauth2' && !c0.tokenUrl) { toast('请填写令牌地址'); return; }
+      if (p.type === 'saml' && !c0.idpSsoUrl && !c0.idpMetadataUrl) { toast('请填写 IdP Metadata 或 SSO 地址'); return; }
+      if (p.type === 'cas' && !c0.casServerUrl) { toast('请填写 CAS 服务器地址'); return; }
+      if (p.type === 'ticket' && !c0.ticketValidateUrl) { toast('请填写票据校验地址'); return; }
     }
     var req = editingServerId
       ? api('/auth-servers/' + encodeURIComponent(editingServerId), { method: 'PATCH', body: p })
@@ -8444,7 +8953,8 @@
       if (!r.ok) { toast(r.error || '保存失败'); return; }
       closeModal('maskServer');
       refreshServersThen(true).then(function () {
-        toast(editingServerId ? '认证服务器已更新' : '认证服务器已创建');
+        toast(editingServerId ? (sso ? '免认证源已更新' : '认证服务器已更新')
+                             : (sso ? '免认证源已创建' : '认证服务器已创建'));
         if (document.getElementById('usersView').classList.contains('on')) renderUsersPage();
       });
     });
@@ -8464,6 +8974,7 @@
 
   function testServer() {
     var p = serverPayload();
+    if (SSO_TYPES.indexOf(p.type) >= 0) { probeServer(p); return; }
     var u = document.getElementById('sTestUser').value.trim();
     var pwd = document.getElementById('sTestPwd').value;
     var out = document.getElementById('sTestResult');
@@ -8484,6 +8995,36 @@
     }, function () {
       btn.disabled = false; btn.textContent = '测试';
       out.style.color = 'var(--miss)'; out.textContent = '测试请求未能送达服务端';
+    });
+  }
+
+  /* 免认证源自检：拉配置文档 / Metadata / 登录页，结果按步骤列出 */
+  function probeServer(p) {
+    var out = document.getElementById('sProbeResult');
+    var btn = document.getElementById('btnProbeServer');
+    if (!out || !btn) return;
+    if (!p) p = serverPayload();
+    out.innerHTML = '<li><span class="pi">…</span><span class="pl">正在探测，可能需要几秒…</span></li>';
+    btn.disabled = true; btn.textContent = '自检中…';
+    if (editingServerId) p.id = editingServerId;
+    api('/auth-servers/probe', { method: 'POST', body: p }).then(function (r) {
+      btn.disabled = false; btn.textContent = '开始自检';
+      if (!r.ok) {
+        out.innerHTML = '<li><span class="pi bad">✗</span><span class="pl">' + esc(r.error || '请求无效') + '</span></li>';
+        return;
+      }
+      var d = r.data || {};
+      var steps = d.steps || [];
+      out.innerHTML = steps.length
+        ? steps.map(function (s) {
+            return '<li><span class="pi ' + (s.ok ? 'ok' : 'bad') + '">' + (s.ok ? '✓' : '✗') + '</span>' +
+              '<span class="pl"><b>' + esc(s.label) + '</b>：' + esc(s.detail) + '</span></li>';
+          }).join('')
+        : '<li><span class="pi">·</span><span class="pl">没有可执行的检查项</span></li>';
+      toast(d.ok ? '自检通过' : '自检发现问题，请查看结果明细');
+    }, function () {
+      btn.disabled = false; btn.textContent = '开始自检';
+      out.innerHTML = '<li><span class="pi bad">✗</span><span class="pl">自检请求未能送达服务端</span></li>';
     });
   }
 
@@ -8849,9 +9390,10 @@
     bsel.innerHTML = blist.length
       ? blist.map(function (s) {
           return '<option value="' + esc(s.id) + '">' + esc(s.name) + ' · ' + esc(AUTH_LABELS[s.type] || s.type) +
-            ' · ' + esc(s.host + ':' + s.port) + (s.enabled ? '' : '（已停用）') + '</option>';
+            (isSsoServer(s) ? ' · 免认证' : ' · ' + esc(s.host + ':' + s.port)) +
+            (s.enabled ? '' : '（已停用）') + '</option>';
         }).join('')
-      : '<option value="">（暂无认证服务器）</option>';
+      : '<option value="">（暂无认证源）</option>';
     syncBatchSourceFields();
     openModal('maskBatchUser');
   }
@@ -8866,8 +9408,10 @@
     if (remote) {
       var s = serverById(document.getElementById('bServer').value);
       hint.textContent = s
-        ? ('所选远程账号的口令将改由「' + s.name + '」校验，本站不再保存其密码；已是该类型的账号跳过。')
-        : '还没有可用的认证服务器，请先到「认证服务器」页新增。';
+        ? (isSsoServer(s)
+            ? ('所选账号将改由「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + '）统一身份登录，本站不再保存其密码；已是该认证源的账号跳过。')
+            : ('所选远程账号的口令将改由「' + s.name + '」校验，本站不再保存其密码；已是该类型的账号跳过。'))
+        : '还没有可用的认证源，请先到「认证管理」页新增。';
     } else {
       hint.textContent = '仅对远程账号生效：改回本地需统一初始密码；已是本地账号的跳过。';
     }
@@ -8918,7 +9462,7 @@
       if (srcType === 'remote') {
         srcSid = document.getElementById('bServer').value;
         if (!srcSid || !serverById(srcSid)) {
-          toast('请选择认证服务器（没有的话先到「认证服务器」页新增）'); return;
+          toast('请选择认证源（没有的话先到「认证管理」页新增）'); return;
         }
       } else {
         srcPwd = String(document.getElementById('bSourcePwd').value || '');
@@ -9009,7 +9553,11 @@
     var label = AUTH_LABELS[u.source] || String(u.source).toUpperCase();
     return label;
   }
-  var AUTH_LABELS = { local: '本地', radius: 'RADIUS', tacacs: 'TACACS+', ldap: 'LDAP' };
+  var AUTH_LABELS = {
+    local: '本地', radius: 'RADIUS', tacacs: 'TACACS+', ldap: 'LDAP',
+    oidc: 'OIDC', oauth2: 'OAuth 2.0', saml: 'SAML 2.0',
+    cas: 'CAS', ticket: '票据直跳', header: '反向代理头'
+  };
   function permText(u) { return u.perm === 'ro' ? '只读' : '读写'; }
   function seqTag(u) {
     var remote = (u.source || 'local') !== 'local';
@@ -9170,8 +9718,10 @@
       var sid = document.getElementById('uServer').value;
       var s = serverById(sid);
       hint.textContent = s
-        ? ('登录时把用户名与密码转发给「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + ' ' + s.host + ':' + s.port + '）校验，本站不保存密码。')
-        : '还没有可用的认证服务器，请先到「认证服务器」页新增。';
+        ? (isSsoServer(s)
+            ? ('该账号通过「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + '）统一身份登录：本站不保存密码，平台认证后按登录名匹配本账号。')
+            : ('登录时把用户名与密码转发给「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + ' ' + s.host + ':' + s.port + '）校验，本站不保存密码。'))
+        : '还没有可用的认证源，请先到「认证管理」页新增。';
     }
     syncMultiLedgerField();
   }
@@ -9263,9 +9813,10 @@
     sel.innerHTML = list.length
       ? list.map(function (s) {
           return '<option value="' + esc(s.id) + '">' + esc(s.name) + ' · ' + esc(AUTH_LABELS[s.type] || s.type) +
-            ' · ' + esc(s.host + ':' + s.port) + (s.enabled ? '' : '（已停用）') + '</option>';
+            (isSsoServer(s) ? ' · 免认证' : ' · ' + esc(s.host + ':' + s.port)) +
+            (s.enabled ? '' : '（已停用）') + '</option>';
         }).join('')
-      : '<option value="">（暂无认证服务器）</option>';
+      : '<option value="">（暂无认证源）</option>';
     var remote = !!u && (u.source || 'local') !== 'local';
     editingWasRemote = remote;
     document.getElementById('uSourceType').value = remote ? 'remote' : 'local';
@@ -9366,7 +9917,7 @@
       toast('登录超时需为 5–43200 之间的整数分钟（留空默认 30）'); return;
     }
     if (!name) { toast('请填写区域展示名称'); return; }
-    if (remote && !serverId) { toast('请选择认证服务器（没有的话先去「认证服务器」页新增）'); return; }
+    if (remote && !serverId) { toast('请选择认证源（没有的话先去「认证管理」页新增）'); return; }
 
     if (editingUserId) {
       var target = userList().filter(function (x) { return x.id === editingUserId; })[0];
@@ -9443,7 +9994,9 @@
           toast(initData.shareFrom
             ? '用户「' + name + '」已创建，与来源用户共用同一份台账数据（双向同步）'
             : (remote
-              ? '远程用户「' + name + '」已创建，登录口令由所选认证服务器校验'
+              ? (isSsoServer(serverById(serverId))
+                  ? '账号「' + name + '」已创建，将通过统一身份登录（本站不设密码）'
+                  : '远程用户「' + name + '」已创建，登录口令由所选认证服务器校验')
               : '用户「' + name + '」已创建，首次登录后需修改初始密码'));
         });
       });
@@ -9658,6 +10211,24 @@
     document.getElementById('btnNewServer').addEventListener('click', function () { openServerModal(null); });
     document.getElementById('btnSaveServer').addEventListener('click', saveServer);
     document.getElementById('btnTestServer').addEventListener('click', testServer);
+    var probeBtn = document.getElementById('btnProbeServer');
+    if (probeBtn) probeBtn.addEventListener('click', function () { probeServer(serverPayload()); });
+    var cbCopy = document.getElementById('btnCopyCallback');
+    if (cbCopy) cbCopy.addEventListener('click', function () {
+      var el = document.getElementById('ssoCallback');
+      if (!el) return;
+      var done = function () { toast('回调地址已复制'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(el.value).then(done, function () { el.select(); });
+      } else {
+        el.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+      }
+    });
+    var signChk = document.getElementById('smSignAuthn');
+    if (signChk) signChk.addEventListener('change', function () {
+      document.getElementById('smSpKeyRow').style.display = signChk.checked ? 'flex' : 'none';
+    });
     document.getElementById('sType').addEventListener('change', function () {
       document.getElementById('sPort').value = '';
       syncServerModalFields();
@@ -9677,7 +10248,11 @@
       var act = el.getAttribute('data-sact');
       if (act === 'edit') openServerModal(s);
       else if (act === 'del') deleteServer(s);
-      else if (act === 'test') { openServerModal(s); setTimeout(function () { document.getElementById('sTestUser').focus(); }, 120); }
+      else if (act === 'test') {
+        openServerModal(s);
+        if (isSsoServer(s)) setTimeout(function () { probeServer(serverPayload()); }, 120);
+        else setTimeout(function () { document.getElementById('sTestUser').focus(); }, 120);
+      }
     });
 
     /* 用户弹窗：账号类型 / 认证服务器切换 */

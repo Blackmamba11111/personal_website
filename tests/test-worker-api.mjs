@@ -513,5 +513,70 @@ check('降级为独立账号后 bundle.ledger.multi=false', r.ok && r.data.ledge
   JSON.stringify(r.data && r.data.ledger));
 
 
+/* 12. 免认证登录源（OIDC / OAuth2 / SAML / CAS / 票据 / 反代头） */
+r = await api('/auth-servers', { method: 'POST', body: { name: '集团统一身份', type: 'oidc', cfg: { issuer: 'https://sso.zdns.cn', clientId: 'inspection', clientSecret: 's3cret', scope: 'openid profile' } } }, tk);
+check('新增 OIDC 源', r.ok === true, JSON.stringify(r));
+const ssoId = r.data && r.data.server && r.data.server.id;
+check('OIDC 源标记 sso=true', r.data.server.sso === true);
+check('OIDC 源不回传 clientSecret', !r.data.server.cfg.clientSecret, JSON.stringify(r.data.server.cfg));
+check('OIDC 源给出已设置的密钥键名', (r.data.server.secretKeys || []).indexOf('clientSecret') >= 0);
+check('OIDC 源 host 从 issuer 解析', r.data.server.host === 'sso.zdns.cn', r.data.server.host);
+check('OIDC 默认账号字段', r.data.server.cfg.accountClaim === 'preferred_username');
+
+r = await api('/auth-servers', { method: 'POST', body: { name: '缺 issuer', type: 'oidc', cfg: { clientId: 'a', clientSecret: 'b' } } }, tk);
+check('OIDC 缺 Issuer 被拒', r.ok === false && /Issuer/.test(r.error), JSON.stringify(r));
+
+r = await api('/auth-servers', { method: 'POST', body: { name: '缺密钥', type: 'oidc', cfg: { issuer: 'https://sso.zdns.cn', clientId: 'a' } } }, tk);
+check('OIDC 缺 Client Secret 被拒', r.ok === false && /Client Secret/.test(r.error), JSON.stringify(r));
+
+const otherTypes = [
+  ['oauth2', { authorizeUrl: 'https://sso.zdns.cn/oauth2/authorize', tokenUrl: 'https://sso.zdns.cn/oauth2/token', clientId: 'c1' }],
+  ['saml', { idpSsoUrl: 'https://sso.zdns.cn/saml/sso', idpCert: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----' }],
+  ['cas', { casServerUrl: 'https://cas.zdns.cn/cas' }],
+  ['ticket', { ticketValidateUrl: 'https://portal.zdns.cn/api/ticket', sharedSecret: 'k' }],
+  ['header', { headerAccount: 'X-Auth-User', allowIps: '10.1.114.0/24' }]
+];
+for (const pair of otherTypes) {
+  const rr = await api('/auth-servers', { method: 'POST', body: { name: '源-' + pair[0], type: pair[0], cfg: pair[1] } }, tk);
+  check('新增 ' + pair[0] + ' 源', rr.ok === true, JSON.stringify(rr));
+}
+
+r = await api('/auth-servers', { method: 'POST', body: { name: '坏头', type: 'header', cfg: { headerAccount: 'X Auth User' } } }, tk);
+check('反代头名称非法被拒', r.ok === false && /请求头/.test(r.error), JSON.stringify(r));
+
+r = await api('/auth-servers', { method: 'GET' }, tk);
+const ssoRow = r.data.servers.filter(s => s.id === ssoId)[0];
+check('六类免认证源都落库', r.data.servers.filter(s => s.sso).length === 6,
+  r.data.servers.map(s => s.type).join(','));
+check('列表仍不回传任何密钥', !ssoRow.cfg.clientSecret && ssoRow.hasSecret === true);
+
+/* 编辑时密钥留空 = 不修改 */
+r = await api('/auth-servers/' + ssoId, { method: 'PATCH', body: { name: '集团统一身份', type: 'oidc', cfg: { issuer: 'https://sso.zdns.cn', clientId: 'inspection', scope: 'openid profile email' } } }, tk);
+check('编辑时留空 Client Secret 不报错', r.ok === true, JSON.stringify(r));
+check('编辑后 scope 已更新', r.data.server.cfg.scope === 'openid profile email');
+check('编辑后 secret 仍在', (r.data.server.secretKeys || []).indexOf('clientSecret') >= 0);
+
+/* 用户绑定免认证源 */
+r = await api('/users', { method: 'POST', body: { username: 'ssouser', name: '统一身份用户', serverId: ssoId } }, tk);
+check('用户可绑定免认证源', r.ok === true, JSON.stringify(r));
+check('绑定后来源记为 oidc', r.data.user.source === 'oidc', r.data.user.source);
+
+r = await api('/auth/login', { method: 'POST', body: { username: 'ssouser', password: 'whatever' } });
+check('免认证账号用密码登录被拒并给出指引', r.ok === false && /统一身份登录/.test(r.error), JSON.stringify(r));
+
+/* 自检 */
+r = await api('/auth-servers/probe', { method: 'POST', body: { name: 'x', type: 'oidc', cfg: { clientId: 'a', clientSecret: 'b' } } }, tk);
+check('自检同样校验必填项', r.ok === false && /Issuer/.test(r.error), JSON.stringify(r));
+
+r = await api('/auth-servers/probe', { method: 'POST', body: { name: 'x', type: 'ldap', host: '1.1.1.1', cfg: { bindPattern: 'x' } } }, tk);
+check('口令型源不能走自检', r.ok === false && /口令校验型/.test(r.error), JSON.stringify(r));
+
+r = await api('/auth-servers/probe', { method: 'POST', body: { name: 'h', type: 'header', cfg: { headerAccount: 'X-Auth-User', allowIps: '10.1.114.0/24' } } }, tk);
+check('反代头自检不联网且通过', r.ok === true && r.data.ok === true && r.data.steps.length >= 2, JSON.stringify(r.data));
+
+r = await api('/auth-servers/probe', { method: 'POST', body: { name: 'h', type: 'header', cfg: { headerAccount: 'X-Auth-User' } } }, 'bad-token');
+check('非超管自检被拒', r.status === 401 || r.status === 403, String(r.status));
+
+
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);

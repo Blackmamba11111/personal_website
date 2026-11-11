@@ -173,21 +173,33 @@ function installApiStub(window, opts) {
     };
   };
 
-  /* 认证服务器脱敏视图：密钥只给 hasSecret 标记 */
+  /* 认证服务器脱敏视图：密钥只给 hasSecret / secretKeys 标记（与两版真实服务端同口径） */
+  const STUB_SSO_TYPES = ['oidc', 'oauth2', 'saml', 'cas', 'ticket', 'header'];
+  const STUB_SSO_SECRETS = ['clientSecret', 'sharedSecret', 'headerSecret', 'spKey'];
   function serverView(s) {
     const cfg = s.cfg || {};
-    return {
-      id: s.id, name: s.name, type: s.type, host: s.host, port: s.port,
+    const sso = STUB_SSO_TYPES.indexOf(s.type) >= 0;
+    const out = {
+      id: s.id, name: s.name, type: s.type, sso: sso, host: s.host, port: s.port,
       enabled: s.enabled !== false,
       createdAt: '2026-01-01', updatedAt: '',
       userCount: srv.users.filter(u => u.serverId === s.id).length,
-      hasSecret: !!cfg.secret,
-      cfg: {
+      hasSecret: !!cfg.secret || STUB_SSO_SECRETS.some(k => !!cfg[k]),
+      secretKeys: sso ? STUB_SSO_SECRETS.filter(k => !!cfg[k]) : [],
+      cfg: null
+    };
+    if (sso) {
+      const c = {};
+      Object.keys(cfg).forEach(k => { if (STUB_SSO_SECRETS.indexOf(k) < 0) c[k] = cfg[k]; });
+      out.cfg = c;
+    } else {
+      out.cfg = {
         timeout: cfg.timeout || 5, nasId: cfg.nasId || '', plain: cfg.plain || 0,
         bindPattern: cfg.bindPattern || '', baseDn: cfg.baseDn || '', userAttr: cfg.userAttr || '',
         tls: cfg.tls || 0, verifyTls: cfg.verifyTls || 0
-      }
-    };
+      };
+    }
+    return out;
   }
   /* 桩里的「远程认证」：只要口令等于 remote-ok 就算通过，否则拒绝。
      桩不跑真实网络协议（那部分见 tests/test-protocols.mjs 与 test-worker-api.mjs）。 */
@@ -505,7 +517,24 @@ function installApiStub(window, opts) {
     }
     if (p === '/auth-servers' && method === 'POST') {
       if (auth.role !== 'admin') return bad('仅超级管理员可新增认证服务器', 403);
-      if (!body.name) return bad('请填写认证服务器名称');
+      if (!body.name) return bad('请填写认证源名称');
+      /* 免认证登录源：host 由各协议地址解析，必填项按类型区分 */
+      if (STUB_SSO_TYPES.indexOf(body.type) >= 0) {
+        const c = body.cfg || {};
+        if (body.type === 'oidc' && !c.issuer) return bad('OIDC 需要填写 Issuer');
+        if (body.type === 'oidc' && !c.clientSecret) return bad('OIDC 需要填写 Client Secret');
+        if (body.type === 'oauth2' && !c.authorizeUrl) return bad('请填写授权地址');
+        if (body.type === 'saml' && !c.idpSsoUrl && !c.idpMetadataUrl) return bad('SAML 需填写 IdP SSO 地址');
+        if (body.type === 'cas' && !c.casServerUrl) return bad('请填写 CAS 服务器地址');
+        if (body.type === 'ticket' && !c.ticketValidateUrl) return bad('请填写票据校验地址');
+        const m = /^https?:\/\/([^\/:?#]+)/i.exec(c.issuer || c.authorizeUrl || c.idpSsoUrl || c.casServerUrl || c.ticketValidateUrl || '');
+        const id = 'srv' + (srv.servers.length + 1);
+        srv.servers.push({
+          id: id, name: body.name, type: body.type, host: m ? m[1] : '', port: 0,
+          enabled: body.enabled === 0 ? false : true, cfg: c
+        });
+        return ok({ server: serverView(srv.servers[srv.servers.length - 1]) });
+      }
       if (!body.host) return bad('请填写服务器地址');
       const type = ['radius', 'tacacs', 'ldap'].indexOf(body.type) >= 0 ? body.type : '';
       if (!type) return bad('认证类型需为 RADIUS / TACACS+ / LDAP 之一');
@@ -518,6 +547,13 @@ function installApiStub(window, opts) {
         enabled: body.enabled === 0 ? false : true, cfg: cfg
       });
       return ok({ server: serverView(srv.servers[srv.servers.length - 1]) });
+    }
+    /* 免认证源自检：桩不发起网络探测，只回固定步骤 */
+    if (p === '/auth-servers/probe' && method === 'POST') {
+      if (auth.role !== 'admin') return bad('仅超级管理员可自检免认证源', 403);
+      if (!body.name) return bad('请填写认证源名称');
+      if (STUB_SSO_TYPES.indexOf(body.type) < 0) return bad('该类型是口令校验型，请用「测试」校验账号口令');
+      return ok({ ok: true, steps: [{ label: '参数自洽性', ok: true, detail: '桩：不发起网络探测' }] });
     }
     if (p === '/auth-servers/test' && method === 'POST') {
       if (auth.role !== 'admin') return bad('仅超级管理员可测试认证服务器', 403);

@@ -243,6 +243,108 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     w.close();
   }
 
+  /* ================= 7. 免认证登录（SSO）配置与账号绑定 ================= */
+  {
+    const dom = makeDom({ sessionUser: 'admin', data: { admin: { regions: [], customers: [], visits: [] } }, errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+
+    click(w, id('userChip'));
+    click(w, id('umUsers'));
+    click(w, id('btnAuthServers'));
+    await tick(50);
+    check('认证管理页标题', d.querySelector('#serversView h2').textContent.indexOf('认证管理') >= 0);
+
+    click(w, id('btnNewServerEmpty'));
+    check('类型下拉含六类免认证协议',
+      ['oidc', 'oauth2', 'saml', 'cas', 'ticket', 'header'].every(v => [...id('sType').options].some(o => o.value === v)));
+
+    id('sType').value = 'oidc';
+    fire(w, id('sType'), 'change');
+    check('切到 OIDC 后隐藏口令区、显示免认证区',
+      id('sPwdWrap').style.display === 'none' && id('sSsoWrap').style.display === 'block');
+    check('OIDC 参数区可见、其它协议区隐藏',
+      id('sOidcWrap').style.display === 'block' && id('sSamlWrap').style.display === 'none');
+    check('回调地址按当前站点生成',
+      id('ssoCallback').value.indexOf('/api/auth/sso/callback') >= 0, id('ssoCallback').value);
+    check('账号字段标签按协议用 claim 说法', id('ssoAccountLabel').textContent.indexOf('claim') >= 0,
+      id('ssoAccountLabel').textContent);
+
+    id('sName').value = '集团统一身份';
+    click(w, id('btnSaveServer'));
+    check('缺 Issuer 被拦下', w.__SRV__.servers.length === 0 && id('toast').textContent.indexOf('Issuer') >= 0,
+      id('toast').textContent);
+
+    id('soIssuer').value = 'https://sso.zdns.cn';
+    id('soClientId').value = 'inspection';
+    id('soClientSecret').value = 's3cret';
+    id('ssoAccount').value = 'preferred_username';
+    click(w, id('btnSaveServer'));
+    await tick(60);
+    check('OIDC 源创建成功', w.__SRV__.servers.length === 1, JSON.stringify(w.__SRV__.servers));
+    const sv = w.__SRV__.servers[0];
+    check('保存的 issuer / clientId 正确', sv.cfg.issuer === 'https://sso.zdns.cn' && sv.cfg.clientId === 'inspection');
+    check('账号字段映射到账户 claim 键', sv.cfg.accountClaim === 'preferred_username', JSON.stringify(sv.cfg));
+    check('host 从 issuer 解析', sv.host === 'sso.zdns.cn', sv.host);
+    check('列表标注 OIDC 与免认证',
+      id('serversTableWrap').textContent.indexOf('OIDC') >= 0 &&
+      id('serversTableWrap').textContent.indexOf('免认证') >= 0,
+      id('serversTableWrap').textContent.slice(0, 90));
+    check('列表动作按钮显示「自检」',
+      id('serversTableWrap').querySelector('[data-sact="test"]').textContent === '自检');
+
+    /* 编辑：密钥不回显，留空表示不修改 */
+    click(w, d.querySelector('#serversTableWrap tbody tr').querySelector('[data-sact="edit"]'));
+    check('编辑时密钥框为空且提示已设置',
+      id('soClientSecret').value === '' && id('soClientSecret').placeholder.indexOf('已设置') >= 0,
+      id('soClientSecret').placeholder);
+    check('编辑时回填 issuer', id('soIssuer').value === 'https://sso.zdns.cn', id('soIssuer').value);
+    /* 自检按钮（桩不联网） */
+    click(w, id('btnProbeServer'));
+    await tick(60);
+    check('自检结果按步骤展示', id('sProbeResult').textContent.indexOf('参数自洽性') >= 0,
+      id('sProbeResult').textContent);
+    click(w, d.querySelector('#maskServer [data-close]'));
+
+    /* 反代头：账号/姓名/部门就是请求头名，取参数区而不是身份映射区（回归） */
+    click(w, id('btnNewServer'));
+    id('sName').value = '网关注入';
+    id('sType').value = 'header';
+    fire(w, id('sType'), 'change');
+    check('反代头隐藏身份映射三列', id('ssoMapRow').style.display === 'none');
+    id('shAccount').value = 'X-Auth-User';
+    id('shName').value = 'X-Auth-Name';
+    id('shAllowIps').value = '10.1.114.0/24';
+    click(w, id('btnSaveServer'));
+    await tick(60);
+    const hv = w.__SRV__.servers.filter(s => s.type === 'header')[0];
+    check('反代头保存了账号请求头', hv && hv.cfg.headerAccount === 'X-Auth-User', hv && JSON.stringify(hv.cfg));
+    check('反代头保存了姓名请求头', hv && hv.cfg.headerName === 'X-Auth-Name');
+    check('反代头保存了 IP 白名单', hv && hv.cfg.allowIps === '10.1.114.0/24');
+
+    /* 用户绑定免认证源 */
+    click(w, id('btnNewUser'));
+    id('uUsername').value = 'ssouser';
+    id('uName').value = '统一身份用户';
+    id('uSourceType').value = 'remote';
+    fire(w, id('uSourceType'), 'change');
+    const opt = [...id('uServer').options].filter(o => o.textContent.indexOf('集团统一身份') >= 0)[0];
+    check('用户下拉可选中免认证源且标注', !!opt && opt.textContent.indexOf('免认证') >= 0, opt && opt.textContent);
+    id('uServer').value = opt.value;
+    fire(w, id('uServer'), 'change');
+    check('提示说明走统一身份登录', id('uServerHint').textContent.indexOf('统一身份登录') >= 0,
+      id('uServerHint').textContent);
+    check('选了免认证源时不显示初始密码', id('uPwdField').style.display === 'none');
+    click(w, id('btnSaveUser'));
+    await tick(80);
+    const su = userOf(w, 'ssouser');
+    check('账号来源记为 oidc', su && su.source === 'oidc', su && su.source);
+    check('免认证账号不保存本地口令', su && !su.pwd);
+
+    w.close();
+  }
+
   /* ================= 汇总 ================= */
   let pass = 0;
   results.forEach(([st, label, extra]) => {
