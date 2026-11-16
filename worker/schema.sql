@@ -30,7 +30,11 @@ CREATE TABLE IF NOT EXISTS users (
   stat_visible INTEGER NOT NULL DEFAULT 0,
   -- 多台账权限（2026-11-09）：1 = 除共享来的公共台账外，另有一份自己的台账
   -- 键为 ledgers 里的 `<用户名>::mine`；仅对设了 share_from 的非超管账号有效
-  multi_ledger INTEGER NOT NULL DEFAULT 0
+  multi_ledger INTEGER NOT NULL DEFAULT 0,
+  -- 企业微信通知（2026-11-16）：1 = 巡检记录增删改后推送
+  wx_enabled INTEGER NOT NULL DEFAULT 0,
+  -- wx_cfg 为 JSON：type(robot/app) / hook / corpid / secret / agentid / to / tpl / skipSelf
+  wx_cfg     TEXT NOT NULL DEFAULT '{}'
 );
 
 -- 远程认证服务器（RADIUS / TACACS+ / LDAP）
@@ -110,6 +114,19 @@ CREATE TABLE IF NOT EXISTS crm_matches (
   data         TEXT NOT NULL DEFAULT '{}',
   updated_at   TEXT NOT NULL
 );
+
+-- 企业微信推送流水（2026-11-16）：每个账号只留最近 200 条，用于核对「到底发出去没有」
+CREATE TABLE IF NOT EXISTS wx_logs (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  at       TEXT NOT NULL,
+  kind     TEXT NOT NULL DEFAULT '',   -- notify / test
+  ok       INTEGER NOT NULL DEFAULT 0,
+  target   TEXT NOT NULL DEFAULT '',   -- robot / app
+  summary  TEXT NOT NULL DEFAULT '',
+  err      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_wx_logs_user ON wx_logs(username);
 
 -- 初始超级管理员：口令为既有默认值，标记必须首次登录后立即修改（must_change=1）
 -- 已存在则不覆盖，保证改密后重复执行不会回退

@@ -13,6 +13,7 @@
 
 import * as AUTH_P from './auth-protocols.mjs';
 import * as CRM_P from './crm-client.mjs';
+import * as WX_P from './wecom-notify.mjs';
 
 const HASH_ROUNDS = 400;
 
@@ -124,6 +125,93 @@ function newSalt() { return 'S' + randHex(8); }
 function newToken() { return randHex(24); }
 function nowIso() { return new Date().toISOString(); }
 
+/* ---------------- 企业微信通知（用户级配置） ----------------
+   投递逻辑在 ./wecom-notify.mjs（与内网版共用）；本段只做配置归一化与脱敏视图。
+   密钥（webhook 的 key / corpsecret）只落库，接口一律只回「已设置」或掩码。 */
+const WX_HOOK_RE = /^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=[A-Za-z0-9_-]+$/;
+function wxSplitTo(v) {
+  return String(v == null ? '' : v).split(/[,，;；\s]+/)
+    .map(function (s) { return s.trim(); }).filter(Boolean).slice(0, 50);
+}
+function wxMaskHook(h) {
+  h = String(h || '');
+  if (!h) return '';
+  const m = /^(.*[?&]key=)(.+)$/.exec(h);
+  if (!m) return h.slice(0, 12) + '****';
+  const k = m[2];
+  return m[1] + (k.length > 4 ? k.slice(0, 4) + '****' : '****');
+}
+function wxView(enabled, raw) {
+  const c = parseCfg(raw);
+  const type = c.type === 'app' ? 'app' : 'robot';
+  const to = c.to || '';
+  const ready = !!enabled && (type === 'app'
+    ? !!(c.corpid && c.secret && c.agentid && wxSplitTo(to).length)
+    : WX_HOOK_RE.test(String(c.hook || '')));
+  return {
+    enabled: !!enabled,
+    type: type,
+    hook: wxMaskHook(c.hook),
+    hasHook: !!c.hook,
+    corpid: c.corpid || '',
+    agentid: c.agentid || '',
+    hasSecret: !!c.secret,
+    to: to,
+    tpl: c.tpl || '',
+    skipSelf: !!c.skipSelf,
+    ready: ready
+  };
+}
+function ensureWxInput(input, base) {
+  input = input || {};
+  base = base || {};
+  const type = String(input.type || base.type || 'robot').toLowerCase();
+  if (type !== 'robot' && type !== 'app') return { err: '接入方式需为「群机器人」或「自建应用」' };
+  const cfg = {
+    type: type,
+    hook: base.hook || '',
+    corpid: base.corpid || '',
+    secret: base.secret || '',
+    agentid: base.agentid || '',
+    to: base.to || '',
+    tpl: base.tpl || '',
+    skipSelf: base.skipSelf ? 1 : 0
+  };
+  if (input.hook !== undefined) {
+    const h = String(input.hook || '').trim();
+    /* 前端回填的是掩码（key 中间带 ****），说明管理员没改，沿用库内原值 */
+    if (h.indexOf('****') < 0) {
+      if (h && !WX_HOOK_RE.test(h)) {
+        return { err: 'Webhook 地址格式不正确（应以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头）' };
+      }
+      cfg.hook = h;
+    }
+  }
+  if (input.corpid !== undefined) cfg.corpid = String(input.corpid || '').trim();
+  if (input.agentid !== undefined) cfg.agentid = String(input.agentid || '').trim();
+  if (input.secret) cfg.secret = String(input.secret).trim();
+  if (input.clearSecret) cfg.secret = '';
+  if (input.to !== undefined) cfg.to = wxSplitTo(input.to).join(', ');
+  if (input.tpl !== undefined) {
+    const t = String(input.tpl || '');
+    if (t.length > 2000) return { err: '消息模板最多 2000 字' };
+    cfg.tpl = t;
+  }
+  if (input.skipSelf !== undefined) cfg.skipSelf = input.skipSelf ? 1 : 0;
+
+  const enabled = input.enabled ? 1 : 0;
+  if (enabled) {
+    if (type === 'robot' && !cfg.hook) return { err: '启用前请填写群机器人 Webhook 地址' };
+    if (type === 'app') {
+      if (!cfg.corpid || !cfg.agentid) return { err: '启用前请填写 corpid 与 agentid' };
+      if (!cfg.secret) return { err: '启用前请填写 corpsecret' };
+      if (!/^\d{4,12}$/.test(String(cfg.agentid))) return { err: 'agentid 应为数字（企业微信应用详情页可见）' };
+      if (!wxSplitTo(cfg.to).length) return { err: '自建应用需填写接收人 userid（可在企业微信通讯录查看）' };
+    }
+  }
+  return { cfg: cfg, enabled: enabled };
+}
+
 /* 认证来源：local = 本地口令；radius / tacacs / ldap = 由对应认证服务器校验
    perm：rw = 读写；ro = 只读（可看可导出，不能改台账） */
 /* 注意：本函数必须对「数据库行」和「已映射的对象」都成立——
@@ -156,12 +244,16 @@ function mapUser(row, srvMap) {
     nameCn: row.name_cn != null ? row.name_cn : (row.nameCn || ''),
     crmVisible: row.crm_visible != null ? !!row.crm_visible : !!row.crmVisible,
     statVisible: row.stat_visible != null ? !!row.stat_visible : !!row.statVisible,
-    multiLedger: row.multi_ledger != null ? !!row.multi_ledger : !!row.multiLedger
+    multiLedger: row.multi_ledger != null ? !!row.multi_ledger : !!row.multiLedger,
+    wx: row.wx && typeof row.wx === 'object' ? row.wx : wxView(
+      row.wx_enabled != null ? row.wx_enabled : row.wxEnabled,
+      row.wx_cfg != null ? row.wx_cfg : row.wxCfg
+    )
   };
 }
 function normName(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
 function validUsername(u) { return /^[A-Za-z0-9_.-]{3,32}$/.test(u); }
-const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger';
+const USER_COLS = 'username, name, role, status, note, must_change, created_at, last_login, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger, wx_enabled, wx_cfg';
 
 /* 登录超时（分钟）：按用户配置，默认 30，范围 5 ~ 43200（30 天）。
    会话为滑动过期：每次通过鉴权的请求都会把过期时间顺延到 now + session_mins。 */
@@ -188,7 +280,10 @@ async function ensureSchema(env) {
     'ALTER TABLE users ADD COLUMN stat_visible INTEGER NOT NULL DEFAULT 0',
     /* 多台账权限（2026-11-09）：仅对「已设共享来源」的账号有意义——开了才有第二份
        属于自己的台账，键为 `<用户名>::mine`，与他人共享的那份互不影响 */
-    'ALTER TABLE users ADD COLUMN multi_ledger INTEGER NOT NULL DEFAULT 0'
+    'ALTER TABLE users ADD COLUMN multi_ledger INTEGER NOT NULL DEFAULT 0',
+    /* 企业微信通知（2026-11-16）：每用户独立配置，巡检记录增删改后推送 */
+    'ALTER TABLE users ADD COLUMN wx_enabled INTEGER NOT NULL DEFAULT 0',
+    "ALTER TABLE users ADD COLUMN wx_cfg TEXT NOT NULL DEFAULT '{}'"
   ];
   for (const sql of cols) {
     try { await env.DB.prepare(sql).run(); } catch (e) { /* 列已存在 */ }
@@ -227,6 +322,13 @@ async function ensureSchema(env) {
       'detail TEXT NOT NULL DEFAULT \'\', at TEXT NOT NULL)'
     ).run();
     await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_ledger_logs_owner ON ledger_logs(username, at)').run();
+    /* 企业微信推送流水：只留最近 N 条，便于管理员核对「到底发出去没有」 */
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS wx_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, ' +
+      "at TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '', ok INTEGER NOT NULL DEFAULT 0, " +
+      "target TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', err TEXT NOT NULL DEFAULT '')"
+    ).run();
+    await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_wx_logs_user ON wx_logs(username)').run();
   } catch (e) { /* 只读或 DDL 受限时忽略 */ }
   schemaReady = true;
 }
@@ -1188,7 +1290,64 @@ async function writeLedger(env, username, data, by, mine) {
       ).bind(owner, owner).run();
     } catch (e) { /* 清理失败不影响主流程 */ }
   }
+  return logs;
 }
+/* ---------------- 企业微信通知：投递与触发 ----------------
+   触发点是 writeLedger 的差分结果（kind=visit 的 add/update/delete）。
+   投递失败只记流水，绝不影响台账保存。 */
+async function wxLogAdd(env, username, kind, ok, type, summary, err) {
+  try {
+    await env.DB.prepare('INSERT INTO wx_logs (username, at, kind, ok, target, summary, err) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .bind(username, nowIso(), kind, ok ? 1 : 0, type || '', String(summary || '').slice(0, 200), String(err || '').slice(0, 300)).run();
+    await env.DB.prepare('DELETE FROM wx_logs WHERE username = ? AND id NOT IN ' +
+      '(SELECT id FROM wx_logs WHERE username = ? ORDER BY id DESC LIMIT 200)').bind(username, username).run();
+  } catch (e) { /* 流水失败不影响主流程 */ }
+}
+async function displayNameOf(env, username) {
+  const r = await env.DB.prepare('SELECT name, name_cn FROM users WHERE username = ?').bind(username).first();
+  if (!r) return username;
+  return String(r.name_cn || '').trim() || r.name || username;
+}
+async function notifyVisitChange(env, ownerName, actor, logs, origin) {
+  try {
+    const vs = (logs || []).filter(function (l) { return l.kind === 'visit' && l.action; });
+    if (!vs.length) return;
+    const row = await env.DB.prepare('SELECT username, name, name_cn, wx_enabled, wx_cfg FROM users WHERE username = ?')
+      .bind(ownerName).first();
+    if (!row || !row.wx_enabled) return;
+    const cfg = parseCfg(row.wx_cfg);
+    /* 「自己操作不通知」：适合自己录完不想再被打扰的账号 */
+    if (cfg.skipSelf && actor === row.username) return;
+
+    const byCust = new Map();
+    vs.forEach(function (l) {
+      const name = String(l.target || '').split(' · ')[0] || '未知客户';
+      const it = byCust.get(name) || { customer: name, add: 0, upd: 0, del: 0 };
+      if (l.action === 'add') it.add++;
+      else if (l.action === 'update') it.upd++;
+      else if (l.action === 'delete') it.del++;
+      byCust.set(name, it);
+    });
+    const items = Array.from(byCust.values());
+    const now = nowIso();
+    const summary = WX_P.summaryOf(items);
+    const content = WX_P.fillTpl(cfg.tpl, {
+      summary: summary,
+      customer: items.map(function (i) { return i.customer; }).join('、'),
+      changes: summary,
+      actor: await displayNameOf(env, actor),
+      time: WX_P.fmtTime(now),
+      date: WX_P.fmtTime(now, true),
+      link: String(origin || '') + '/inspection-dashboard.html',
+      count: String(vs.length)
+    });
+    const r = await WX_P.deliver(cfg, content);
+    await wxLogAdd(env, row.username, 'notify', r.ok, cfg.type, String(summary).split('\n')[0], r.err);
+  } catch (e) {
+    console.error('[wx] 巡检通知失败：' + (e && e.message));
+  }
+}
+
 function sanitizeLedger(d) {
   d = d || {};
   return {
@@ -1385,7 +1544,7 @@ function sameOriginPhoto(request) {
 }
 
 /* ---------------- 路由 ---------------- */
-async function route(request, env) {
+async function route(request, env, ctx) {
   const url = new URL(request.url);
   const p = url.pathname.replace(/\/+$/, '') || '/api';
   const method = request.method.toUpperCase();
@@ -1655,7 +1814,14 @@ async function route(request, env) {
         });
       });
     }
-    await writeLedger(env, scope, newData, me.username, wantMine);
+    const chLogs = await writeLedger(env, scope, newData, me.username, wantMine);
+    /* 巡检记录增删改 → 给数据归属者推企业微信（个人台账是私人数据，不推送）。
+       用 waitUntil 延后执行，避免企业微信接口的耗时拖慢 800ms 防抖保存。 */
+    if (!wantMine) {
+      const ownerKey = await ledgerKeyOf(env, scope, false);
+      const task = notifyVisitChange(env, ownerKey, me.username, chLogs, url.origin);
+      if (ctx && ctx.waitUntil) ctx.waitUntil(task); else await task;
+    }
     return ok({ scope: scope, mine: wantMine, updatedAt: nowIso() });
   }
 
@@ -1972,15 +2138,52 @@ async function route(request, env) {
        超管维护全局数据，不参与共享数据集，永远没有第二份台账。 */
     const hasDown = (role !== 'admin' && !shareFrom) ? await hasSharedTo(env, username) : false;
     const multiLedger = (role !== 'admin' && body.multiLedger && (shareFrom || hasDown)) ? 1 : 0;
+    /* 企业微信通知：新建时一并写入（可先存半成品，enabled 时才校验完整性） */
+    const wxIn = ensureWxInput(body.wx, null);
+    if (wxIn.err) return bad(wxIn.err);
     await env.DB.prepare(
-      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0, multiLedger).run();
+      'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger, wx_enabled, wx_cfg) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0, multiLedger, wxIn.enabled, JSON.stringify(wxIn.cfg)).run();
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) await writeLedger(env, username, sanitizeLedger(body.data), me.username);
     return ok({ user: mapUser(await env.DB.prepare(
       'SELECT ' + USER_COLS + ' FROM users WHERE username = ?'
     ).bind(username).first(), await serversMap(env)) });
+  }
+
+  /* 企业微信：发送测试消息 / 查询最近推送流水（均限超管） */
+  const mwx = /^\/api\/users\/([^/]+)\/wx-(test|log)$/.exec(p);
+  if (mwx) {
+    if (!isAdmin) return bad('仅超级管理员可操作企业微信通知', 403);
+    const target = normName(decodeURIComponent(mwx[1]));
+    const row = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(target).first();
+    if (!row) return bad('用户不存在', 404);
+    if (mwx[2] === 'log') {
+      const list = await env.DB.prepare('SELECT at, kind, ok, target, summary, err FROM wx_logs WHERE username = ? ORDER BY id DESC LIMIT 10')
+        .bind(target).all();
+      return ok({ logs: (list && list.results) || [] });
+    }
+    if (method !== 'POST') return bad('方法不支持', 405);
+    /* 支持用弹窗里尚未保存的配置直接测：body.wx 传表单值，缺省则用库内已保存的 */
+    const base = parseCfg(row.wx_cfg);
+    const v = body.wx ? ensureWxInput(Object.assign({ enabled: 1 }, body.wx), base) : { cfg: base, enabled: 1 };
+    if (v.err) return bad(v.err);
+    const now = nowIso();
+    const content = WX_P.fillTpl(v.cfg.tpl, {
+      summary: '这是一条测试消息，说明通知链路已打通。',
+      customer: '（测试）',
+      changes: '（测试）',
+      actor: await displayNameOf(env, me.username),
+      time: WX_P.fmtTime(now),
+      date: WX_P.fmtTime(now, true),
+      link: url.origin + '/inspection-dashboard.html',
+      count: '0'
+    });
+    const r = await WX_P.deliver(v.cfg, content);
+    await wxLogAdd(env, target, 'test', r.ok, v.cfg.type, '测试消息', r.err);
+    if (!r.ok) return bad('发送失败：' + (r.err || '未知原因'), 502);
+    return ok({ message: v.cfg.type === 'app' ? '测试消息已发送到接收人' : '测试消息已发送到该群' });
   }
 
   const mu = /^\/api\/users\/([^/]+)$/.exec(p);
@@ -2033,8 +2236,16 @@ async function route(request, env) {
       const multiNow = stillShared && role !== 'admin'
         ? (body.multiLedger == null ? (row.multi_ledger ? 1 : 0) : (body.multiLedger ? 1 : 0))
         : 0;
-      await env.DB.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ?, stat_visible = ?, multi_ledger = ? WHERE username = ?')
-        .bind(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), body.nameCn == null ? (row.name_cn || '') : String(body.nameCn).trim(), body.crmVisible == null ? (row.crm_visible ? 1 : 0) : (body.crmVisible ? 1 : 0), body.statVisible == null ? (row.stat_visible ? 1 : 0) : (body.statVisible ? 1 : 0), multiNow, target).run();
+      /* 企业微信通知：未传 wx 表示不动；传了则与库内旧配置合并（密钥留空 = 不改） */
+      let wxNow;
+      if (body.wx === undefined) {
+        wxNow = { enabled: row.wx_enabled ? 1 : 0, cfg: parseCfg(row.wx_cfg) };
+      } else {
+        wxNow = ensureWxInput(body.wx, parseCfg(row.wx_cfg));
+        if (wxNow.err) return bad(wxNow.err);
+      }
+      await env.DB.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ?, stat_visible = ?, multi_ledger = ?, wx_enabled = ?, wx_cfg = ? WHERE username = ?')
+        .bind(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), body.nameCn == null ? (row.name_cn || '') : String(body.nameCn).trim(), body.crmVisible == null ? (row.crm_visible ? 1 : 0) : (body.crmVisible ? 1 : 0), body.statVisible == null ? (row.stat_visible ? 1 : 0) : (body.statVisible ? 1 : 0), multiNow, wxNow.enabled, JSON.stringify(wxNow.cfg), target).run();
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad('密码至少 6 位');
@@ -2220,11 +2431,11 @@ function securityWrapped(res, request, url, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === '/api' || url.pathname.indexOf('/api/') === 0) {
       try {
-        return await route(request, env);
+        return await route(request, env, ctx);
       } catch (e) {
         return bad('服务器内部错误：' + (e && e.message ? e.message : '未知'), 500);
       }

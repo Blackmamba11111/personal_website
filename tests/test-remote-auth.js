@@ -342,6 +342,60 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('账号来源记为 oidc', su && su.source === 'oidc', su && su.source);
     check('免认证账号不保存本地口令', su && !su.pwd);
 
+    /* ===== 企业微信通知（用户级） ===== */
+    click(w, id('btnNewUser'));
+    id('uUsername').value = 'wxuser';
+    id('uName').value = '通知测试';
+    check('未启用时隐藏通知参数区', id('uWxBody').style.display === 'none', id('uWxBody').style.display);
+    id('uWxOn').checked = true;
+    fire(w, id('uWxOn'), 'change');
+    check('勾选启用后展开参数区', id('uWxBody').style.display === 'block', id('uWxBody').style.display);
+    check('默认接入方式为群机器人', id('uWxRobotWrap').style.display === 'block' && id('uWxAppWrap').style.display === 'none');
+    id('uWxType').value = 'app';
+    fire(w, id('uWxType'), 'change');
+    check('切到自建应用显示 corpid / agentid / secret',
+      id('uWxAppWrap').style.display === 'block' && id('uWxRobotWrap').style.display === 'none');
+    id('uWxType').value = 'robot';
+    fire(w, id('uWxType'), 'change');
+    const wxHook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcd1234';
+    id('uWxHook').value = wxHook;
+    id('uWxTo').value = '13800138000';
+    id('uWxTpl').value = '【巡检】{summary}';
+    id('uPwd').value = 'abc123456';
+    click(w, id('btnSaveUser'));
+    await tick(90);
+    const wu = userOf(w, 'wxuser');
+    check('机器人配置随用户保存', wu && wu.wx && wu.wx.enabled && wu.wx.hook === wxHook, wu && JSON.stringify(wu.wx));
+    check('接收人保存', wu && wu.wx.to === '13800138000', wu && wu.wx.to);
+    check('自定义模板保存', wu && wu.wx.tpl === '【巡检】{summary}', wu && wu.wx.tpl);
+    check('列表出现「机器人」标记',
+      (d.querySelector('#usersTableWrap tr[data-uid="wxuser"]') || {}).textContent.indexOf('机器人') >= 0);
+
+    click(w, d.querySelector('#usersTableWrap tr[data-uid="wxuser"] [data-ua="edit"]'));
+    await tick(60);
+    check('编辑时 hook 回填掩码而非明文', id('uWxHook').value.indexOf('****') > 0 && id('uWxHook').value !== wxHook, id('uWxHook').value);
+    check('编辑时提示已保存', id('uWxHookHint').textContent.indexOf('已保存') >= 0, id('uWxHookHint').textContent);
+    check('编辑时回填模板', id('uWxTpl').value === '【巡检】{summary}', id('uWxTpl').value);
+    click(w, d.querySelector('#maskUser [data-close]'));
+
+    /* 批量：只关推送，保留已存地址 */
+    const cbx = d.querySelector('#usersTableWrap [data-uchk="wxuser"]');
+    cbx.checked = true;
+    fire(w, cbx, 'change');
+    click(w, id('btnUsersBatchEdit'));
+    await tick(40);
+    check('批量弹窗默认不应用通知', id('bWxOn').checked === false);
+    id('bWxOn').checked = true;
+    fire(w, id('bWxOn'), 'change');
+    id('bWxMode').value = 'off';
+    fire(w, id('bWxMode'), 'change');
+    check('停用模式隐藏参数区', id('bWxDetail').style.display === 'none', id('bWxDetail').style.display);
+    click(w, id('btnSaveBatchUsers'));
+    await tick(140);
+    const wu2 = userOf(w, 'wxuser');
+    check('批量停用后 enabled 为 false', wu2 && wu2.wx.enabled === false, wu2 && JSON.stringify(wu2.wx));
+    check('批量停用保留已存的 hook', wu2 && wu2.wx.hook === wxHook, wu2 && wu2.wx.hook);
+
     w.close();
   }
 

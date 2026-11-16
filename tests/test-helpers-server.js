@@ -43,8 +43,70 @@ function userView(u) {
     nameCn: u.nameCn || '',
     crmVisible: !!u.crmVisible,
     statVisible: !!u.statVisible,
-    multiLedger: !!u.multiLedger
+    multiLedger: !!u.multiLedger,
+    /* 企业微信通知：桩里存明文，接口侧按真实服务端口径脱敏后回传 */
+    wx: (function () {
+      const w = u.wx || {};
+      const type = w.type === 'app' ? 'app' : 'robot';
+      const to = w.to || '';
+      return {
+        enabled: !!w.enabled,
+        type: type,
+        hook: maskWxHook(w.hook),
+        hasHook: !!w.hook,
+        corpid: w.corpid || '',
+        agentid: w.agentid || '',
+        hasSecret: !!w.secret,
+        to: to,
+        tpl: w.tpl || '',
+        skipSelf: !!w.skipSelf,
+        ready: !!(w.enabled && (type === 'app'
+          ? !!(w.corpid && w.secret && w.agentid && to)
+          : /^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=/.test(w.hook || '')))
+      };
+    })()
   };
+}
+
+/* 与 worker/wecom-notify.mjs 的 maskHook 同口径：key 只留前 4 位 */
+function maskWxHook(hook) {
+  const h = String(hook || '');
+  if (!h) return '';
+  const m = /^(.*[?&]key=)(.+)$/.exec(h);
+  if (!m) return h.slice(0, 12) + '****';
+  return m[1] + (m[2].length > 4 ? m[2].slice(0, 4) + '****' : '****');
+}
+
+/* 与真实服务端 ensureWxInput 同口径：密钥留空 = 沿用旧值，掩码 hook = 未修改 */
+function applyWx(base, input) {
+  const b = base || {};
+  const cfg = {
+    enabled: !!b.enabled,
+    type: b.type === 'app' ? 'app' : 'robot',
+    hook: b.hook || '', corpid: b.corpid || '', secret: b.secret || '',
+    agentid: b.agentid || '', to: b.to || '', tpl: b.tpl || '', skipSelf: !!b.skipSelf
+  };
+  input = input || {};
+  if (input.type !== undefined) cfg.type = input.type === 'app' ? 'app' : 'robot';
+  if (input.enabled !== undefined) cfg.enabled = !!input.enabled;
+  if (input.hook !== undefined) {
+    const h = String(input.hook || '').trim();
+    if (h.indexOf('****') < 0) {
+      if (h && !/^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=[A-Za-z0-9_-]+$/.test(h)) return { err: 'Webhook 地址格式不正确' };
+      cfg.hook = h;
+    }
+  }
+  if (input.corpid !== undefined) cfg.corpid = String(input.corpid || '').trim();
+  if (input.agentid !== undefined) cfg.agentid = String(input.agentid || '').trim();
+  if (input.secret) cfg.secret = String(input.secret).trim();
+  if (input.to !== undefined) cfg.to = String(input.to || '').trim();
+  if (input.tpl !== undefined) cfg.tpl = String(input.tpl || '');
+  if (input.skipSelf !== undefined) cfg.skipSelf = !!input.skipSelf;
+  if (cfg.enabled) {
+    if (cfg.type === 'robot' && !cfg.hook) return { err: '启用前请填写群机器人 Webhook 地址' };
+    if (cfg.type === 'app' && (!cfg.corpid || !cfg.secret || !cfg.agentid || !cfg.to)) return { err: '自建应用配置不完整' };
+  }
+  return { wx: cfg };
 }
 
 function installApiStub(window, opts) {
@@ -65,6 +127,7 @@ function installApiStub(window, opts) {
     crmConfig: { loginName: '', password: '', intervalHours: 12 },
     calls: []                               /* 调用记录：{path, method, body}（断言请求方法用） */
   };
+  srv.wxLogs = {};                          /* 企业微信推送流水：username -> [{at,kind,ok,target,summary,err}] */
   for (let i = 0; i < ls.length; i++) {
     const k = ls.key(i);
     if (k && k.indexOf(DATA_PREFIX) === 0) {
@@ -603,6 +666,13 @@ function installApiStub(window, opts) {
         shareFrom = src.shareFrom || src.username;
         if ((body.role === 'admin') && shareFrom !== un) return bad('超级管理员维护全局数据，不参与共享数据集');
       }
+      /* 企业微信通知：新建时按入参落库（不传则空配置） */
+      let wxNew = { enabled: false, type: 'robot', hook: '', corpid: '', secret: '', agentid: '', to: '', tpl: '', skipSelf: false };
+      if (body.wx) {
+        const w = applyWx(null, body.wx);
+        if (w.err) return bad(w.err);
+        wxNew = w.wx;
+      }
       const nu = {
         id: un, username: un, name: body.name,
         role: body.role === 'admin' ? 'admin' : 'user',
@@ -622,12 +692,28 @@ function installApiStub(window, opts) {
         statVisible: !!body.statVisible,
         /* 多台账：处在共享关系里的非超管账号才有第二份台账（借入 = 设了共享来源；借出 = 有下家） */
         multiLedger: !!(body.role !== 'admin' && body.multiLedger &&
-          (shareFrom || srv.users.some(x => (x.shareFrom || '') === un)))
+          (shareFrom || srv.users.some(x => (x.shareFrom || '') === un))),
+        wx: wxNew
       };
       srv.users.push(nu);
       if (!shareFrom && body.data) srv.ledgers[un] = body.data;
       writeMirror();
       return ok({ user: viewOf(nu) });
+    }
+
+    const mwx = /^\/users\/([^/]+)\/wx-(test|log)$/.exec(p);
+    if (mwx) {
+      if (auth.role !== 'admin') return bad('仅超级管理员可操作企业微信通知', 403);
+      const tw = findUser(decodeURIComponent(mwx[1]));
+      if (!tw) return bad('用户不存在', 404);
+      if (mwx[2] === 'log') return ok({ logs: (srv.wxLogs[tw.username] || []).slice(0, 10) });
+      /* 支持用弹窗里尚未保存的配置测试 */
+      const w = body.wx ? applyWx(tw.wx, body.wx) : { wx: tw.wx };
+      if (w.err) return bad(w.err);
+      if (!w.wx || !w.wx.enabled) return bad('未启用企业微信通知', 400);
+      const entry = { at: '2026-10-12T10:00:00.000Z', kind: 'test', ok: 1, target: w.wx.type, summary: '测试消息', err: '' };
+      (srv.wxLogs[tw.username] = srv.wxLogs[tw.username] || []).unshift(entry);
+      return ok({ message: w.wx.type === 'app' ? '测试消息已发送到接收人' : '测试消息已发送到该群' });
     }
 
     const m = /^\/users\/([^/]+)$/.exec(p);
@@ -650,6 +736,12 @@ function installApiStub(window, opts) {
           t.multiLedger = !!(body.multiLedger && t.role !== 'admin' && (t.shareFrom || sharedTo(t).length));
         }
         if (t.role === 'admin' || (!(t.shareFrom || '') && !sharedTo(t).length)) t.multiLedger = false;
+        /* 企业微信通知：未传表示不动；传了与库内旧值合并（密钥留空 = 不改） */
+        if (body.wx !== undefined) {
+          const w = applyWx(t.wx, body.wx);
+          if (w.err) return bad(w.err);
+          t.wx = w.wx;
+        }
         /* 登录超时（分钟）：与 Worker 版 normSessionMins 同口径（5–43200，非法回退 30） */
         if (body.sessionMins !== undefined) {
           const n = Math.round(Number(body.sessionMins));

@@ -985,6 +985,18 @@
   .srv-type{display:inline-block;min-width:66px;text-align:center;font-size:11px;font-weight:700;
     padding:2px 8px;border-radius:6px;background:var(--panel-2);border:1px solid var(--border);}
   .uact{display:flex;gap:6px;flex-wrap:wrap;}
+  /* 用户弹窗 · 企业微信通知区块 */
+  .wx-box{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);padding:10px 12px;}
+  .wx-box .wx-head{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--ink);}
+  .wx-box .wx-body{margin-top:10px;padding-top:11px;border-top:1px dashed var(--line);}
+  .wx-box .wx-body .field:last-child{margin-bottom:0;}
+  .wx-box textarea{width:100%;min-height:104px;resize:vertical;padding:8px 10px;border:1px solid var(--line);
+                   border-radius:var(--r-sm);font-family:var(--font-mono);font-size:11.5px;line-height:1.6;
+                   background:var(--surface);color:var(--ink);}
+  .wx-box textarea:focus{outline:none;border-color:var(--brand-line);box-shadow:0 0 0 3px var(--brand-wash);}
+  .wx-tpl-link{background:none;border:none;padding:0;color:var(--brand);cursor:pointer;font-size:11.5px;text-decoration:underline;}
+  .wx-log{margin-top:9px;font-size:11.5px;color:var(--ink-3);line-height:1.7;font-family:var(--font-mono);}
+  .wx-log b{color:var(--ink);} .wx-log .bad{color:var(--danger-ink);}
   .stat-mini{display:flex;gap:26px;flex-wrap:wrap;padding:14px 16px;border-bottom:1px solid var(--border-2);}
   .stat-mini div b{font-size:19px;font-weight:600;display:block;font-family:var(--font-mono);
     letter-spacing:-.5px;line-height:1.2;}
@@ -2048,6 +2060,66 @@
         <input type="text" id="uNote" autocomplete="off" placeholder="选填，如所属部门 / 负责片区">
       </div>
       <div class="field">
+        <div class="wx-box">
+          <label class="wx-head" for="uWxOn"><input type="checkbox" id="uWxOn"> 企业微信通知</label>
+          <div class="hint" style="margin-top:5px;">该账号的巡检记录<b>新增 / 修改 / 删除</b>后，自动推一条消息给他，提醒查看。消息内容可自定义。</div>
+          <div class="wx-body" id="uWxBody" style="display:none;">
+            <div class="field">
+              <label for="uWxType">接入方式</label>
+              <select id="uWxType">
+                <option value="robot">群机器人 — 填 Webhook，消息发到该群</option>
+                <option value="app">自建应用 — 按 userid 私聊送达</option>
+              </select>
+            </div>
+            <div id="uWxRobotWrap">
+              <div class="field">
+                <label for="uWxHook">Webhook 地址 <span class="req">*</span></label>
+                <input type="text" id="uWxHook" autocomplete="off" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx">
+                <div class="hint" id="uWxHookHint">在企业微信目标群点右上角「⋯」→「群机器人」→ 添加机器人 → 复制 Webhook 地址。</div>
+              </div>
+            </div>
+            <div id="uWxAppWrap" style="display:none;">
+              <div style="display:flex;gap:10px;">
+                <div class="field" style="flex:1 1 auto;">
+                  <label for="uWxCorpId">corpid <span class="req">*</span></label>
+                  <input type="text" id="uWxCorpId" autocomplete="off" placeholder="企业微信「我的企业」页可见">
+                </div>
+                <div class="field" style="flex:0 0 140px;">
+                  <label for="uWxAgentId">agentid <span class="req">*</span></label>
+                  <input type="text" id="uWxAgentId" autocomplete="off" placeholder="如 1000002">
+                </div>
+              </div>
+              <div class="field">
+                <label for="uWxSecret">corpsecret <span class="req">*</span></label>
+                <input type="password" id="uWxSecret" autocomplete="new-password" placeholder="应用详情页的 Secret">
+                <div class="hint" id="uWxSecretHint">只保存在服务端，不会回显；留空表示不修改。</div>
+              </div>
+            </div>
+            <div class="field">
+              <label for="uWxTo">接收人</label>
+              <input type="text" id="uWxTo" autocomplete="off" placeholder="手机号 / userid，多个用逗号分隔；留空表示用该账号本人">
+              <div class="hint" id="uWxToHint">群机器人：填手机号可在群里 @ 到人（对方须在该群内）；自建应用：填 userid 私聊送达，必填。</div>
+            </div>
+            <div class="field">
+              <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uWxSkipSelf"> 自己录入的巡检不通知</label>
+              <div class="hint">开启后，只有别人改动该账号的台账才推送，自己录完不打扰自己。</div>
+            </div>
+            <div class="field">
+              <label for="uWxTpl">消息内容（可自定义）</label>
+              <textarea id="uWxTpl" rows="6" placeholder="留空使用默认模板"></textarea>
+              <div class="hint">可用变量：{summary} {customer} {changes} {actor} {time} {date} {link} {count}
+                <button type="button" class="wx-tpl-link" id="btnWxTplReset">恢复默认</button>
+              </div>
+            </div>
+            <div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;">
+              <button type="button" class="btn sm" id="btnWxTest">发送测试消息</button>
+              <span class="hint" id="uWxTestOut" style="margin:0;"></span>
+            </div>
+            <div class="wx-log" id="uWxLog" style="display:none;"></div>
+          </div>
+        </div>
+      </div>
+      <div class="field">
         <label for="uSeed">初始数据</label>
         <select id="uSeed">
           <option value="empty">空台账（推荐）— 不预置任何客户</option>
@@ -2160,6 +2232,33 @@
           <option value="0">关闭 — 只保留一份（个人台账数据保留，可再次开启）</option>
         </select>
         <div class="hint" id="bMultiHint">与单个用户弹窗里的「多台账权限」是同一开关。只有处在共享关系里的普通账号能开启（台账借自他人，或已共享给别人），其余账号会被跳过。</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="bWxOn"> 应用企业微信通知</label>
+        <select id="bWxMode">
+          <option value="on">启用 — 用下方参数覆盖所选账号的机器人配置</option>
+          <option value="off">停用 — 只关掉推送，各账号已存的地址与模板保留</option>
+        </select>
+        <div id="bWxDetail" style="margin-top:8px;">
+          <select id="bWxType" style="margin-bottom:8px;">
+            <option value="robot">群机器人 — 填 Webhook，消息发到该群</option>
+            <option value="app">自建应用 — 按 userid 私聊送达</option>
+          </select>
+          <div id="bWxRobotWrap">
+            <input type="text" id="bWxHook" placeholder="Webhook 地址（https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…）" style="margin-bottom:8px;">
+          </div>
+          <div id="bWxAppWrap" style="display:none;">
+            <div style="display:flex;gap:8px;margin-bottom:8px;">
+              <input type="text" id="bWxCorpId" placeholder="corpid" style="flex:1 1 auto;">
+              <input type="text" id="bWxAgentId" placeholder="agentid" style="flex:0 0 120px;">
+            </div>
+            <input type="password" id="bWxSecret" placeholder="corpsecret" autocomplete="new-password" style="margin-bottom:8px;">
+          </div>
+          <input type="text" id="bWxTo" placeholder="接收人（手机号 / userid，逗号分隔；可留空）" style="margin-bottom:8px;">
+          <textarea id="bWxTpl" placeholder="消息模板（留空用默认模板）" style="width:100%;min-height:76px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-sm);font-family:var(--font-mono);font-size:11.5px;line-height:1.6;"></textarea>
+          <div class="hint">变量：{summary} {customer} {changes} {actor} {time} {date} {link} {count}。自建应用的 corpsecret 会写入所选每个账号。</div>
+        </div>
+        <div class="hint">与单个用户弹窗里的「企业微信通知」是同一套配置：巡检记录新增 / 修改 / 删除后推消息给该账号。</div>
       </div>
     </div>
     <div class="modal-foot">
@@ -9542,9 +9641,18 @@
     var selfIn = targets.some(function (u) { return u.id === AUTH.user.id; });
     document.getElementById('batchUserTitle').textContent =
       '批量编辑用户（已选 ' + targets.length + ' 个' + (selfIn ? '，含当前登录账号' : '') + '）';
-    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn', 'bHideSensOn', 'bCrmOn', 'bStatOn', 'bMultiOn'].forEach(function (id) {
+    ['bRoleOn', 'bPermOn', 'bStatusOn', 'bMinsOn', 'bNoteOn', 'bNameOn', 'bSourceOn', 'bHideSensOn', 'bCrmOn', 'bStatOn', 'bMultiOn', 'bWxOn'].forEach(function (id) {
       document.getElementById(id).checked = false;
     });
+    document.getElementById('bWxMode').value = 'on';
+    document.getElementById('bWxType').value = 'robot';
+    document.getElementById('bWxHook').value = '';
+    document.getElementById('bWxCorpId').value = '';
+    document.getElementById('bWxAgentId').value = '';
+    document.getElementById('bWxSecret').value = '';
+    document.getElementById('bWxTo').value = '';
+    document.getElementById('bWxTpl').value = '';
+    syncBatchWxFields();
     document.getElementById('bRole').value = 'user';
     document.getElementById('bPerm').value = 'rw';
     document.getElementById('bStatus').value = 'active';
@@ -9598,6 +9706,15 @@
       hint.textContent = '仅对远程账号生效：改回本地需统一初始密码；已是本地账号的跳过。';
     }
   }
+  /* 批量弹窗 · 企业微信通知：停用时整块隐藏；机器人 / 自建应用切换对应字段 */
+  function syncBatchWxFields() {
+    var on = document.getElementById('bWxOn').checked;
+    var mode = document.getElementById('bWxMode').value;
+    document.getElementById('bWxDetail').style.display = (on && mode === 'on') ? 'block' : 'none';
+    var t = document.getElementById('bWxType').value === 'app' ? 'app' : 'robot';
+    document.getElementById('bWxRobotWrap').style.display = t === 'robot' ? 'block' : 'none';
+    document.getElementById('bWxAppWrap').style.display = t === 'app' ? 'block' : 'none';
+  }
   function usersBatchApply() {
     var targets = userList().filter(function (u) { return USERS_SEL[u.id]; });
     if (!targets.length) { closeModal('maskBatchUser'); return; }
@@ -9621,6 +9738,29 @@
     var multiWant = document.getElementById('bMultiOn').checked
       ? document.getElementById('bMulti').value === '1' : null;
     if (multiWant != null) basePatch.multiLedger = multiWant;
+    /* 企业微信通知：停用只传 enabled=false（各账号已存的地址与模板保留）；启用则整份覆盖 */
+    if (document.getElementById('bWxOn').checked) {
+      var bwxOn = document.getElementById('bWxMode').value === 'on';
+      var bwx = { enabled: bwxOn };
+      if (bwxOn) {
+        var bwxType = document.getElementById('bWxType').value === 'app' ? 'app' : 'robot';
+        bwx.type = bwxType;
+        bwx.to = document.getElementById('bWxTo').value.trim();
+        bwx.tpl = document.getElementById('bWxTpl').value;
+        if (bwxType === 'app') {
+          bwx.corpid = document.getElementById('bWxCorpId').value.trim();
+          bwx.agentid = document.getElementById('bWxAgentId').value.trim();
+          var bwxSec = document.getElementById('bWxSecret').value.trim();
+          if (!bwx.corpid || !bwx.agentid) { toast('自建应用需要填写 corpid 与 agentid'); return; }
+          if (!bwxSec) { toast('批量设置自建应用需要填写 corpsecret（不会沿用各账号原有密钥）'); return; }
+          bwx.secret = bwxSec;
+        } else {
+          bwx.hook = document.getElementById('bWxHook').value.trim();
+          if (!bwx.hook) { toast('请填写群机器人 Webhook 地址'); return; }
+        }
+      }
+      basePatch.wx = bwx;
+    }
     if (document.getElementById('bMinsOn').checked) {
       var minsRaw = document.getElementById('bSessionMins').value.trim();
       var mins = Number(minsRaw);
@@ -9751,6 +9891,23 @@
     return '<span class="tag ' + (u.perm === 'ro' ? 'ro' : 'rw') + '">' + permText(u) + '</span>';
   }
 
+  /* 企业微信通知标记：启用且配置完整 = 绿色「机器人」；配了但没启用 = 灰色「机器人·停」 */
+  function wxTag(u) {
+    var w = u && u.wx;
+    if (!w) return '';
+    if (w.enabled && w.ready) {
+      return ' <span class="tag active" title="巡检报告更新后推送到' +
+        (w.type === 'app' ? '自建应用' : '群机器人') + '（' + (w.type === 'app' ? '私聊接收人' : '发到该群') + '）">机器人</span>';
+    }
+    if (w.enabled && !w.ready) {
+      return ' <span class="tag ro" title="已启用但配置不完整，不会发送">机器人·待补全</span>';
+    }
+    if (w.hasHook || w.hasSecret || w.corpid) {
+      return ' <span class="tag disabled" title="已保存机器人配置，但未启用">机器人·停</span>';
+    }
+    return '';
+  }
+
   /* 用户列表列排序：默认按区域展示名称升序；点表头切换排序列 / 升降序 */
   var usersSort = { key: 'name', dir: 1 };
   var USER_COLS = [
@@ -9837,7 +9994,8 @@
           : permTag(u) + (u.hideSensitive ? ' <span class="tag ro" title="客户详细地址 / 联系人电话对该账号打码显示">隐藏敏感</span>' : '') +
             (u.crmVisible ? ' <span class="tag active" title="该账号可查看询盘云 CRM 现网信息与维保到期提醒">CRM可见</span>' : '') +
             (u.statVisible ? ' <span class="tag active" title="该账号可查看区域统计（只读，不能触发检索）">区域统计</span>' : '') +
-            (u.multiLedger ? ' <span class="tag user" title="两份台账：处在共享关系里的公共台账 + 只有自己可见的个人台账，登录后可切换">多台账</span>' : '')) + '</td>' +
+            (u.multiLedger ? ' <span class="tag user" title="两份台账：处在共享关系里的公共台账 + 只有自己可见的个人台账，登录后可切换">多台账</span>' : '')) +
+          wxTag(u) + '</td>' +
         '<td><span class="tag ' + (u.role === 'admin' ? 'admin' : 'user') + '">' + roleText(u) + '</span></td>' +
         '<td><span class="tag ' + (u.status === 'active' ? 'active' : 'disabled') + '">' +
           (u.status === 'active' ? '启用中' : '已停用') + '</span></td>' +
@@ -9970,6 +10128,104 @@
       : '';
   }
 
+  /* ---------- 企业微信通知（用户级） ----------
+     与服务端 worker/wecom-notify.mjs 的变量集合保持一致；
+     密钥类字段（webhook 的 key / corpsecret）服务端只回掩码或「已设置」，编辑时留空 = 不修改。 */
+  var WX_DEFAULT_TPL = ['【巡检报告已更新】', '{summary}', '操作人：{actor}', '时间：{time}', '{link}'].join('\n');
+  function syncWxFields() {
+    var on = document.getElementById('uWxOn').checked;
+    document.getElementById('uWxBody').style.display = on ? 'block' : 'none';
+    var t = document.getElementById('uWxType').value === 'app' ? 'app' : 'robot';
+    document.getElementById('uWxRobotWrap').style.display = t === 'robot' ? 'block' : 'none';
+    document.getElementById('uWxAppWrap').style.display = t === 'app' ? 'block' : 'none';
+  }
+  function fillWxForm(u) {
+    var w = (u && u.wx) || {};
+    document.getElementById('uWxOn').checked = !!w.enabled;
+    document.getElementById('uWxType').value = w.type === 'app' ? 'app' : 'robot';
+    document.getElementById('uWxHook').value = w.hook || '';
+    document.getElementById('uWxHookHint').textContent = w.hasHook
+      ? '已保存（key 已隐藏）。留空即保持原值；换群时把整条地址替换掉。'
+      : '在企业微信目标群点右上角「⋯」→「群机器人」→ 添加机器人 → 复制 Webhook 地址。';
+    document.getElementById('uWxCorpId').value = w.corpid || '';
+    document.getElementById('uWxAgentId').value = w.agentid || '';
+    document.getElementById('uWxSecret').value = '';
+    document.getElementById('uWxSecret').placeholder = w.hasSecret ? '已设置，留空表示不修改' : '应用详情页的 Secret';
+    document.getElementById('uWxSecretHint').textContent = w.hasSecret
+      ? '已保存密钥，留空即保持原值；填写则覆盖。'
+      : '只保存在服务端，不会回显。';
+    document.getElementById('uWxTo').value = w.to || '';
+    document.getElementById('uWxSkipSelf').checked = !!w.skipSelf;
+    document.getElementById('uWxTpl').value = w.tpl || '';
+    var out = document.getElementById('uWxTestOut');
+    out.textContent = ''; out.style.color = '';
+    var logBox = document.getElementById('uWxLog');
+    logBox.style.display = 'none'; logBox.innerHTML = '';
+    var btn = document.getElementById('btnWxTest');
+    btn.disabled = !editingUserId;
+    btn.title = editingUserId ? '用当前表单里的配置发一条测试消息' : '先保存账号，才能发送测试消息';
+    syncWxFields();
+    if (editingUserId) loadWxLog();
+  }
+  /* 收集表单值。hook / secret 留空表示「不修改」——服务端按 base 合并，不会清空 */
+  function collectWx() {
+    var wx = {
+      enabled: document.getElementById('uWxOn').checked,
+      type: document.getElementById('uWxType').value === 'app' ? 'app' : 'robot',
+      corpid: document.getElementById('uWxCorpId').value.trim(),
+      agentid: document.getElementById('uWxAgentId').value.trim(),
+      to: document.getElementById('uWxTo').value.trim(),
+      tpl: document.getElementById('uWxTpl').value,
+      skipSelf: document.getElementById('uWxSkipSelf').checked
+    };
+    var hook = document.getElementById('uWxHook').value.trim();
+    if (hook) wx.hook = hook;
+    var sec = document.getElementById('uWxSecret').value.trim();
+    if (sec) wx.secret = sec;
+    return wx;
+  }
+  function loadWxLog() {
+    if (!editingUserId) return;
+    api('/users/' + encodeURIComponent(editingUserId) + '/wx-log').then(function (r) {
+      var box = document.getElementById('uWxLog');
+      if (!box) return;
+      if (!r.ok || !r.data || !r.data.logs || !r.data.logs.length) {
+        box.style.display = 'none'; box.innerHTML = ''; return;
+      }
+      box.style.display = 'block';
+      box.innerHTML = '<div style="font-family:var(--font-sans);color:var(--ink-3);margin-bottom:2px;">最近推送（最多 5 条）</div>' +
+        r.data.logs.slice(0, 5).map(function (l) {
+          return '<div>' + esc(fmtTs(l.at, true)) + ' · ' + (l.kind === 'test' ? '测试' : '通知') + ' · ' +
+            (l.ok ? '<b>成功</b>' : '<span class="bad">失败 ' + esc(l.err || '') + '</span>') +
+            (l.summary ? ' · ' + esc(l.summary) : '') + '</div>';
+        }).join('');
+    });
+  }
+  function testWx() {
+    if (!editingUserId) { toast('先保存账号，才能发送测试消息'); return; }
+    var out = document.getElementById('uWxTestOut');
+    var btn = document.getElementById('btnWxTest');
+    btn.disabled = true;
+    out.style.color = 'var(--ink-3)';
+    out.textContent = '正在发送…';
+    api('/users/' + encodeURIComponent(editingUserId) + '/wx-test', { method: 'POST', body: { wx: collectWx() } })
+      .then(function (r) {
+        btn.disabled = false;
+        if (r.ok) {
+          out.style.color = 'var(--ok-ink)';
+          out.textContent = (r.data && r.data.message) || '测试消息已发送，请到企业微信查看';
+        } else {
+          out.style.color = 'var(--danger-ink)';
+          out.textContent = r.error || '发送失败';
+        }
+        loadWxLog();
+      }, function () {
+        btn.disabled = false;
+        out.style.color = 'var(--danger-ink)';
+        out.textContent = '请求未能送达服务端';
+      });
+  }
+
   function openUserModal(u, cloneFrom) {
     editingUserId = u ? u.id : null;
     document.getElementById('userModalTitle').textContent = u ? '编辑用户'
@@ -9988,6 +10244,8 @@
     document.getElementById('uMultiLedger').checked = u ? !!u.multiLedger : false;
     document.getElementById('uNote').value = u ? (u.note || '') : '';
     document.getElementById('uPwd').value = '';
+    /* 企业微信通知：编辑时回填（密钥只回掩码 / 已设置标记） */
+    fillWxForm(u);
 
     /* 认证服务器下拉（远程账号必选一个） */
     var sel = document.getElementById('uServer');
@@ -10110,7 +10368,8 @@
       var wasRemote = (target.source || 'local') !== 'local';
       var patch = { name: name, nameCn: nameCn, crmVisible: crmVisible, statVisible: statVisible, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins,
         hideSensitive: document.getElementById('uHideSens').checked,
-        multiLedger: document.getElementById('uMultiLedger').checked };
+        multiLedger: document.getElementById('uMultiLedger').checked,
+        wx: collectWx() };
       /* 远程 → 本地：必须补一个本地初始密码，否则该账号无法再登录 */
       if (wasRemote && !remote) {
         var np = String(document.getElementById('uPwd').value || '');
@@ -10164,7 +10423,8 @@
         username: username, name: name, nameCn: nameCn, crmVisible: crmVisible, statVisible: statVisible,
         role: role, note: note, perm: perm, sessionMins: mins,
         hideSensitive: document.getElementById('uHideSens').checked,
-        multiLedger: document.getElementById('uMultiLedger').checked
+        multiLedger: document.getElementById('uMultiLedger').checked,
+        wx: collectWx()
       };
       if (initData.shareFrom) payload.shareFrom = initData.shareFrom;
       else payload.data = initData;
@@ -10371,6 +10631,9 @@
     document.getElementById('usersTableWrap').addEventListener('change', usersSelChange);
     document.getElementById('bSourceOn').addEventListener('change', syncBatchSourceFields);
     document.getElementById('bSourceType').addEventListener('change', syncBatchSourceFields);
+    document.getElementById('bWxOn').addEventListener('change', syncBatchWxFields);
+    document.getElementById('bWxMode').addEventListener('change', syncBatchWxFields);
+    document.getElementById('bWxType').addEventListener('change', syncBatchWxFields);
     document.getElementById('bServer').addEventListener('change', syncBatchSourceFields);
 
     /* 认证服务器页 */
@@ -10467,6 +10730,14 @@
     document.getElementById('dContactEye').addEventListener('click', function () { toggleDetailSens('contact'); });
     document.getElementById('dPhoneEye').addEventListener('click', function () { toggleDetailSens('phone'); });
     document.getElementById('btnSaveUser').addEventListener('click', saveUser);
+    /* 企业微信通知：开关 / 接入方式联动，模板恢复默认，发送测试消息 */
+    document.getElementById('uWxOn').addEventListener('change', syncWxFields);
+    document.getElementById('uWxType').addEventListener('change', syncWxFields);
+    document.getElementById('btnWxTest').addEventListener('click', testWx);
+    document.getElementById('btnWxTplReset').addEventListener('click', function () {
+      document.getElementById('uWxTpl').value = WX_DEFAULT_TPL;
+      markDirty('maskUser');
+    });
     document.getElementById('btnSavePwd').addEventListener('click', savePwd);
 
     Array.prototype.forEach.call(document.querySelectorAll('[data-close]'), function (b) {

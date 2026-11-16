@@ -578,5 +578,157 @@ r = await api('/auth-servers/probe', { method: 'POST', body: { name: 'h', type: 
 check('非超管自检被拒', r.status === 401 || r.status === 403, String(r.status));
 
 
+/* ================= 企业微信通知（用户级） ================= */
+const wxHook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcd1234';
+r = await api('/users', { method: 'POST', body: { username: 'wxu', name: '通知用户', password: 'Wx@12345' } }, tk);
+check('创建通知测试用户', r.ok === true, JSON.stringify(r));
+check('新用户默认不带机器人配置', r.data.user.wx && r.data.user.wx.enabled === false, JSON.stringify(r.data.user.wx));
+
+r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: 'not-a-url' } } }, tk);
+check('非法 Webhook 被拒', r.ok === false && /Webhook/.test(r.error), JSON.stringify(r));
+
+r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'app', corpid: 'c', agentid: '1000002', secret: 's' } } }, tk);
+check('自建应用缺接收人被拒', r.ok === false && /接收人/.test(r.error), JSON.stringify(r));
+
+r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'app', corpid: 'c', agentid: '10abc', secret: 's', to: 'lizhi' } } }, tk);
+check('agentid 非数字被拒', r.ok === false && /agentid/.test(r.error), JSON.stringify(r));
+
+r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '13800138000', tpl: '【巡检】{summary}' } } }, tk);
+check('保存群机器人配置', r.ok === true, JSON.stringify(r));
+check('返回 hook 为掩码', r.data.user.wx.hook.indexOf('****') > 0 && r.data.user.wx.hook !== wxHook, r.data.user.wx.hook);
+check('返回 hasHook / ready 标记', r.data.user.wx.hasHook === true && r.data.user.wx.ready === true);
+check('返回未启用明文密钥字段', r.data.user.wx.secret === undefined && r.data.user.wx.hasSecret === false);
+
+r = await api('/users', {}, tk);
+const wxUser = r.data.users.filter(u => u.username === 'wxu')[0];
+check('用户列表不回传明文 hook', wxUser.wx.hook !== wxHook && wxUser.wx.hook.indexOf('****') > 0, wxUser.wx.hook);
+
+/* 编辑时 hook 传掩码 = 不修改（前端回填的就是掩码） */
+r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxUser.wx.hook } } }, tk);
+check('掩码 hook 不覆盖原值', r.ok === true, JSON.stringify(r));
+check('原 hook 仍在（ready 保持 true）', r.data.user.wx.ready === true && r.data.user.wx.hasHook === true);
+check('未传 tpl 时保留自定义模板', r.data.user.wx.tpl === '【巡检】{summary}', r.data.user.wx.tpl);
+
+/* 测试消息：替换全局 fetch，避免真的打企业微信 */
+const realFetch = globalThis.fetch;
+let sent = [];
+globalThis.fetch = async (url, init) => {
+  sent.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
+  return { ok: true, json: async () => ({ errcode: 0, errmsg: 'ok' }) };
+};
+try {
+  r = await api('/users/wxu/wx-test', { method: 'POST', body: {} }, tk);
+  check('测试消息发送成功', r.ok === true && sent.length === 1, JSON.stringify(r) + ' sent=' + sent.length);
+  check('配了接收人时用 text 类型（可 @）', sent[0].body.msgtype === 'text', JSON.stringify(sent[0].body));
+  check('接收人进 mentioned_mobile_list',
+    JSON.stringify(sent[0].body.text.mentioned_mobile_list) === JSON.stringify(['13800138000']));
+  check('测试消息走自定义模板', /^【巡检】/.test(sent[0].body.text.content), sent[0].body.text.content);
+
+  r = await api('/users/wxu/wx-log', {}, tk);
+  check('推送流水记下测试消息', r.ok && r.data.logs.length === 1 && r.data.logs[0].kind === 'test',
+    JSON.stringify(r.data));
+
+  /* 触发点：新增巡检记录 → 推给数据归属者 */
+  sent = [];
+  await api('/ledger', { method: 'PUT', body: { scope: 'wxu', data: { regions: [], customers: [{ id: 'wc1', name: '衡水银行' }], visits: [] } } }, tk);
+  check('初始化台账（无巡检记录）不触发推送', sent.length === 0, sent.length + '');
+
+  sent = [];
+  await api('/ledger', {
+    method: 'PUT',
+    body: {
+      scope: 'wxu',
+      data: {
+        regions: [], customers: [{ id: 'wc1', name: '衡水银行' }],
+        visits: [{ id: 'wv1', customerId: 'wc1', date: '2026-11-16', by: '张三', note: '' }]
+      }
+    }
+  }, tk);
+  check('新增巡检记录触发推送', sent.length === 1, sent.length + ' 条');
+  check('推送内容含客户名', /衡水银行/.test(sent[0].body.text.content), sent[0].body.text.content);
+  check('推送内容含新增条数', /新增 1 条/.test(sent[0].body.text.content), sent[0].body.text.content);
+  check('推送内容无未替换的变量占位', !/\{[a-z]+\}/.test(sent[0].body.text.content), sent[0].body.text.content);
+
+  /* 修改巡检记录也算「更新巡检报告」 */
+  sent = [];
+  await api('/ledger', {
+    method: 'PUT',
+    body: {
+      scope: 'wxu',
+      data: {
+        regions: [], customers: [{ id: 'wc1', name: '衡水银行' }],
+        visits: [{ id: 'wv1', customerId: 'wc1', date: '2026-11-16', by: '张三', result: 'ok', note: '补录' }]
+      }
+    }
+  }, tk);
+  check('修改巡检记录也触发推送', sent.length === 1, sent.length + ' 条');
+  check('修改推送文案为「修改」', /修改/.test(sent[0].body.text.content), sent[0].body.text.content);
+
+  /* 自己操作不通知（skipSelf） */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', skipSelf: 1 } } }, tk);
+  sent = [];
+  await api('/ledger', {
+    method: 'PUT',
+    body: {
+      scope: 'wxu',
+      data: {
+        regions: [], customers: [{ id: 'wc1', name: '衡水银行' }],
+        visits: [{ id: 'wv2', customerId: 'wc1', date: '2026-11-17', by: '李四', note: '' }]
+      }
+    }
+  }, tk);
+  check('skipSelf 只在自己操作时跳过（此处操作人是 admin，仍推送）', sent.length === 1, sent.length + ' 条');
+
+  /* 停用后不再推送 */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 0 } } }, tk);
+  sent = [];
+  await api('/ledger', {
+    method: 'PUT',
+    body: {
+      scope: 'wxu',
+      data: {
+        regions: [], customers: [{ id: 'wc1', name: '衡水银行' }],
+        visits: [
+          { id: 'wv1', customerId: 'wc1', date: '2026-11-16', by: '张三', result: 'ok', note: '补录' },
+          { id: 'wv2', customerId: 'wc1', date: '2026-11-17', by: '李四', note: '' }
+        ]
+      }
+    }
+  }, tk);
+  check('停用后不再推送', sent.length === 0, sent.length + ' 条');
+
+  r = await api('/users/wxu/wx-log', {}, tk);
+  check('推送流水累计多条并可查询', r.ok && r.data.logs.length >= 3, JSON.stringify(r.data && r.data.logs.length));
+
+  /* 投递失败也不影响保存 */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook } } }, tk);
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ errcode: 93000, errmsg: 'invalid webhook url' }) });
+  sent = [];
+  r = await api('/ledger', {
+    method: 'PUT',
+    body: {
+      scope: 'wxu',
+      data: {
+        regions: [], customers: [{ id: 'wc1', name: '衡水银行' }],
+        visits: [
+          { id: 'wv1', customerId: 'wc1', date: '2026-11-16', by: '张三', result: 'ok', note: '补录' },
+          { id: 'wv2', customerId: 'wc1', date: '2026-11-17', by: '李四', note: '' },
+          { id: 'wv3', customerId: 'wc1', date: '2026-11-18', by: '王五', note: '' }
+        ]
+      }
+    }
+  }, tk);
+  check('投递失败时台账保存仍成功', r.ok === true, JSON.stringify(r));
+  r = await api('/users/wxu/wx-log', {}, tk);
+  check('失败也记流水并带出原因', r.data.logs[0].ok === 0 && /invalid webhook/.test(r.data.logs[0].err),
+    JSON.stringify(r.data.logs[0]));
+} finally {
+  globalThis.fetch = realFetch;
+}
+
+/* 非超管不能操作 */
+r = await api('/users/wxu/wx-test', { method: 'POST', body: {} }, 'bad-token');
+check('非超管不能发测试消息', r.status === 401 || r.status === 403, String(r.status));
+
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);
