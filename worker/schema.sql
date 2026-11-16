@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
   -- 企业微信通知（2026-11-16）：1 = 巡检记录增删改后推送
   wx_enabled INTEGER NOT NULL DEFAULT 0,
   -- wx_cfg 为 JSON：type(robot/app) / hook / corpid / secret / agentid / to / tpl / skipSelf
+  --               / acts(["add","update","delete"] 的子集，缺省=全选)
   wx_cfg     TEXT NOT NULL DEFAULT '{}'
 );
 

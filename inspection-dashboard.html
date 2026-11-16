@@ -990,6 +990,12 @@
   .wx-box .wx-head{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--ink);}
   .wx-box .wx-body{margin-top:10px;padding-top:11px;border-top:1px dashed var(--line);}
   .wx-box .wx-body .field:last-child{margin-bottom:0;}
+  /* 触发动作多选：三个并排勾选，窄屏自动换行。
+     用户弹窗与批量弹窗共用，故两处都写了父类前缀（防被 .field label 反向覆盖）。 */
+  .wx-acts{display:flex;gap:16px;flex-wrap:wrap;padding:2px 0 1px;}
+  .wx-box .wx-acts label,.modal .wx-acts label{display:flex;align-items:center;gap:6px;font-size:12.5px;
+                        color:var(--ink);cursor:pointer;white-space:nowrap;}
+  .wx-box .wx-acts input,.modal .wx-acts input{margin:0;width:13px;height:13px;accent-color:var(--brand);}
   .wx-box textarea{width:100%;min-height:104px;resize:vertical;padding:8px 10px;border:1px solid var(--line);
                    border-radius:var(--r-sm);font-family:var(--font-mono);font-size:11.5px;line-height:1.6;
                    background:var(--surface);color:var(--ink);}
@@ -2101,6 +2107,15 @@
               <div class="hint" id="uWxToHint">群机器人：填手机号可在群里 @ 到人（对方须在该群内）；自建应用：填 userid 私聊送达，必填。</div>
             </div>
             <div class="field">
+              <label>触发动作 <span class="req">*</span></label>
+              <div class="wx-acts" id="uWxActs">
+                <label for="uWxActAdd"><input type="checkbox" id="uWxActAdd"> 新增</label>
+                <label for="uWxActUpd"><input type="checkbox" id="uWxActUpd"> 修改</label>
+                <label for="uWxActDel"><input type="checkbox" id="uWxActDel"> 删除</label>
+              </div>
+              <div class="hint">只推送勾选的变更类型，至少勾一个；三个全勾＝任何增删改都提醒。</div>
+            </div>
+            <div class="field">
               <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uWxSkipSelf"> 自己录入的巡检不通知</label>
               <div class="hint">开启后，只有别人改动该账号的台账才推送，自己录完不打扰自己。</div>
             </div>
@@ -2255,6 +2270,11 @@
             <input type="password" id="bWxSecret" placeholder="corpsecret" autocomplete="new-password" style="margin-bottom:8px;">
           </div>
           <input type="text" id="bWxTo" placeholder="接收人（手机号 / userid，逗号分隔；可留空）" style="margin-bottom:8px;">
+          <div class="wx-acts" id="bWxActs" style="margin-bottom:8px;">
+            <label for="bWxActAdd"><input type="checkbox" id="bWxActAdd"> 新增</label>
+            <label for="bWxActUpd"><input type="checkbox" id="bWxActUpd"> 修改</label>
+            <label for="bWxActDel"><input type="checkbox" id="bWxActDel"> 删除</label>
+          </div>
           <textarea id="bWxTpl" placeholder="消息模板（留空用默认模板）" style="width:100%;min-height:76px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-sm);font-family:var(--font-mono);font-size:11.5px;line-height:1.6;"></textarea>
           <div class="hint">变量：{summary} {customer} {changes} {actor} {time} {date} {link} {count}。自建应用的 corpsecret 会写入所选每个账号。</div>
         </div>
@@ -9652,6 +9672,7 @@
     document.getElementById('bWxSecret').value = '';
     document.getElementById('bWxTo').value = '';
     document.getElementById('bWxTpl').value = '';
+    wxActsWrite(B_WX_ACT, null);   /* 默认三个全勾，与单个用户弹窗一致 */
     syncBatchWxFields();
     document.getElementById('bRole').value = 'user';
     document.getElementById('bPerm').value = 'rw';
@@ -9747,6 +9768,8 @@
         bwx.type = bwxType;
         bwx.to = document.getElementById('bWxTo').value.trim();
         bwx.tpl = document.getElementById('bWxTpl').value;
+        bwx.acts = wxActsRead(B_WX_ACT);
+        if (!bwx.acts.length) { toast('请至少勾选一个触发动作（新增 / 修改 / 删除）'); return; }
         if (bwxType === 'app') {
           bwx.corpid = document.getElementById('bWxCorpId').value.trim();
           bwx.agentid = document.getElementById('bWxAgentId').value.trim();
@@ -10132,6 +10155,22 @@
      与服务端 worker/wecom-notify.mjs 的变量集合保持一致；
      密钥类字段（webhook 的 key / corpsecret）服务端只回掩码或「已设置」，编辑时留空 = 不修改。 */
   var WX_DEFAULT_TPL = ['【巡检报告已更新】', '{summary}', '操作人：{actor}', '时间：{time}', '{link}'].join('\n');
+  /* 触发动作：新增 / 修改 / 删除。默认三个全勾（与旧行为一致）；全不勾由保存接口拦截报错。
+     用户弹窗与批量弹窗共用这套读写，避免两边规则走偏。 */
+  var WX_ACT_DEF = [['add', '新增'], ['update', '修改'], ['delete', '删除']];
+  var U_WX_ACT = { add: 'uWxActAdd', update: 'uWxActUpd', delete: 'uWxActDel' };
+  var B_WX_ACT = { add: 'bWxActAdd', update: 'bWxActUpd', delete: 'bWxActDel' };
+  function wxActsRead(map) {
+    return WX_ACT_DEF.filter(function (p) { return document.getElementById(map[p[0]]).checked; })
+      .map(function (p) { return p[0]; });
+  }
+  function wxActsWrite(map, acts) {
+    var a = (acts && acts.length) ? acts : ['add', 'update', 'delete'];
+    WX_ACT_DEF.forEach(function (p) {
+      var el = document.getElementById(map[p[0]]);
+      if (el) el.checked = a.indexOf(p[0]) >= 0;
+    });
+  }
   function syncWxFields() {
     var on = document.getElementById('uWxOn').checked;
     document.getElementById('uWxBody').style.display = on ? 'block' : 'none';
@@ -10156,6 +10195,7 @@
       : '只保存在服务端，不会回显。';
     document.getElementById('uWxTo').value = w.to || '';
     document.getElementById('uWxSkipSelf').checked = !!w.skipSelf;
+    wxActsWrite(U_WX_ACT, w.acts);
     document.getElementById('uWxTpl').value = w.tpl || '';
     var out = document.getElementById('uWxTestOut');
     out.textContent = ''; out.style.color = '';
@@ -10176,7 +10216,8 @@
       agentid: document.getElementById('uWxAgentId').value.trim(),
       to: document.getElementById('uWxTo').value.trim(),
       tpl: document.getElementById('uWxTpl').value,
-      skipSelf: document.getElementById('uWxSkipSelf').checked
+      skipSelf: document.getElementById('uWxSkipSelf').checked,
+      acts: wxActsRead(U_WX_ACT)
     };
     var hook = document.getElementById('uWxHook').value.trim();
     if (hook) wx.hook = hook;
@@ -10358,6 +10399,11 @@
     }
     if (!name) { toast('请填写区域展示名称'); return; }
     if (remote && !serverId) { toast('请选择认证源（没有的话先去「认证管理」页新增）'); return; }
+    /* 通知开着却一个动作都不勾＝永不推送的哑配置，先拦一道（服务端同样会拦） */
+    var wxNow = collectWx();
+    if (wxNow.enabled && !wxNow.acts.length) {
+      toast('请至少勾选一个触发动作（新增 / 修改 / 删除）'); return;
+    }
 
     if (editingUserId) {
       var target = userList().filter(function (x) { return x.id === editingUserId; })[0];
@@ -10369,7 +10415,7 @@
       var patch = { name: name, nameCn: nameCn, crmVisible: crmVisible, statVisible: statVisible, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins,
         hideSensitive: document.getElementById('uHideSens').checked,
         multiLedger: document.getElementById('uMultiLedger').checked,
-        wx: collectWx() };
+        wx: wxNow };
       /* 远程 → 本地：必须补一个本地初始密码，否则该账号无法再登录 */
       if (wasRemote && !remote) {
         var np = String(document.getElementById('uPwd').value || '');
@@ -10424,7 +10470,7 @@
         role: role, note: note, perm: perm, sessionMins: mins,
         hideSensitive: document.getElementById('uHideSens').checked,
         multiLedger: document.getElementById('uMultiLedger').checked,
-        wx: collectWx()
+        wx: wxNow
       };
       if (initData.shareFrom) payload.shareFrom = initData.shareFrom;
       else payload.data = initData;

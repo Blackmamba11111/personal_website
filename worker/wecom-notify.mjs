@@ -28,6 +28,28 @@ export const TPL_VARS = ['summary', 'customer', 'changes', 'actor', 'time', 'dat
 export const WX_TYPES = ['robot', 'app'];
 export const WX_LABEL = { robot: '群机器人', app: '自建应用' };
 
+/* 触发动作：只有勾选的变更类型才推送。默认全选（等于升级前的行为）。
+   顺序固定为 新增 → 修改 → 删除，前后端展示与比对都依赖这个顺序。 */
+export const WX_ACTS = ['add', 'update', 'delete'];
+export const WX_ACT_LABEL = { add: '新增', update: '修改', delete: '删除' };
+
+/* 触发动作归一化：数组或逗号串都接受，非法值丢弃，去重并按固定顺序输出。
+   v 未传（undefined）= 沿用 base；base 也没有 = 全选（兼容没有 acts 字段的旧配置）。 */
+export function normActs(v, base) {
+  const src = v === undefined ? base : v;
+  if (src === undefined || src === null) return WX_ACTS.slice();
+  const arr = Array.isArray(src) ? src : String(src || '').split(/[,，;；\s]+/);
+  const hit = arr.map(function (s) { return String(s == null ? '' : s).trim().toLowerCase(); });
+  return WX_ACTS.filter(function (a) { return hit.indexOf(a) >= 0; });
+}
+
+/* 某类变更该不该推送。未配置 acts 的旧数据一律按「全选」处理，保证平滑升级。 */
+export function actAllowed(cfg, action) {
+  const a = String(action || '');
+  if (WX_ACTS.indexOf(a) < 0) return false;
+  return normActs(cfg && cfg.acts, undefined).indexOf(a) >= 0;
+}
+
 const HOOK_RE = /^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=[A-Za-z0-9_-]+$/;
 
 /* 接收人列表：「13800138000, lizhi」→ ['13800138000','lizhi']（同时兼容手机号与 userid） */
@@ -189,7 +211,8 @@ export function normalizeWx(input, base) {
     agentid: base.agentid || '',
     to: base.to || '',
     tpl: base.tpl || '',
-    skipSelf: base.skipSelf ? 1 : 0
+    skipSelf: base.skipSelf ? 1 : 0,
+    acts: normActs(undefined, base.acts)
   };
 
   /* hook：显式传空串表示清空；未传表示不改 */
@@ -209,6 +232,7 @@ export function normalizeWx(input, base) {
     cfg.tpl = t;
   }
   if (input.skipSelf !== undefined) cfg.skipSelf = input.skipSelf ? 1 : 0;
+  if (input.acts !== undefined) cfg.acts = normActs(input.acts, undefined);
 
   /* 启用时才做完整性校验：允许先存半成品再补 */
   if (input.enabled) {
@@ -219,6 +243,7 @@ export function normalizeWx(input, base) {
       if (!/^\d{4,12}$/.test(String(cfg.agentid))) return { err: 'agentid 应为数字（企业微信应用详情页可见）' };
       if (!splitTo(cfg.to).length) return { err: '自建应用需填写接收人 userid（可在企业微信通讯录查看）' };
     }
+    if (!cfg.acts.length) return { err: '请至少勾选一个触发动作（新增 / 修改 / 删除）' };
   }
   return { cfg: cfg };
 }

@@ -60,6 +60,7 @@ function userView(u) {
         to: to,
         tpl: w.tpl || '',
         skipSelf: !!w.skipSelf,
+        acts: (Array.isArray(w.acts) && w.acts.length) ? w.acts.slice() : ['add', 'update', 'delete'],
         ready: !!(w.enabled && (type === 'app'
           ? !!(w.corpid && w.secret && w.agentid && to)
           : /^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=/.test(w.hook || '')))
@@ -84,7 +85,8 @@ function applyWx(base, input) {
     enabled: !!b.enabled,
     type: b.type === 'app' ? 'app' : 'robot',
     hook: b.hook || '', corpid: b.corpid || '', secret: b.secret || '',
-    agentid: b.agentid || '', to: b.to || '', tpl: b.tpl || '', skipSelf: !!b.skipSelf
+    agentid: b.agentid || '', to: b.to || '', tpl: b.tpl || '', skipSelf: !!b.skipSelf,
+    acts: (Array.isArray(b.acts) && b.acts.length) ? b.acts.slice() : ['add', 'update', 'delete']
   };
   input = input || {};
   if (input.type !== undefined) cfg.type = input.type === 'app' ? 'app' : 'robot';
@@ -102,9 +104,15 @@ function applyWx(base, input) {
   if (input.to !== undefined) cfg.to = String(input.to || '').trim();
   if (input.tpl !== undefined) cfg.tpl = String(input.tpl || '');
   if (input.skipSelf !== undefined) cfg.skipSelf = !!input.skipSelf;
+  if (input.acts !== undefined) {
+    cfg.acts = (Array.isArray(input.acts) ? input.acts : String(input.acts || '').split(/[,，;；\s]+/))
+      .map(function (s) { return String(s).trim().toLowerCase(); })
+      .filter(function (a) { return ['add', 'update', 'delete'].indexOf(a) >= 0; });
+  }
   if (cfg.enabled) {
     if (cfg.type === 'robot' && !cfg.hook) return { err: '启用前请填写群机器人 Webhook 地址' };
     if (cfg.type === 'app' && (!cfg.corpid || !cfg.secret || !cfg.agentid || !cfg.to)) return { err: '自建应用配置不完整' };
+    if (!cfg.acts.length) return { err: '请至少勾选一个触发动作（新增 / 修改 / 删除）' };
   }
   return { wx: cfg };
 }

@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS users (
   server_id   TEXT NOT NULL DEFAULT '',
   share_from  TEXT NOT NULL DEFAULT '',
   multi_ledger INTEGER NOT NULL DEFAULT 0,
-  /* 企业微信通知（2026-11-16）：wx_cfg 存 JSON（type/hook/corpid/secret/agentid/to/tpl/skipSelf），
+  /* 企业微信通知（2026-11-16）：wx_cfg 存 JSON（type/hook/corpid/secret/agentid/to/tpl/skipSelf/acts），
      密钥类字段只落库、任何接口都只给「是否已设置」 */
   wx_enabled  INTEGER NOT NULL DEFAULT 0,
   wx_cfg      TEXT NOT NULL DEFAULT '{}'
@@ -242,6 +242,16 @@ function validUsername(u) { return /^[A-Za-z0-9_.-]{3,32}$/.test(u); }
    投递本身在模块里（内网按需 await import，公网直接 import）。
    密钥（webhook 的 key / corpsecret）只落库，接口一律只回「已设置」或掩码。 */
 const WX_HOOK_RE = /^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=[A-Za-z0-9_-]+$/;
+/* 触发动作（新增/修改/删除）合集，顺序与前端、wecom-notify.mjs 保持一致 */
+const WX_ACTS = ['add', 'update', 'delete'];
+/* v 未传 = 沿用 base；base 也没有 = 全选（兼容没有 acts 字段的旧配置） */
+function wxNormActs(v, base) {
+  const src = v === undefined ? base : v;
+  if (src === undefined || src === null) return WX_ACTS.slice();
+  const arr = Array.isArray(src) ? src : String(src || '').split(/[,，;；\s]+/);
+  const hit = arr.map(function (s) { return String(s == null ? '' : s).trim().toLowerCase(); });
+  return WX_ACTS.filter(function (a) { return hit.indexOf(a) >= 0; });
+}
 function wxSplitTo(v) {
   return String(v == null ? '' : v).split(/[,，;；\s]+/)
     .map(function (s) { return s.trim(); }).filter(Boolean).slice(0, 50);
@@ -273,6 +283,8 @@ function wxView(enabled, raw) {
     to: to,
     tpl: c.tpl || '',
     skipSelf: !!c.skipSelf,
+    /* 触发动作：老配置没有这个字段时按全选下发，前端不至于出现「三个都没勾」 */
+    acts: wxNormActs(undefined, c.acts),
     ready: ready
   };
 }
@@ -290,7 +302,8 @@ function ensureWxInput(input, base) {
     agentid: base.agentid || '',
     to: base.to || '',
     tpl: base.tpl || '',
-    skipSelf: base.skipSelf ? 1 : 0
+    skipSelf: base.skipSelf ? 1 : 0,
+    acts: wxNormActs(undefined, base.acts)
   };
   if (input.hook !== undefined) {
     const h = String(input.hook || '').trim();
@@ -313,6 +326,7 @@ function ensureWxInput(input, base) {
     cfg.tpl = t;
   }
   if (input.skipSelf !== undefined) cfg.skipSelf = input.skipSelf ? 1 : 0;
+  if (input.acts !== undefined) cfg.acts = wxNormActs(input.acts, undefined);
 
   const enabled = input.enabled ? 1 : 0;
   if (enabled) {
@@ -323,6 +337,7 @@ function ensureWxInput(input, base) {
       if (!/^\d{4,12}$/.test(String(cfg.agentid))) return { err: 'agentid 应为数字（企业微信应用详情页可见）' };
       if (!wxSplitTo(cfg.to).length) return { err: '自建应用需填写接收人 userid（可在企业微信通讯录查看）' };
     }
+    if (!cfg.acts.length) return { err: '请至少勾选一个触发动作（新增 / 修改 / 删除）' };
   }
   return { cfg: cfg, enabled: enabled };
 }
@@ -1441,9 +1456,12 @@ async function notifyVisitChange(ownerName, actor, logs, req) {
     const cfg = parseCfg(row.wx_cfg);
     /* 「自己操作不通知」：适合自己录完不想再被打扰的账号 */
     if (cfg.skipSelf && actor === row.username) return;
+    /* 触发动作权限：只保留勾选的变更类型（未配置 acts 的旧数据按全选处理） */
+    const picked = vs.filter(function (l) { return wxNormActs(undefined, cfg.acts).indexOf(l.action) >= 0; });
+    if (!picked.length) return;
 
     const byCust = new Map();
-    vs.forEach(function (l) {
+    picked.forEach(function (l) {
       const name = String(l.target || '').split(' · ')[0] || '未知客户';
       const it = byCust.get(name) || { customer: name, add: 0, upd: 0, del: 0 };
       if (l.action === 'add') it.add++;
@@ -1463,7 +1481,7 @@ async function notifyVisitChange(ownerName, actor, logs, req) {
       time: mod.fmtTime(now),
       date: mod.fmtTime(now, true),
       link: siteOrigin(req) + '/inspection-dashboard.html',
-      count: String(vs.length)
+      count: String(picked.length)
     });
     const r = await mod.deliver(cfg, content);
     wxLogAdd(row.username, 'notify', r.ok, cfg.type, String(summary).split('\n')[0], r.err);
@@ -2528,7 +2546,10 @@ async function handleApi(req, res, url) {
     if (method !== 'POST') return bad(res, '方法不支持', 405);
     /* 支持用弹窗里尚未保存的配置直接测：body.wx 传表单值，缺省则用库内已保存的 */
     const base = parseCfg(row.wx_cfg);
-    const v = body.wx ? ensureWxInput(Object.assign({ enabled: 1 }, body.wx), base) : { cfg: base, enabled: 1 };
+    /* 测试消息与「触发动作」无关：三个都没勾时按沿用旧值 / 全选处理，不因此拦住自检 */
+    const testIn = body.wx ? Object.assign({ enabled: 1 }, body.wx) : null;
+    if (testIn && Array.isArray(testIn.acts) && !testIn.acts.length) delete testIn.acts;
+    const v = testIn ? ensureWxInput(testIn, base) : { cfg: base, enabled: 1 };
     if (v.err) return bad(res, v.err);
     const mod = await loadWxMod();
     const now = nowIso();

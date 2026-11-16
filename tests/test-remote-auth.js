@@ -351,6 +351,9 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     fire(w, id('uWxOn'), 'change');
     check('勾选启用后展开参数区', id('uWxBody').style.display === 'block', id('uWxBody').style.display);
     check('默认接入方式为群机器人', id('uWxRobotWrap').style.display === 'block' && id('uWxAppWrap').style.display === 'none');
+    check('触发动作默认三个全勾',
+      id('uWxActAdd').checked && id('uWxActUpd').checked && id('uWxActDel').checked,
+      [id('uWxActAdd').checked, id('uWxActUpd').checked, id('uWxActDel').checked].join(','));
     id('uWxType').value = 'app';
     fire(w, id('uWxType'), 'change');
     check('切到自建应用显示 corpid / agentid / secret',
@@ -361,6 +364,8 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     id('uWxHook').value = wxHook;
     id('uWxTo').value = '13800138000';
     id('uWxTpl').value = '【巡检】{summary}';
+    /* 触发动作收窄：取消「修改」，只留新增 + 删除 */
+    id('uWxActUpd').checked = false;
     id('uPwd').value = 'abc123456';
     click(w, id('btnSaveUser'));
     await tick(90);
@@ -368,6 +373,8 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('机器人配置随用户保存', wu && wu.wx && wu.wx.enabled && wu.wx.hook === wxHook, wu && JSON.stringify(wu.wx));
     check('接收人保存', wu && wu.wx.to === '13800138000', wu && wu.wx.to);
     check('自定义模板保存', wu && wu.wx.tpl === '【巡检】{summary}', wu && wu.wx.tpl);
+    check('触发动作按勾选保存（未勾修改）', wu && JSON.stringify(wu.wx.acts) === '["add","delete"]',
+      wu && JSON.stringify(wu.wx.acts));
     check('列表出现「机器人」标记',
       (d.querySelector('#usersTableWrap tr[data-uid="wxuser"]') || {}).textContent.indexOf('机器人') >= 0);
 
@@ -376,6 +383,17 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('编辑时 hook 回填掩码而非明文', id('uWxHook').value.indexOf('****') > 0 && id('uWxHook').value !== wxHook, id('uWxHook').value);
     check('编辑时提示已保存', id('uWxHookHint').textContent.indexOf('已保存') >= 0, id('uWxHookHint').textContent);
     check('编辑时回填模板', id('uWxTpl').value === '【巡检】{summary}', id('uWxTpl').value);
+    check('编辑时回填触发动作',
+      id('uWxActAdd').checked && !id('uWxActUpd').checked && id('uWxActDel').checked,
+      [id('uWxActAdd').checked, id('uWxActUpd').checked, id('uWxActDel').checked].join(','));
+    /* 三个都不勾 → 前后端都会拦，且不得改动已存配置 */
+    id('uWxActAdd').checked = false;
+    id('uWxActDel').checked = false;
+    click(w, id('btnSaveUser'));
+    await tick(90);
+    const wuKeep = userOf(w, 'wxuser');
+    check('三个都不勾时保存被拦下、配置不变',
+      wuKeep && JSON.stringify(wuKeep.wx.acts) === '["add","delete"]', wuKeep && JSON.stringify(wuKeep.wx.acts));
     click(w, d.querySelector('#maskUser [data-close]'));
 
     /* 批量：只关推送，保留已存地址 */
@@ -395,6 +413,28 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     const wu2 = userOf(w, 'wxuser');
     check('批量停用后 enabled 为 false', wu2 && wu2.wx.enabled === false, wu2 && JSON.stringify(wu2.wx));
     check('批量停用保留已存的 hook', wu2 && wu2.wx.hook === wxHook, wu2 && wu2.wx.hook);
+
+    /* 批量启用时也能设置触发动作 */
+    const cbx2 = d.querySelector('#usersTableWrap [data-uchk="wxuser"]');
+    cbx2.checked = true;
+    fire(w, cbx2, 'change');
+    click(w, id('btnUsersBatchEdit'));
+    await tick(40);
+    check('批量弹窗触发动作默认三个全勾',
+      id('bWxActAdd').checked && id('bWxActUpd').checked && id('bWxActDel').checked);
+    id('bWxOn').checked = true;
+    fire(w, id('bWxOn'), 'change');
+    id('bWxMode').value = 'on';
+    fire(w, id('bWxMode'), 'change');
+    check('启用模式显示参数区', id('bWxDetail').style.display === 'block', id('bWxDetail').style.display);
+    id('bWxHook').value = wxHook;
+    id('bWxActUpd').checked = false;
+    id('bWxActDel').checked = false;
+    click(w, id('btnSaveBatchUsers'));
+    await tick(160);
+    const wu3 = userOf(w, 'wxuser');
+    check('批量启用的触发动作已下发', wu3 && wu3.wx.enabled && JSON.stringify(wu3.wx.acts) === '["add"]',
+      wu3 && JSON.stringify(wu3.wx));
 
     w.close();
   }

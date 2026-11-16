@@ -61,6 +61,35 @@ check('clearSecret 可显式清空', v.cfg.secret === '', JSON.stringify(v));
 check('wxReady 对未启用返回 false', WX.wxReady({ enabled: 0, type: 'robot', hook: hook }) === false);
 check('wxReady 对完整群机器人返回 true', WX.wxReady({ enabled: 1, type: 'robot', hook: hook }) === true);
 
+/* ---------- 触发动作（新增 / 修改 / 删除） ---------- */
+check('触发动作全集顺序固定', JSON.stringify(WX.WX_ACTS) === '["add","update","delete"]', JSON.stringify(WX.WX_ACTS));
+check('动作中文名齐全', WX.WX_ACT_LABEL.add === '新增' && WX.WX_ACT_LABEL.update === '修改' && WX.WX_ACT_LABEL.delete === '删除');
+let acts = WX.normActs(undefined, undefined);
+check('未配置动作 → 默认全选（兼容旧配置）', JSON.stringify(acts) === '["add","update","delete"]', JSON.stringify(acts));
+acts = WX.normActs(['delete', 'add'], undefined);
+check('动作归一化：去重并按固定顺序输出', JSON.stringify(acts) === '["add","delete"]', JSON.stringify(acts));
+acts = WX.normActs('update，add；bogus', undefined);
+check('动作归一化：兼容逗号/中文分号串与非法值', JSON.stringify(acts) === '["add","update"]', JSON.stringify(acts));
+acts = WX.normActs([], undefined);
+check('动作归一化：显式空数组保留为空', Array.isArray(acts) && acts.length === 0, JSON.stringify(acts));
+acts = WX.normActs(undefined, ['update']);
+check('动作归一化：未传则沿用 base', JSON.stringify(acts) === '["update"]', JSON.stringify(acts));
+
+check('actAllowed：未配置 acts 的旧数据一律放行',
+  WX.actAllowed({}, 'add') && WX.actAllowed({}, 'update') && WX.actAllowed({}, 'delete'));
+check('actAllowed：只勾新增时拦截修改/删除',
+  WX.actAllowed({ acts: ['add'] }, 'add') && !WX.actAllowed({ acts: ['add'] }, 'update') && !WX.actAllowed({ acts: ['add'] }, 'delete'));
+check('actAllowed：未知动作一律不放行', WX.actAllowed({ acts: ['add'] }, 'remove') === false);
+
+v = WX.normalizeWx({ enabled: 1, type: 'robot', hook: hook }, null);
+check('保存时不传 acts → 存成三个全选', JSON.stringify(v.cfg.acts) === '["add","update","delete"]', JSON.stringify(v.cfg.acts));
+v = WX.normalizeWx({ enabled: 1, type: 'robot', hook: hook, acts: ['delete'] }, null);
+check('保存时只勾删除 → 只存删除', !v.err && JSON.stringify(v.cfg.acts) === '["delete"]', JSON.stringify(v));
+v = WX.normalizeWx({ enabled: 1, type: 'robot', hook: hook, acts: [] }, null);
+check('启用但三个动作都不勾 → 报错拦截', !!v.err && /触发动作/.test(v.err), JSON.stringify(v));
+v = WX.normalizeWx({ enabled: 0, type: 'robot', hook: hook, acts: [] }, null);
+check('未启用时允许动作全空（半成品可先存）', !v.err, JSON.stringify(v));
+
 /* ---------- 群机器人投递 ---------- */
 async function testRobot() {
   let sent = null;

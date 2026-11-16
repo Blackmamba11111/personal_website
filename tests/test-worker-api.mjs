@@ -583,6 +583,8 @@ const wxHook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcd1234';
 r = await api('/users', { method: 'POST', body: { username: 'wxu', name: '通知用户', password: 'Wx@12345' } }, tk);
 check('创建通知测试用户', r.ok === true, JSON.stringify(r));
 check('新用户默认不带机器人配置', r.data.user.wx && r.data.user.wx.enabled === false, JSON.stringify(r.data.user.wx));
+check('新用户触发动作默认三个全勾',
+  JSON.stringify(r.data.user.wx.acts) === '["add","update","delete"]', JSON.stringify(r.data.user.wx.acts));
 
 r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: 'not-a-url' } } }, tk);
 check('非法 Webhook 被拒', r.ok === false && /Webhook/.test(r.error), JSON.stringify(r));
@@ -663,6 +665,66 @@ try {
   }, tk);
   check('修改巡检记录也触发推送', sent.length === 1, sent.length + ' 条');
   check('修改推送文案为「修改」', /修改/.test(sent[0].body.text.content), sent[0].body.text.content);
+
+  /* 触发动作权限：只勾「新增」→ 修改不推、新增照推 */
+  /* 本段 to 为空 → 走 markdown，正文在 body.markdown 里，取正文要用这个函数 */
+  const bodyText = (ev) => String((ev && ev.body && ((ev.body.text || {}).content || (ev.body.markdown || {}).content)) || '');
+  r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', acts: ['add'] } } }, tk);
+  check('保存后回传触发动作', JSON.stringify(r.data.user.wx.acts) === '["add"]', JSON.stringify(r.data.user.wx.acts));
+  sent = [];
+  await api('/ledger', {
+    method: 'PUT',
+    body: {
+      scope: 'wxu',
+      data: {
+        regions: [], customers: [{ id: 'wc1', name: '衡水银行' }],
+        visits: [{ id: 'wv1', customerId: 'wc1', date: '2026-11-16', by: '张三', result: 'ok', note: '再改一次' }]
+      }
+    }
+  }, tk);
+  check('只勾新增时，修改巡检记录不推送', sent.length === 0, sent.length + ' 条');
+
+  sent = [];
+  await api('/ledger', {
+    method: 'PUT',
+    body: {
+      scope: 'wxu',
+      data: {
+        regions: [], customers: [{ id: 'wc1', name: '衡水银行' }],
+        visits: [
+          { id: 'wv1', customerId: 'wc1', date: '2026-11-16', by: '张三', result: 'ok', note: '再改一次' },
+          { id: 'wv9', customerId: 'wc1', date: '2026-11-20', by: '张三', note: '' }
+        ]
+      }
+    }
+  }, tk);
+  check('只勾新增时，新增照常推送', sent.length === 1, sent.length + ' 条');
+  check('推送摘要只统计勾选的动作', /新增 1 条/.test(bodyText(sent[0])) && !/修改/.test(bodyText(sent[0])),
+    bodyText(sent[0]));
+
+  /* 只勾「删除」→ 删除推、新增不推 */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', acts: ['delete'] } } }, tk);
+  sent = [];
+  await api('/ledger', {
+    method: 'PUT',
+    body: {
+      scope: 'wxu',
+      data: {
+        regions: [], customers: [{ id: 'wc1', name: '衡水银行' }],
+        visits: [{ id: 'wv1', customerId: 'wc1', date: '2026-11-16', by: '张三', result: 'ok', note: '再改一次' }]
+      }
+    }
+  }, tk);
+  check('只勾删除时，删除记录推送且文案为「删除」',
+    sent.length === 1 && /删除 1 条/.test(bodyText(sent[0])),
+    sent.length + ' 条 ' + (sent[0] ? bodyText(sent[0]) : ''));
+
+  /* 三个都不勾 → 保存被拒（避免「开着但永不推送」的哑配置） */
+  r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', acts: [] } } }, tk);
+  check('三个动作都不勾时保存被拒', !r.ok && /触发动作/.test(r.error || ''), JSON.stringify(r));
+
+  /* 后面几个用例依赖默认全选，这里恢复 */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', acts: ['add', 'update', 'delete'] } } }, tk);
 
   /* 自己操作不通知（skipSelf） */
   await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', skipSelf: 1 } } }, tk);
