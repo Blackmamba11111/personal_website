@@ -343,6 +343,10 @@
   .mnum.miss{background:var(--danger-soft);border-color:var(--danger-line);color:var(--danger-ink);}
   .mnum.na{background:var(--surface-2);border-color:var(--line);color:var(--ink-4);font-weight:400;}
   .mnum.sum{background:var(--surface-2);border-color:var(--line);color:var(--ink-2);}
+  /* 文字型状态：中文走 sans（mono 不适合中文），次数 >1 时用等宽小角标补在右侧 */
+  .mnum.txt{font-family:var(--font-sans);font-size:11px;font-weight:600;letter-spacing:.2px;
+            white-space:nowrap;padding:1px 6px;}
+  .mnum.txt .n{font-family:var(--font-mono);font-size:10px;font-weight:500;margin-left:3px;opacity:.85;}
 
   .readonly-box.md-box{display:block;}
   .md-cap{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
@@ -5640,10 +5644,14 @@
           '<td class="mm-owner" style="color:var(--ink-3);">' + esc(row.owner || '—') + '</td>' +
           row.cells.map(function (cell) {
             var cls = cell.count > 0 ? 'ok' : (cell.elapsed ? 'miss' : 'na');
-            return '<td class="mm-cell' + (sel === cell.month ? ' sel' : '') + '">' +
-              '<span class="mnum ' + cls + '">' + (cell.elapsed ? cell.count : '—') + '</span></td>';
+            /* 未到考核窗口 → —；到了没记录 → 未巡检；有记录 → 已巡检（多次补 ×N） */
+            var txt = cell.elapsed ? (cell.count > 0 ? '已巡检' : '未巡检') : '—';
+            var extra = (cell.elapsed && cell.count > 1) ? '<span class="n">×' + cell.count + '</span>' : '';
+            return '<td class="mm-cell' + (sel === cell.month ? ' sel' : '') + '"' +
+              (cell.count > 1 ? ' title="' + cell.month + ' 月共 ' + cell.count + ' 次有效巡检"' : '') + '>' +
+              '<span class="mnum txt ' + cls + '">' + txt + extra + '</span></td>';
           }).join('') +
-          '<td class="mm-cell"><span class="mnum sum">' + row.total + '</span></td></tr>';
+          '<td class="mm-cell" title="本季度该组有效巡检合计"><span class="mnum sum">' + row.total + '</span></td></tr>';
       }).join('');
     } else {
       var uvs = windowVisits(c, qk);

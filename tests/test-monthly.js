@@ -136,10 +136,15 @@ setTimeout(() => {
   const uRows = [...uTable.querySelectorAll('tbody tr')];
   check('矩阵按分组逐行渲染（2 组 → 2 行）', uRows.length === 2, uRows.length + ' 行');
   const numsOf = tr => [...tr.querySelectorAll('.mnum')].map(x => x.textContent.trim());
-  check('A 组 7月3次 / 8月0 / 9月0 / 合计3',
-    JSON.stringify(numsOf(uRows[0])) === JSON.stringify(['3', '0', '0', '3']), numsOf(uRows[0]).join('|'));
-  check('B 组 7月1次 / 8月0 / 9月0 / 合计1',
-    JSON.stringify(numsOf(uRows[1])) === JSON.stringify(['1', '0', '0', '1']), numsOf(uRows[1]).join('|'));
+  check('A 组 7月3次显示「已巡检 ×3」/ 8·9月显示「未巡检」/ 合计3',
+    JSON.stringify(numsOf(uRows[0])) === JSON.stringify(['已巡检×3', '未巡检', '未巡检', '3']), numsOf(uRows[0]).join('|'));
+  check('B 组 7月1次显示「已巡检」/ 8·9月「未巡检」/ 合计1',
+    JSON.stringify(numsOf(uRows[1])) === JSON.stringify(['已巡检', '未巡检', '未巡检', '1']), numsOf(uRows[1]).join('|'));
+  check('矩阵单元格不再直接显示裸数字 0',
+    !numsOf(uRows[0]).slice(0, 3).some(t => t === '0'), numsOf(uRows[0]).slice(0, 3).join('|'));
+  check('多次巡检保留次数角标（×3）',
+    (uRows[0].querySelector('.mnum .n') || {}).textContent === '×3',
+    (uRows[0].querySelector('.mnum .n') || {}).textContent);
   check('矩阵 0 次单元格为 danger 态', uRows[0].querySelectorAll('.mnum.miss').length === 2,
     uRows[0].querySelectorAll('.mnum.miss').length + ' 格');
   check('矩阵有次数的单元格为 ok 态', uRows[0].querySelectorAll('.mnum.ok').length === 1,
