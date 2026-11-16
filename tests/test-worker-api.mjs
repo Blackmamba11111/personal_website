@@ -668,7 +668,10 @@ try {
 
   /* 触发动作权限：只勾「新增」→ 修改不推、新增照推 */
   /* 本段 to 为空 → 走 markdown，正文在 body.markdown 里，取正文要用这个函数 */
-  const bodyText = (ev) => String((ev && ev.body && ((ev.body.text || {}).content || (ev.body.markdown || {}).content)) || '');
+  const bodyText = (ev) => String((ev && ev.body && (
+    (ev.body.text || {}).content ||
+    (ev.body.markdown || {}).content ||
+    (ev.body.template_card || {}).sub_title_text)) || '');
   r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', acts: ['add'] } } }, tk);
   check('保存后回传触发动作', JSON.stringify(r.data.user.wx.acts) === '["add"]', JSON.stringify(r.data.user.wx.acts));
   sent = [];
@@ -725,6 +728,69 @@ try {
 
   /* 后面几个用例依赖默认全选，这里恢复 */
   await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', acts: ['add', 'update', 'delete'] } } }, tk);
+
+  /* 消息形式：card / text / markdown —— 同一份台账，只切换报文形态 */
+  const putVisits = async (visits) => {
+    await api('/ledger', {
+      method: 'PUT',
+      body: { scope: 'wxu', data: { regions: [], customers: [{ id: 'wc1', name: '衡水银行' }], visits: visits } }
+    }, tk);
+  };
+  const kept = [
+    { id: 'wv1', customerId: 'wc1', date: '2026-11-16', by: '张三', result: 'ok', note: '再改一次' },
+    { id: 'wv9', customerId: 'wc1', date: '2026-11-20', by: '张三', note: '' }
+  ];
+
+  r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', fmt: 'card' } } }, tk);
+  check('保存后回传消息形式', r.data.user.wx.fmt === 'card', JSON.stringify(r.data.user.wx.fmt));
+  sent = [];
+  await putVisits(kept.concat([{ id: 'wv10', customerId: 'wc1', date: '2026-11-21', by: '张三', note: '' }]));
+  check('卡片形式发 template_card', sent.length === 1 && sent[0].body.msgtype === 'template_card',
+    sent.length + ' 条 ' + (sent[0] && sent[0].body.msgtype));
+  check('卡片「查看详情」直达该客户详情',
+    /inspection-dashboard\.html\?cust=wc1$/.test(String(sent[0].body.template_card.card_action.url)),
+    sent[0].body.template_card.card_action.url);
+  check('卡片标题含客户名', /衡水银行/.test(sent[0].body.template_card.main_title.title),
+    sent[0].body.template_card.main_title.title);
+  check('卡片键值行含「变更」', sent[0].body.template_card.horizontal_content_list.some((x) => x.keyname === '变更'),
+    JSON.stringify(sent[0].body.template_card.horizontal_content_list));
+
+  /* 配了接收人时卡片让位给 @（群机器人卡片不支持 @人） */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '13800138000', fmt: 'card' } } }, tk);
+  sent = [];
+  await putVisits(kept.concat([
+    { id: 'wv10', customerId: 'wc1', date: '2026-11-21', by: '张三', note: '' },
+    { id: 'wv11', customerId: 'wc1', date: '2026-11-22', by: '张三', note: '' }
+  ]));
+  check('填了接收人时自动改用 text 并 @ 到人',
+    sent.length === 1 && sent[0].body.msgtype === 'text' &&
+    JSON.stringify(sent[0].body.text.mentioned_mobile_list) === '["13800138000"]',
+    sent.length + ' 条 ' + JSON.stringify(sent[0] && sent[0].body.msgtype));
+
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', fmt: 'text' } } }, tk);
+  sent = [];
+  await putVisits(kept.concat([
+    { id: 'wv10', customerId: 'wc1', date: '2026-11-21', by: '张三', note: '' },
+    { id: 'wv11', customerId: 'wc1', date: '2026-11-22', by: '张三', note: '' },
+    { id: 'wv12', customerId: 'wc1', date: '2026-11-23', by: '张三', note: '' }
+  ]));
+  check('纯文本形式发 text 且正文含客户名',
+    sent.length === 1 && sent[0].body.msgtype === 'text' && /衡水银行/.test(sent[0].body.text.content),
+    sent.length + ' 条 ' + bodyText(sent[0]));
+
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', fmt: 'markdown' } } }, tk);
+  sent = [];
+  await putVisits(kept.concat([
+    { id: 'wv10', customerId: 'wc1', date: '2026-11-21', by: '张三', note: '' },
+    { id: 'wv11', customerId: 'wc1', date: '2026-11-22', by: '张三', note: '' },
+    { id: 'wv12', customerId: 'wc1', date: '2026-11-23', by: '张三', note: '' },
+    { id: 'wv13', customerId: 'wc1', date: '2026-11-24', by: '张三', note: '' }
+  ]));
+  check('Markdown 形式发 markdown', sent.length === 1 && sent[0].body.msgtype === 'markdown',
+    sent.length + ' 条 ' + (sent[0] && sent[0].body.msgtype));
+
+  /* 恢复卡片 + 默认动作，供后面的 skipSelf / 停用用例使用 */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', fmt: 'card', acts: ['add', 'update', 'delete'] } } }, tk);
 
   /* 自己操作不通知（skipSelf） */
   await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', skipSelf: 1 } } }, tk);

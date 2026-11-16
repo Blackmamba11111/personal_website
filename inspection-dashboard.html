@@ -2107,6 +2107,15 @@
               <div class="hint" id="uWxToHint">群机器人：填手机号可在群里 @ 到人（对方须在该群内）；自建应用：填 userid 私聊送达，必填。</div>
             </div>
             <div class="field">
+              <label for="uWxFmt">消息形式</label>
+              <select id="uWxFmt">
+                <option value="card">卡片（带「查看详情」按钮，点开直达该客户）</option>
+                <option value="text">纯文本</option>
+                <option value="markdown">Markdown</option>
+              </select>
+              <div class="hint" id="uWxFmtHint">卡片只在群里「没填接收人」时生效；填了手机号要 @ 人，会自动改用纯文本（卡片不支持 @）。自建应用三种都支持。</div>
+            </div>
+            <div class="field">
               <label>触发动作 <span class="req">*</span></label>
               <div class="wx-acts" id="uWxActs">
                 <label for="uWxActAdd"><input type="checkbox" id="uWxActAdd"> 新增</label>
@@ -2270,6 +2279,11 @@
             <input type="password" id="bWxSecret" placeholder="corpsecret" autocomplete="new-password" style="margin-bottom:8px;">
           </div>
           <input type="text" id="bWxTo" placeholder="接收人（手机号 / userid，逗号分隔；可留空）" style="margin-bottom:8px;">
+          <select id="bWxFmt" style="margin-bottom:8px;">
+            <option value="card">卡片（带「查看详情」按钮）</option>
+            <option value="text">纯文本</option>
+            <option value="markdown">Markdown</option>
+          </select>
           <div class="wx-acts" id="bWxActs" style="margin-bottom:8px;">
             <label for="bWxActAdd"><input type="checkbox" id="bWxActAdd"> 新增</label>
             <label for="bWxActUpd"><input type="checkbox" id="bWxActUpd"> 修改</label>
@@ -9671,6 +9685,7 @@
     document.getElementById('bWxAgentId').value = '';
     document.getElementById('bWxSecret').value = '';
     document.getElementById('bWxTo').value = '';
+    document.getElementById('bWxFmt').value = 'card';
     document.getElementById('bWxTpl').value = '';
     wxActsWrite(B_WX_ACT, null);   /* 默认三个全勾，与单个用户弹窗一致 */
     syncBatchWxFields();
@@ -9767,6 +9782,7 @@
         var bwxType = document.getElementById('bWxType').value === 'app' ? 'app' : 'robot';
         bwx.type = bwxType;
         bwx.to = document.getElementById('bWxTo').value.trim();
+        bwx.fmt = document.getElementById('bWxFmt').value;
         bwx.tpl = document.getElementById('bWxTpl').value;
         bwx.acts = wxActsRead(B_WX_ACT);
         if (!bwx.acts.length) { toast('请至少勾选一个触发动作（新增 / 修改 / 删除）'); return; }
@@ -10194,6 +10210,7 @@
       ? '已保存密钥，留空即保持原值；填写则覆盖。'
       : '只保存在服务端，不会回显。';
     document.getElementById('uWxTo').value = w.to || '';
+    document.getElementById('uWxFmt').value = (w.fmt === 'text' || w.fmt === 'markdown') ? w.fmt : 'card';
     document.getElementById('uWxSkipSelf').checked = !!w.skipSelf;
     wxActsWrite(U_WX_ACT, w.acts);
     document.getElementById('uWxTpl').value = w.tpl || '';
@@ -10215,6 +10232,7 @@
       corpid: document.getElementById('uWxCorpId').value.trim(),
       agentid: document.getElementById('uWxAgentId').value.trim(),
       to: document.getElementById('uWxTo').value.trim(),
+      fmt: document.getElementById('uWxFmt').value,
       tpl: document.getElementById('uWxTpl').value,
       skipSelf: document.getElementById('uWxSkipSelf').checked,
       acts: wxActsRead(U_WX_ACT)
@@ -10838,6 +10856,21 @@
   }
 
   /* ---------------- 启动 ---------------- */
+  /* 企业微信卡片「查看详情」带 ?cust=<id>：登录后自动打开该客户详情。
+     只消费一次；找不到客户就留在列表并提示，避免刷新后反复弹。 */
+  var DEEP_LINK_DONE = false;
+  function consumeDeepLink() {
+    if (DEEP_LINK_DONE) return;
+    var m = /[?&]cust=([^&#]+)/.exec(location.search || '');
+    if (!m) { DEEP_LINK_DONE = true; return; }
+    DEEP_LINK_DONE = true;
+    var key = m[1];
+    try { key = decodeURIComponent(key); } catch (e) { /* 保留原串 */ }
+    var c = DB.customers.filter(function (x) { return x.id === key || x.name === key; })[0];
+    if (!c) { toast('未找到该客户，可能已被删除'); return; }
+    setTimeout(function () { openDetail(c.id); }, 260);
+  }
+
   function signIn(user, opts) {
     AUTH.user = user;
     SENS_SHOW = {};                          /* 换账号 / 重新登录后敏感明文全部恢复打码 */
@@ -10865,6 +10898,7 @@
     renderUserChip();
     renderReadonlyBanner();
     renderScopeSelect();
+    consumeDeepLink();   /* 企业微信卡片点进来时，直接落到对应客户的详情 */
     /* 登录即拉一次 CRM 快照：列表维保徽标 / 详情现网信息 / 「我负责的项目」都依赖它 */
     refreshCrmData();
     if (opts && opts.welcome) toast('欢迎回来，' + user.name);

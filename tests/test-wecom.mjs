@@ -156,8 +156,115 @@ async function testApp() {
   check('自建应用：缺 corpid 不发请求', !r.ok && /corpid/.test(r.err), r.err);
 }
 
+/* ---------- 卡片消息 ---------- */
+async function testCard() {
+  const hook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=cardkey';
+  const card = {
+    title: '衡水银行 · 巡检报告已更新',
+    desc: '衡水银行：新增 1 条\n操作人：潘超',
+    url: 'https://10.1.114.115/inspection-dashboard.html?cust=c1',
+    rows: [{ key: '操作人', val: '潘超' }, { key: '时间', val: '2026-11-16 22:30' }]
+  };
+  const rec = (resp) => {
+    const hits = [];
+    const f = async (url, opt) => { hits.push({ url: url, body: JSON.parse(opt.body) }); return { ok: true, json: async () => resp }; };
+    f.hits = hits;
+    return f;
+  };
+
+  check('clipBytes：中文按 3 字节算', WX.clipBytes('一二三四五', 10) === '一二三', JSON.stringify(WX.clipBytes('一二三四五', 10)));
+  check('clipBytes：英文按 1 字节算', WX.clipBytes('abcdefgh', 4) === 'abcd');
+
+  const tc = WX.textCardOf(card);
+  check('textcard：msgtype 为 textcard', tc.msgtype === 'textcard');
+  check('textcard：换行转成 <br>', tc.textcard.description.indexOf('<br>') >= 0, tc.textcard.description);
+  check('textcard：按钮文字为「查看详情」', tc.textcard.btntxt === '查看详情');
+  check('textcard：url 原样写入', tc.textcard.url === card.url);
+
+  const tp = WX.tplCardOf(card);
+  check('template_card：类型为 text_notice', tp.template_card.card_type === 'text_notice');
+  check('template_card：整卡跳转带 url', tp.template_card.card_action.type === 1 && tp.template_card.card_action.url === card.url);
+  check('template_card：键值行两行', tp.template_card.horizontal_content_list.length === 2,
+    JSON.stringify(tp.template_card.horizontal_content_list));
+
+  /* 群机器人 + 卡片 + 没配接收人 → 发模板卡片 */
+  let f = rec({ errcode: 0 });
+  let r = await WX.sendRobot({ hook: hook, fmt: 'card' }, '纯文本兜底', { fetch: f, card: card });
+  check('群机器人：默认用 template_card', r.ok && f.hits[0].body.msgtype === 'template_card', f.hits[0].body.msgtype);
+
+  /* 群机器人 + 卡片 + 配了手机号 → 退回 text 并保留 @（卡片不支持 @人） */
+  f = rec({ errcode: 0 });
+  r = await WX.sendRobot({ hook: hook, fmt: 'card', to: '13800138000' }, '文本', { fetch: f, card: card });
+  check('群机器人：配了接收人时卡片让位给 @', r.ok && f.hits[0].body.msgtype === 'text', f.hits[0].body.msgtype);
+  check('群机器人：@ 手机号仍在', JSON.stringify(f.hits[0].body.text.mentioned_mobile_list) === '["13800138000"]');
+
+  /* 纯文本 / Markdown 两种显式选择 */
+  f = rec({ errcode: 0 });
+  await WX.sendRobot({ hook: hook, fmt: 'text' }, '文本', { fetch: f, card: card });
+  check('群机器人：选纯文本就发 text（无 @ 也不转 markdown）', f.hits[0].body.msgtype === 'text', f.hits[0].body.msgtype);
+
+  f = rec({ errcode: 0 });
+  await WX.sendRobot({ hook: hook, fmt: 'markdown' }, '文本', { fetch: f, card: card });
+  check('群机器人：选 Markdown 发 markdown', f.hits[0].body.msgtype === 'markdown', f.hits[0].body.msgtype);
+
+  /* 卡片被判参数错误 → 自动降级，通知不能丢 */
+  let n = 0;
+  const degrade = async () => {
+    n++;
+    return { ok: true, json: async () => (n === 1 ? { errcode: 40058, errmsg: 'invalid param' } : { errcode: 0 }) };
+  };
+  r = await WX.sendRobot({ hook: hook, fmt: 'card' }, '兜底', { fetch: degrade, card: card });
+  check('群机器人：卡片被拒后降级为文本并成功', r.ok && r.degraded === true, JSON.stringify(r));
+  check('群机器人：降级只多发一次请求', n === 2, String(n));
+
+  /* key 无效这类错误不重试（重试也没用） */
+  n = 0;
+  const deadKey = async () => { n++; return { ok: true, json: async () => ({ errcode: 93000, errmsg: 'invalid webhook url' }) }; };
+  r = await WX.sendRobot({ hook: hook, fmt: 'card' }, 'x', { fetch: deadKey, card: card });
+  check('群机器人：key 无效不重试', !r.ok && n === 1, JSON.stringify(r) + ' n=' + n);
+
+  /* 卡片缺 url 时退回文本，不发空卡片 */
+  f = rec({ errcode: 0 });
+  await WX.sendRobot({ hook: hook, fmt: 'card' }, '文本', { fetch: f, card: { title: 'T', desc: 'D' } });
+  check('群机器人：卡片缺 url 时退回文本', f.hits[0].body.msgtype !== 'template_card', f.hits[0].body.msgtype);
+
+  /* 自建应用：三种形态 */
+  const appCfg = { type: 'app', corpid: 'card-corp', secret: 'card-secret', agentid: '100', to: 'panchao', fmt: 'card' };
+  let hits = [];
+  const appFetch = async (url, opt) => {
+    if (url.indexOf('/gettoken') >= 0) return { ok: true, json: async () => ({ access_token: 'TK-CARD', expires_in: 7200 }) };
+    hits.push(JSON.parse(opt.body));
+    return { ok: true, json: async () => ({ errcode: 0 }) };
+  };
+  r = await WX.sendApp(appCfg, '文本', { fetch: appFetch, card: card });
+  check('自建应用：卡片用 textcard', r.ok && hits[0].msgtype === 'textcard', hits[0] && hits[0].msgtype);
+  check('自建应用：接收人照常带上', hits[0].touser === 'panchao', hits[0].touser);
+
+  hits = [];
+  await WX.sendApp(Object.assign({}, appCfg, { fmt: 'markdown' }), '# 标题', { fetch: appFetch, card: card });
+  check('自建应用：选 Markdown 发 markdown', hits[0].msgtype === 'markdown' && hits[0].markdown.content === '# 标题', hits[0].msgtype);
+
+  hits = [];
+  await WX.sendApp(Object.assign({}, appCfg, { fmt: 'text' }), '纯文本', { fetch: appFetch, card: card });
+  check('自建应用：选纯文本发 text', hits[0].msgtype === 'text' && hits[0].text.content === '纯文本', hits[0].msgtype);
+
+  /* 消息形式归一化 */
+  check('fmt 默认 card', WX.normFmt(undefined, undefined) === 'card');
+  check('fmt 继承旧值', WX.normFmt(undefined, 'text') === 'text');
+  check('fmt 非法值回落 card', WX.normFmt('bogus', undefined) === 'card');
+  check('fmt 显式覆盖旧值', WX.normFmt('markdown', 'card') === 'markdown');
+
+  const n1 = WX.normalizeWx({ enabled: 1, type: 'robot', hook: hook, fmt: 'text' }, {});
+  check('normalizeWx：保存 fmt', n1.cfg && n1.cfg.fmt === 'text', JSON.stringify(n1));
+  const n2 = WX.normalizeWx({ enabled: 1, type: 'robot', hook: hook }, { fmt: 'markdown' });
+  check('normalizeWx：未传 fmt 沿用旧值', n2.cfg && n2.cfg.fmt === 'markdown', JSON.stringify(n2));
+  const n3 = WX.normalizeWx({ enabled: 0, type: 'robot' }, {});
+  check('normalizeWx：全新配置默认卡片', n3.cfg && n3.cfg.fmt === 'card', JSON.stringify(n3));
+}
+
 await testRobot();
 await testApp();
+await testCard();
 
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 if (fail) process.exitCode = 1;

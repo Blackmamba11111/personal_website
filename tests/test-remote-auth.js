@@ -351,6 +351,7 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     fire(w, id('uWxOn'), 'change');
     check('勾选启用后展开参数区', id('uWxBody').style.display === 'block', id('uWxBody').style.display);
     check('默认接入方式为群机器人', id('uWxRobotWrap').style.display === 'block' && id('uWxAppWrap').style.display === 'none');
+    check('消息形式默认卡片', id('uWxFmt').value === 'card', id('uWxFmt').value);
     check('触发动作默认三个全勾',
       id('uWxActAdd').checked && id('uWxActUpd').checked && id('uWxActDel').checked,
       [id('uWxActAdd').checked, id('uWxActUpd').checked, id('uWxActDel').checked].join(','));
@@ -364,6 +365,7 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     id('uWxHook').value = wxHook;
     id('uWxTo').value = '13800138000';
     id('uWxTpl').value = '【巡检】{summary}';
+    id('uWxFmt').value = 'text';
     /* 触发动作收窄：取消「修改」，只留新增 + 删除 */
     id('uWxActUpd').checked = false;
     id('uPwd').value = 'abc123456';
@@ -373,6 +375,7 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('机器人配置随用户保存', wu && wu.wx && wu.wx.enabled && wu.wx.hook === wxHook, wu && JSON.stringify(wu.wx));
     check('接收人保存', wu && wu.wx.to === '13800138000', wu && wu.wx.to);
     check('自定义模板保存', wu && wu.wx.tpl === '【巡检】{summary}', wu && wu.wx.tpl);
+    check('消息形式保存', wu && wu.wx.fmt === 'text', wu && wu.wx.fmt);
     check('触发动作按勾选保存（未勾修改）', wu && JSON.stringify(wu.wx.acts) === '["add","delete"]',
       wu && JSON.stringify(wu.wx.acts));
     check('列表出现「机器人」标记',
@@ -383,6 +386,7 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('编辑时 hook 回填掩码而非明文', id('uWxHook').value.indexOf('****') > 0 && id('uWxHook').value !== wxHook, id('uWxHook').value);
     check('编辑时提示已保存', id('uWxHookHint').textContent.indexOf('已保存') >= 0, id('uWxHookHint').textContent);
     check('编辑时回填模板', id('uWxTpl').value === '【巡检】{summary}', id('uWxTpl').value);
+    check('编辑时回填消息形式', id('uWxFmt').value === 'text', id('uWxFmt').value);
     check('编辑时回填触发动作',
       id('uWxActAdd').checked && !id('uWxActUpd').checked && id('uWxActDel').checked,
       [id('uWxActAdd').checked, id('uWxActUpd').checked, id('uWxActDel').checked].join(','));
@@ -428,14 +432,49 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     fire(w, id('bWxMode'), 'change');
     check('启用模式显示参数区', id('bWxDetail').style.display === 'block', id('bWxDetail').style.display);
     id('bWxHook').value = wxHook;
+    id('bWxFmt').value = 'markdown';
     id('bWxActUpd').checked = false;
     id('bWxActDel').checked = false;
     click(w, id('btnSaveBatchUsers'));
     await tick(160);
     const wu3 = userOf(w, 'wxuser');
+    check('批量启用的消息形式已下发', wu3 && wu3.wx.fmt === 'markdown', wu3 && wu3.wx.fmt);
     check('批量启用的触发动作已下发', wu3 && wu3.wx.enabled && JSON.stringify(wu3.wx.acts) === '["add"]',
       wu3 && JSON.stringify(wu3.wx));
 
+    w.close();
+  }
+
+  /* ================= 企业微信卡片深链（?cust=） ================= */
+  const deepCust = {
+    id: 'dc1', name: '衡水银行', regionId: '', province: '北京', city: '',
+    addr: '', lng: 116.4, lat: 39.9, freq: 'y4', contact: '', phone: '', note: ''
+  };
+  {
+    const dom = makeDom({
+      sessionUser: 'demo',
+      url: 'http://127.0.0.1:8899/inspection-dashboard.html?cust=dc1',
+      data: { demo: { regions: [], customers: [deepCust], visits: [] } },
+      errors
+    });
+    const w = dom.window, d = w.document;
+    await tick(600);
+    check('卡片深链自动打开客户详情', d.getElementById('maskDetail').classList.contains('on'));
+    check('详情标题为该客户', d.getElementById('dName').textContent === '衡水银行', d.getElementById('dName').textContent);
+    w.close();
+  }
+  {
+    const dom = makeDom({
+      sessionUser: 'demo',
+      url: 'http://127.0.0.1:8899/inspection-dashboard.html?cust=nope',
+      data: { demo: { regions: [], customers: [deepCust], visits: [] } },
+      errors
+    });
+    const w = dom.window, d = w.document;
+    await tick(600);
+    check('深链客户不存在时不打开详情', !d.getElementById('maskDetail').classList.contains('on'));
+    check('深链客户不存在时给出提示', d.getElementById('toast').textContent.indexOf('未找到') >= 0,
+      d.getElementById('toast').textContent);
     w.close();
   }
 

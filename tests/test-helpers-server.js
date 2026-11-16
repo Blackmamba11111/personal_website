@@ -60,6 +60,7 @@ function userView(u) {
         to: to,
         tpl: w.tpl || '',
         skipSelf: !!w.skipSelf,
+        fmt: (w.fmt === 'text' || w.fmt === 'markdown') ? w.fmt : 'card',
         acts: (Array.isArray(w.acts) && w.acts.length) ? w.acts.slice() : ['add', 'update', 'delete'],
         ready: !!(w.enabled && (type === 'app'
           ? !!(w.corpid && w.secret && w.agentid && to)
@@ -86,6 +87,7 @@ function applyWx(base, input) {
     type: b.type === 'app' ? 'app' : 'robot',
     hook: b.hook || '', corpid: b.corpid || '', secret: b.secret || '',
     agentid: b.agentid || '', to: b.to || '', tpl: b.tpl || '', skipSelf: !!b.skipSelf,
+    fmt: (b.fmt === 'text' || b.fmt === 'markdown') ? b.fmt : 'card',
     acts: (Array.isArray(b.acts) && b.acts.length) ? b.acts.slice() : ['add', 'update', 'delete']
   };
   input = input || {};
@@ -104,6 +106,7 @@ function applyWx(base, input) {
   if (input.to !== undefined) cfg.to = String(input.to || '').trim();
   if (input.tpl !== undefined) cfg.tpl = String(input.tpl || '');
   if (input.skipSelf !== undefined) cfg.skipSelf = !!input.skipSelf;
+  if (input.fmt !== undefined) cfg.fmt = (input.fmt === 'text' || input.fmt === 'markdown') ? input.fmt : 'card';
   if (input.acts !== undefined) {
     cfg.acts = (Array.isArray(input.acts) ? input.acts : String(input.acts || '').split(/[,，;；\s]+/))
       .map(function (s) { return String(s).trim().toLowerCase(); })

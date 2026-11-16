@@ -76,7 +76,7 @@ function makeDom(opts) {
   const errors = opts.errors || [];
   return new JSDOM(html, {
     runScripts: 'dangerously',
-    url: 'http://127.0.0.1:8899/inspection-dashboard.html',
+    url: opts.url || 'http://127.0.0.1:8899/inspection-dashboard.html',
     pretendToBeVisual: true,
     virtualConsole: opts.virtualConsole || new VirtualConsole().on('jsdomError', e => {
       if (/Not implemented/.test(e.message)) return;

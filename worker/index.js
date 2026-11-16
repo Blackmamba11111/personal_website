@@ -139,6 +139,11 @@ function wxNormActs(v, base) {
   const hit = arr.map(function (s) { return String(s == null ? '' : s).trim().toLowerCase(); });
   return WX_ACTS.filter(function (a) { return hit.indexOf(a) >= 0; });
 }
+/* 消息形式：card（默认）/ text / markdown。老配置没有该字段时按 card 下发。 */
+function wxNormFmt(v, base) {
+  const s = String(v === undefined ? (base === undefined ? 'card' : base) : v).toLowerCase();
+  return (s === 'text' || s === 'markdown') ? s : 'card';
+}
 function wxSplitTo(v) {
   return String(v == null ? '' : v).split(/[,，;；\s]+/)
     .map(function (s) { return s.trim(); }).filter(Boolean).slice(0, 50);
@@ -169,6 +174,9 @@ function wxView(enabled, raw) {
     to: to,
     tpl: c.tpl || '',
     skipSelf: !!c.skipSelf,
+    /* 消息形式：card（默认，带跳转卡片）/ text / markdown */
+    fmt: wxNormFmt(undefined, c.fmt),
+
     /* 触发动作：老配置没有这个字段时按全选下发，前端不至于出现「三个都没勾」 */
     acts: wxNormActs(undefined, c.acts),
     ready: ready
@@ -188,6 +196,7 @@ function ensureWxInput(input, base) {
     to: base.to || '',
     tpl: base.tpl || '',
     skipSelf: base.skipSelf ? 1 : 0,
+    fmt: wxNormFmt(undefined, base.fmt),
     acts: wxNormActs(undefined, base.acts)
   };
   if (input.hook !== undefined) {
@@ -211,6 +220,7 @@ function ensureWxInput(input, base) {
     cfg.tpl = t;
   }
   if (input.skipSelf !== undefined) cfg.skipSelf = input.skipSelf ? 1 : 0;
+  if (input.fmt !== undefined) cfg.fmt = wxNormFmt(input.fmt, undefined);
   if (input.acts !== undefined) cfg.acts = wxNormActs(input.acts, undefined);
 
   const enabled = input.enabled ? 1 : 0;
@@ -1349,17 +1359,48 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
     const items = Array.from(byCust.values());
     const now = nowIso();
     const summary = WX_P.summaryOf(items);
-    const content = WX_P.fillTpl(cfg.tpl, {
+    const actorName = await displayNameOf(env, actor);
+    /* 卡片要跳到该客户的详情：从台账里按客户名找 id，找不到就退化为看板首页 */
+    let custId = '';
+    try {
+      const d = (await readLedger(env, ownerName, false)) || {};
+      const hit = (Array.isArray(d.customers) ? d.customers : [])
+        .filter(function (c) { return c && String(c.name || '') === items[0].customer; })[0];
+      if (hit && hit.id) custId = String(hit.id);
+    } catch (e) { custId = ''; }
+    const link = String(origin || '') + '/inspection-dashboard.html' + (custId ? '?cust=' + encodeURIComponent(custId) : '');
+    const vars = {
       summary: summary,
       customer: items.map(function (i) { return i.customer; }).join('、'),
       changes: summary,
-      actor: await displayNameOf(env, actor),
+      actor: actorName,
       time: WX_P.fmtTime(now),
       date: WX_P.fmtTime(now, true),
-      link: String(origin || '') + '/inspection-dashboard.html',
+      link: link,
       count: String(picked.length)
-    });
-    const r = await WX_P.deliver(cfg, content);
+    };
+    const content = WX_P.fillTpl(cfg.tpl, vars);
+    /* 卡片正文复用同一模板，但去掉 {link} 那一行 —— 链接已经挂在按钮上 */
+    const cardDesc = WX_P.fillTpl(cfg.tpl, Object.assign({}, vars, { link: '' }))
+      .replace(/\n{2,}/g, '\n').trim();
+    const sum = function (k) { return items.reduce(function (n, i) { return n + (i[k] || 0); }, 0); };
+    const bits = [];
+    if (sum('add')) bits.push('新增 ' + sum('add'));
+    if (sum('upd')) bits.push('修改 ' + sum('upd'));
+    if (sum('del')) bits.push('删除 ' + sum('del'));
+    const card = {
+      title: items.length === 1
+        ? (items[0].customer + ' · 巡检报告已更新')
+        : ('巡检报告已更新 · ' + items.length + ' 个客户'),
+      desc: cardDesc,
+      url: link,
+      rows: [
+        { key: '操作人', val: actorName },
+        { key: '时间', val: vars.time },
+        { key: '变更', val: bits.join('、') || '有更新' }
+      ]
+    };
+    const r = await WX_P.deliver(cfg, content, { card: card });
     await wxLogAdd(env, row.username, 'notify', r.ok, cfg.type, String(summary).split('\n')[0], r.err);
   } catch (e) {
     console.error('[wx] 巡检通知失败：' + (e && e.message));

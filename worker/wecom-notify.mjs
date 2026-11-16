@@ -95,6 +95,74 @@ export function fmtTime(iso, dateOnly) {
     : (p.year + '-' + p.month + '-' + p.day + ' ' + p.hour + ':' + p.minute);
 }
 
+/* ---------------- 卡片消息 ----------------
+ * 两种通道的卡片结构不一样，不能共用一份请求体：
+ *   app   → textcard：标题 + 富文本描述 + 右下角按钮文字（最多 4 字）
+ *   robot → template_card（card_type=text_notice）：主标题 + 二级标题 + 键值行，整卡可点
+ * 卡片存在的意义是那一行「查看详情」——点开直接落到该客户的巡检详情，不用再进列表找。
+ *
+ * 注意：群里配了接收人（@手机号）时不能用 template_card，因为 mentioned_mobile_list
+ * 只对 text 类型有效，卡片里没有 @ 的位置。这种配置下自动退回 text，保证人能收到提醒。 */
+
+/* 消息形式三选：卡片（默认，带跳转按钮）/ 纯文本 / Markdown。
+   纯文本在群机器人里还能 @人；卡片与 markdown 都不支持 @，配了接收人时统一走 text。 */
+export const WX_FMTS = ['card', 'text', 'markdown'];
+export const WX_FMT_LABEL = { card: '卡片（带跳转）', text: '纯文本', markdown: 'Markdown' };
+
+/* v 未传 = 沿用 base；base 也没有 = card（默认）。非法值一律回落 card。 */
+export function normFmt(v, base) {
+  const s = String(v === undefined ? (base === undefined ? 'card' : base) : v).toLowerCase();
+  return WX_FMTS.indexOf(s) >= 0 ? s : 'card';
+}
+
+/* 按字节截断：企业微信的 textcard 限制按 UTF-8 字节算，中文占 3 字节。
+   用 for...of 迭代码位，避免把 emoji 的代理对截成半个字符。 */
+export function clipBytes(s, maxBytes) {
+  const str = String(s == null ? '' : s);
+  let out = '', bytes = 0;
+  for (const ch of str) {
+    const b = ch.codePointAt(0) > 127 ? 3 : 1;
+    if (bytes + b > maxBytes) break;
+    out += ch; bytes += b;
+  }
+  return out;
+}
+
+/* 应用消息的 textcard。description 支持 <br>，必须把 \n 转掉，否则客户端不换行。 */
+export function textCardOf(card) {
+  const c = card || {};
+  return {
+    msgtype: 'textcard',
+    textcard: {
+      title: clipBytes(c.title || '巡检报告已更新', 120),
+      description: clipBytes(String(c.desc || '').replace(/\r?\n/g, '<br>'), 480),
+      url: String(c.url || ''),
+      btntxt: '查看详情'
+    }
+  };
+}
+
+/* 群机器人的 template_card。主标题限 26 字、二级标题 100 字、键值行 6 行。 */
+export function tplCardOf(card) {
+  const c = card || {};
+  const rows = (c.rows || []).slice(0, 6).map(function (r) {
+    return { keyname: clipBytes(r && r.key, 60), value: clipBytes(r && r.val, 300) };
+  });
+  const tc = {
+    card_type: 'text_notice',
+    source: { desc: '巡检看板' },
+    main_title: { title: clipBytes(c.title || '巡检报告已更新', 72) },
+    horizontal_content_list: rows,
+    card_action: { type: 1, url: String(c.url || '') }
+  };
+  if (c.desc) tc.sub_title_text = clipBytes(c.desc, 300);
+  return { msgtype: 'template_card', template_card: tc };
+}
+
+/* 卡片被判为参数错误时，退回文本再发一次 —— 宁可样式差一点，也不能把通知丢掉。
+   只认「格式类」错误码；key 失效、限流这类重试也没用，不浪费一次请求。 */
+const CARD_ERR = [40058, 40035, 40008, 40004, 44004, 40003, 40002];
+
 /* ---------------- 群机器人 ---------------- */
 export async function sendRobot(cfg, content, opts) {
   opts = opts || {};
@@ -102,24 +170,45 @@ export async function sendRobot(cfg, content, opts) {
   const hook = String((cfg && cfg.hook) || '').trim();
   if (!HOOK_RE.test(hook)) return { ok: false, err: 'Webhook 地址格式不正确（应以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头）' };
   const phones = splitTo(cfg.to);
-  /* 带 @ 时必须用 text：markdown 类型不支持 mentioned_mobile_list */
-  const body = phones.length
+  const card = (opts.card && opts.card.url) ? opts.card : null;
+  const fmt = normFmt(cfg.fmt, undefined);
+
+  /* 带 @ 时必须用 text：markdown / 卡片都不支持 mentioned_mobile_list */
+  const textBody = () => phones.length
     ? { msgtype: 'text', text: { content: content, mentioned_mobile_list: phones } }
-    : { msgtype: 'markdown', markdown: { content: content } };
-  try {
-    const r = await f(hook, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    let j = null;
-    try { j = await r.json(); } catch (e) { j = null; }
-    if (!r.ok) return { ok: false, err: 'HTTP ' + r.status };
-    if (!j || j.errcode !== 0) return { ok: false, err: (j && j.errmsg) || '企业微信返回异常', code: (j && j.errcode) };
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, err: (e && e.message) || '网络错误' };
-  }
+    : { msgtype: 'text', text: { content: content } };
+  const mdBody = () => ({ msgtype: 'markdown', markdown: { content: content } });
+  /* 卡片发不出去时的兜底：有 @ 用 text（保住提醒），否则用 markdown（保住排版） */
+  const fallbackBody = () => (phones.length ? textBody() : mdBody());
+
+  let body;
+  if (fmt === 'card' && card && !phones.length) body = tplCardOf(card);
+  else if (fmt === 'text') body = textBody();
+  else if (fmt === 'markdown') body = phones.length ? textBody() : mdBody();
+  else body = fallbackBody();   /* 卡片 + @人 / 卡片缺数据 → 文本（保住 @ 提醒与发送） */
+
+  const post = async function (b) {
+    try {
+      const r = await f(hook, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(b)
+      });
+      let j = null;
+      try { j = await r.json(); } catch (e) { j = null; }
+      if (!r.ok) return { ok: false, err: 'HTTP ' + r.status };
+      if (!j || j.errcode !== 0) return { ok: false, err: (j && j.errmsg) || '企业微信返回异常', code: (j && j.errcode) };
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, err: (e && e.message) || '网络错误' };
+    }
+  };
+
+  const r = await post(body);
+  if (r.ok || body.msgtype !== 'template_card') return r;
+  if (CARD_ERR.indexOf(r.code) < 0) return r;
+  const r2 = await post(fallbackBody());
+  return r2.ok ? { ok: true, degraded: true } : r2;
 }
 
 /* ---------------- 自建应用 ---------------- */
@@ -152,20 +241,45 @@ export async function sendApp(cfg, content, opts) {
   if (!cfg.secret) return { ok: false, err: '缺少 corpsecret' };
   if (!cfg.agentid) return { ok: false, err: '缺少 agentid' };
   if (!to.length) return { ok: false, err: '自建应用需要填写接收人 userid' };
-  try {
-    const token = await appToken(cfg, f);
-    const r = await f('https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=' + encodeURIComponent(token), {
+  const fmt = normFmt(cfg.fmt, undefined);
+  const card = (opts.card && opts.card.url) ? opts.card : null;
+
+  /* 应用消息三种形态都支持：textcard / markdown / text。
+     接收人写在请求参数里，与消息类型无关，所以卡片不会丢 @ 能力。 */
+  const build = function (useFmt) {
+    const base = { touser: to.join('|'), agentid: Number(cfg.agentid) };
+    if (useFmt === 'card' && card) return Object.assign(base, textCardOf(card));
+    if (useFmt === 'markdown') return Object.assign(base, { msgtype: 'markdown', markdown: { content: content } });
+    return Object.assign(base, { msgtype: 'text', text: { content: content } });
+  };
+  const fmtOf = function () {
+    if (fmt === 'card') return card ? 'card' : 'text';
+    return fmt === 'markdown' ? 'markdown' : 'text';
+  };
+
+  const post = async function (body) {
+    const r = await f('https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=' + encodeURIComponent(await appToken(cfg, f)), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        touser: to.join('|'),
-        msgtype: 'text',
-        agentid: Number(cfg.agentid),
-        text: { content: content }
-      })
+      body: JSON.stringify(body)
     });
     let j = null;
     try { j = await r.json(); } catch (e) { j = null; }
+    return { r: r, j: j };
+  };
+
+  try {
+    const first = await post(build(fmtOf()));
+    let { r, j } = first;
+    /* 卡片被拒（参数格式问题）→ 退回文本重发一次，不能因为样式把通知丢掉 */
+    if ((!r.ok || !j || j.errcode !== 0) && fmtOf() === 'card' && j && CARD_ERR.indexOf(j.errcode) >= 0) {
+      const second = await post(build('text'));
+      if (second.r.ok && second.j && second.j.errcode === 0) {
+        if (second.j.invaliduser) return { ok: false, err: '以下接收人无效：' + second.j.invaliduser };
+        return { ok: true, degraded: true };
+      }
+      ({ r, j } = second);
+    }
     if (!r.ok) return { ok: false, err: 'HTTP ' + r.status };
     if (!j || j.errcode !== 0) {
       /* 40014 / 42001：token 失效 —— 清缓存，下次重新取 */
@@ -212,6 +326,7 @@ export function normalizeWx(input, base) {
     to: base.to || '',
     tpl: base.tpl || '',
     skipSelf: base.skipSelf ? 1 : 0,
+    fmt: normFmt(undefined, base.fmt),
     acts: normActs(undefined, base.acts)
   };
 
@@ -232,6 +347,7 @@ export function normalizeWx(input, base) {
     cfg.tpl = t;
   }
   if (input.skipSelf !== undefined) cfg.skipSelf = input.skipSelf ? 1 : 0;
+  if (input.fmt !== undefined) cfg.fmt = normFmt(input.fmt, undefined);
   if (input.acts !== undefined) cfg.acts = normActs(input.acts, undefined);
 
   /* 启用时才做完整性校验：允许先存半成品再补 */
