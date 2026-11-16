@@ -20,7 +20,9 @@ const SEED = {
     { id: 'c1', name: '月度-A-已做本月', regionId: 'r1', province: '河北', city: '衡水', addr: '', lng: 115.67, lat: 37.73, freq: 'y12', contact: '', phone: '', note: '', hasCoords: true },
     { id: 'c2', name: '月度-B-本月未做', regionId: 'r1', province: '河北', city: '衡水', addr: '', lng: 115.68, lat: 37.74, freq: 'y12', contact: '', phone: '', note: '', hasCoords: true },
     { id: 'c3', name: '月度-C-缺9月',   regionId: 'r1', province: '河北', city: '衡水', addr: '', lng: 115.69, lat: 37.75, freq: 'y12', contact: '', phone: '', note: '', hasCoords: true },
-    { id: 'c4', name: '月度-D-单月三次', regionId: 'r1', province: '河北', city: '衡水', addr: '', lng: 115.70, lat: 37.76, freq: 'y12', contact: '', phone: '', note: '', hasCoords: true },
+    { id: 'c4', name: '月度-D-单月三次', regionId: 'r1', province: '河北', city: '衡水', addr: '', lng: 115.70, lat: 37.76, freq: 'y12', contact: '', phone: '', note: '', hasCoords: true,
+      /* 分组客户：用于验证「分组 × 月份」矩阵与当月明细 */
+      units: [{ id: 'u1', name: 'A组-核心机房', owner: '张三' }, { id: 'u2', name: 'B组-灾备中心', owner: '李四' }] },
     { id: 'c5', name: '季度-E-一年4次', regionId: 'r1', province: '河北', city: '衡水', addr: '', lng: 115.71, lat: 37.77, freq: 'y4', contact: '', phone: '', note: '', hasCoords: true },
     { id: 'c6', name: '季度-F-每季1次', regionId: 'r1', province: '河北', city: '衡水', addr: '', lng: 115.72, lat: 37.78, freq: 'quarter', contact: '', phone: '', note: '', hasCoords: true }
   ],
@@ -28,9 +30,9 @@ const SEED = {
     { id: 'v1', customerId: 'c1', date: '2026-10-05', by: '', note: '' },
     { id: 'v2', customerId: 'c3', date: '2026-07-10', by: '', note: '' },
     { id: 'v3', customerId: 'c3', date: '2026-08-11', by: '', note: '' },
-    { id: 'v4', customerId: 'c4', date: '2026-07-02', by: '', note: '' },
+    { id: 'v4', customerId: 'c4', date: '2026-07-02', by: '', note: '', unitIds: ['u1'] },
     { id: 'v5', customerId: 'c4', date: '2026-07-15', by: '', note: '' },
-    { id: 'v6', customerId: 'c4', date: '2026-07-28', by: '', note: '' },
+    { id: 'v6', customerId: 'c4', date: '2026-07-28', by: '', note: '', unitIds: ['u1'] },
     { id: 'v7', customerId: 'c5', date: '2026-08-01', by: '', note: '' },
     { id: 'v8', customerId: 'c6', date: '2026-09-20', by: '', note: '' }
   ]
@@ -125,7 +127,75 @@ setTimeout(() => {
     id('dMonths').querySelectorAll('.mcell').length + ' 格');
   check('月度区提示含「待补 8月、9月」', /待补\s*8月、9月/.test(id('dMonths').textContent), id('dMonths').textContent);
   check('月度区含「已到 3 个月」', /已到\s*3\s*个月/.test(id('dMonths').textContent));
+
+  /* ---------- 分组 × 月份矩阵（按月考核 + 有分组） ---------- */
+  const uTable = id('dUnitsTable');
+  const heads = [...uTable.querySelectorAll('thead th')].map(x => x.textContent.trim());
+  check('矩阵表头为 分组/负责人/7月/8月/9月/季度合计',
+    JSON.stringify(heads) === JSON.stringify(['分组', '负责人', '7 月', '8 月', '9 月', '季度合计']), heads.join('|'));
+  const uRows = [...uTable.querySelectorAll('tbody tr')];
+  check('矩阵按分组逐行渲染（2 组 → 2 行）', uRows.length === 2, uRows.length + ' 行');
+  const numsOf = tr => [...tr.querySelectorAll('.mnum')].map(x => x.textContent.trim());
+  check('A 组 7月3次 / 8月0 / 9月0 / 合计3',
+    JSON.stringify(numsOf(uRows[0])) === JSON.stringify(['3', '0', '0', '3']), numsOf(uRows[0]).join('|'));
+  check('B 组 7月1次 / 8月0 / 9月0 / 合计1',
+    JSON.stringify(numsOf(uRows[1])) === JSON.stringify(['1', '0', '0', '1']), numsOf(uRows[1]).join('|'));
+  check('矩阵 0 次单元格为 danger 态', uRows[0].querySelectorAll('.mnum.miss').length === 2,
+    uRows[0].querySelectorAll('.mnum.miss').length + ' 格');
+  check('矩阵有次数的单元格为 ok 态', uRows[0].querySelectorAll('.mnum.ok').length === 1,
+    uRows[0].querySelectorAll('.mnum.ok').length + ' 格');
+
+  /* ---------- 月份可点：次数角标 / 当月明细 / 取消选中 ---------- */
+  const mBtn = i => id('dMonths').querySelectorAll('.mcell-btn')[i];
+  check('月份卡片为可点按钮（3 个）',
+    id('dMonths').querySelectorAll('.mcell-btn').length === 3 && mBtn(0).tagName === 'BUTTON');
+  check('月份卡片显示当月次数「3 次」', /3 次/.test(mBtn(0).textContent), mBtn(0).textContent);
+  check('月份卡片显示覆盖组数「2/2 组」', /2\/2 组/.test(mBtn(0).textContent), mBtn(0).textContent);
+
+  click(mBtn(0));
+  check('点 7 月后明细区展开', id('dMonthDetail').style.display === 'block', id('dMonthDetail').style.display);
+  check('明细标题含「7 月 · 共 3 次有效巡检」',
+    /7 月\s*·\s*共\s*3\s*次有效巡检/.test(id('dMonthDetail').textContent),
+    id('dMonthDetail').textContent.replace(/\s+/g, ' ').slice(0, 50));
+  check('明细列出该月 3 条记录', id('dMonthDetail').querySelectorAll('.tl-item').length === 3,
+    id('dMonthDetail').querySelectorAll('.tl-item').length + ' 条');
+  check('明细记录标注覆盖分组', /A组-核心机房|全部组/.test(id('dMonthDetail').textContent));
+  check('选中月份卡片带 sel 态', mBtn(0).classList.contains('sel'), mBtn(0).className);
+  check('选中月份列在矩阵中高亮',
+    !!(uTable.querySelector('thead th.mm-th.sel') && /7 月/.test(uTable.querySelector('thead th.mm-th.sel').textContent)));
+
+  click(mBtn(0));
+  check('再点同一月份取消选中',
+    id('dMonthDetail').style.display === 'none' && !mBtn(0).classList.contains('sel'),
+    id('dMonthDetail').style.display + '/' + mBtn(0).className);
+
+  click(mBtn(1));
+  check('点 8 月（0 次）提示该月无记录',
+    /该月没有计入考核的巡检记录/.test(id('dMonthDetail').textContent),
+    id('dMonthDetail').textContent.replace(/\s+/g, ' ').slice(0, 40));
+  click(id('btnMonthClear'));
+  check('「返回季度」清空明细', id('dMonthDetail').style.display === 'none', id('dMonthDetail').style.display);
+
   click(d.querySelector('#maskDetail [data-close="maskDetail"]'));
+
+  /* ---------- 未到月份不可点（Q4 的 11/12 月） ---------- */
+  sel.value = '2026Q4';
+  fire(sel, 'change');
+  click(card('c1'));
+  const q4Btn = i => id('dMonths').querySelectorAll('.mcell-btn')[i];
+  check('未到月份卡片被禁用', q4Btn(1).disabled && q4Btn(2).disabled,
+    q4Btn(1).disabled + '/' + q4Btn(2).disabled);
+  check('未到月份显示「无考核窗口」', /无考核窗口/.test(q4Btn(1).textContent), q4Btn(1).textContent);
+
+  /* 无分组客户：不渲染矩阵，但点月份仍能看当月明细 */
+  click(q4Btn(0));
+  check('无分组客户点月份仍展开明细', id('dMonthDetail').style.display === 'block', id('dMonthDetail').style.display);
+  check('无分组客户不显示矩阵', id('dUnits').style.display === 'none', id('dUnits').style.display);
+  check('无分组客户明细标题不含组数', !/覆盖/.test(id('dMonthDetail').textContent),
+    id('dMonthDetail').textContent.replace(/\s+/g, ' ').slice(0, 40));
+  click(d.querySelector('#maskDetail [data-close="maskDetail"]'));
+  sel.value = '2026Q3';
+  fire(sel, 'change');
 
   click(card('c5'));
   check('非按月客户隐藏月度区', id('dMonths').style.display === 'none', id('dMonths').style.display);

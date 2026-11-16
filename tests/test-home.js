@@ -434,8 +434,9 @@ async function main() {
        2026-11-09 全面视觉重设计（设计 token + 总览页 + 详情分段导航），上限放宽到 500 KB。
        2026-11-09 晚 详情宽抽屉 + 附件预览自绘表格渲染器（列宽/合并/冻结/适应宽度），上限放宽到 520 KB。
        2026-11-11 认证管理新增免认证登录配置框（OIDC/OAuth2/SAML/CAS/票据/反代头六类参数区 + 自检结果），
-                  上限放宽到 570 KB。注意：doc97 解析器本身在 assets/vendor/doc97.js，不计入主页体积。 */
-    check('看板体积已降到 570 KB 以内', Buffer.byteLength(dash, 'utf8') < 570 * 1024,
+       2026-11-16 按月考核客户详情支持点月份下钻（月份按钮 + 分组×月份矩阵 + 当月明细），
+                  上限放宽到 580 KB。注意：doc97 解析器本身在 assets/vendor/doc97.js，不计入主页体积。 */
+    check('看板体积已降到 580 KB 以内', Buffer.byteLength(dash, 'utf8') < 580 * 1024,
       Math.round(Buffer.byteLength(dash, 'utf8') / 1024) + ' KB');
   });
 

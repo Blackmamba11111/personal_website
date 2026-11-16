@@ -316,6 +316,44 @@
   .mcell.todo{opacity:.6;}
   .mstrip-lg .mcell{font-size:11.5px;padding:5px 0;}
   .m-caption{font-size:11px;color:var(--ink-3);margin-bottom:6px;letter-spacing:.2px;}
+
+  /* ---------- 月度下钻：月份按钮 / 分组×月份矩阵 / 当月明细 ----------
+     只影响详情页（列表页的小月份条仍是不可点的 span）；三色仍走 ok/danger 语义。 */
+  /* 特异性必须压过 .mcell / .readonly-box：这两类定义在本段之后被基础样式反向覆盖过 */
+  .mstrip-lg .mcell-btn{flex-direction:column;gap:1px;padding:4px 2px;line-height:1.35;cursor:pointer;
+             font-family:inherit;text-align:center;transition:box-shadow var(--dur) var(--ease);}
+  .mcell-btn .mcell-t{display:flex;align-items:center;justify-content:center;gap:3px;
+                      font-size:11.5px;white-space:nowrap;}
+  .mcell-btn .mcell-t i{font-style:normal;font-weight:700;font-size:10.5px;}
+  .mcell-btn .mcell-s{font-family:var(--font-mono);font-size:10px;letter-spacing:0;
+                      opacity:.92;white-space:nowrap;font-variant-numeric:tabular-nums;}
+  .mcell-btn:not(:disabled):hover{box-shadow:inset 0 0 0 1px var(--brand-line);}
+  .mcell-btn.sel{box-shadow:0 0 0 2px var(--brand);position:relative;z-index:1;}
+  .mcell-btn:disabled{cursor:default;}
+  .mcell-btn:focus-visible{outline:none;box-shadow:0 0 0 2px var(--brand);}
+
+  #dUnitsTable .mm-th{text-align:center;font-family:var(--font-mono);}
+  #dUnitsTable .mm-th.sel{color:var(--brand);background:var(--brand-soft);}
+  #dUnitsTable .mm-cell{text-align:center;padding:4px 6px;}
+  #dUnitsTable .mm-cell.sel{background:var(--brand-wash);}
+  #dUnitsTable tbody tr:hover .mm-cell.sel{background:var(--brand-soft);}
+  .mnum{display:inline-block;min-width:24px;padding:1px 5px;border-radius:var(--r-xs);
+        font-family:var(--font-mono);font-size:11.5px;font-weight:600;border:1px solid transparent;}
+  .mnum.ok{background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok-ink);}
+  .mnum.miss{background:var(--danger-soft);border-color:var(--danger-line);color:var(--danger-ink);}
+  .mnum.na{background:var(--surface-2);border-color:var(--line);color:var(--ink-4);font-weight:400;}
+  .mnum.sum{background:var(--surface-2);border-color:var(--line);color:var(--ink-2);}
+
+  .readonly-box.md-box{display:block;}
+  .md-cap{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
+  .md-cap .md-close{margin-left:auto;flex:0 0 auto;}
+  .md-box .tl-item{border-left:2px solid var(--brand-line);padding-left:9px;margin-left:1px;}
+  @media (max-width:820px){
+    #dUnitsTable .mm-owner{display:none;}
+    #dUnitsTable .mm-cell{padding:4px 3px;}
+    #dUnitsTable .mm-th{padding:6px 4px;}
+    .mcell-btn .mcell-t{font-size:11px;}
+  }
   .empty{padding:36px 16px;text-align:center;color:var(--ink-3);font-size:12px;}
 
   /* ---------- CRM 现网信息（询盘云匹配数据） ---------- */
@@ -1408,6 +1446,9 @@
       </div>
 
       <div id="dMonths" style="display:none;margin-bottom:13px;"></div>
+
+      <!-- 当月明细：点中某个月后展开，只列该月的巡检记录 -->
+      <div id="dMonthDetail" style="display:none;margin-bottom:13px;"></div>
 
       <div class="readonly-box" id="dUnits" style="display:none;margin-bottom:13px;">
         <div class="m-caption" id="dUnitsCaption"></div>
@@ -2935,7 +2976,7 @@
 
   /* ---------------- 状态 ---------------- */
   var DB = { regions: [], customers: [], visits: [] };
-  var state = { quarter: quarterKey(new Date()), filter: 'all', regionFilter: 'all', keyword: '', selectedId: null, crmMine: 'all' };
+  var state = { quarter: quarterKey(new Date()), filter: 'all', regionFilter: 'all', keyword: '', selectedId: null, crmMine: 'all', detailMonth: null };
   var prefs = { autoRemind: true, mutedQuarters: [] };
   var map = null, markerLayer = null, focusLayer = null, infoWindow = null, mapReady = false;
   var regionPolyLayer = null, regionCircleLayer = null, regionLabelLayer = null, candidateLayer = null;
@@ -3123,7 +3164,35 @@
       return {
         month: m, count: mv.length,
         done: units.length ? cov[0] >= cov[1] : mv.length >= 1,
-        elapsed: el.indexOf(m) >= 0
+        elapsed: el.indexOf(m) >= 0,
+        covDone: cov[0], covTotal: cov[1]      /* 当月覆盖组数，供月份卡片与矩阵展示 */
+      };
+    });
+  }
+  /* 某月内该客户的全部有效巡检记录（按日期倒序，明细区用） */
+  function monthVisitsOf(c, qk, month) {
+    var p = quarterParts(qk);
+    return visitsInQuarter(c.id, qk).filter(function (v) {
+      var d = parseDate(v.date);
+      return d && d.getFullYear() === p.y && d.getMonth() + 1 === month;
+    }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
+  }
+  /* 分组 × 月份矩阵：逐组逐月统计「覆盖该组的有效巡检次数」。
+     口径说明：客户「月达标」要求全部分组当月都被覆盖（见 monthCoverage.done）；
+     矩阵单元格只表达「该组当月被巡了几次」，>=1 即算该组当月已巡。
+     返回 [{id,name,owner,cells:[{month,count,elapsed}],total}] */
+  function monthUnitMatrix(c, qk) {
+    var units = unitsOf(c), mc = monthCoverage(c, qk);
+    return units.map(function (u) {
+      var cells = mc.map(function (m) {
+        var n = monthVisitsOf(c, qk, m.month).filter(function (v) {
+          return visitCoversUnit(v, u.id);
+        }).length;
+        return { month: m.month, count: n, elapsed: m.elapsed };
+      });
+      return {
+        id: u.id, name: u.name, owner: u.owner || '', cells: cells,
+        total: cells.reduce(function (n, x) { return n + x.count; }, 0)
       };
     });
   }
@@ -5449,9 +5518,164 @@
     if (btn) btn.setAttribute('aria-expanded', show ? 'true' : 'false');
   }
 
+  /* 附件胶囊的点击绑定：历史记录与当月明细共用一份 */
+  function bindAttChips(root) {
+    if (!root) return;
+    Array.prototype.forEach.call(root.querySelectorAll('.tl-att'), function (el) {
+      var act = function (e) {
+        if (e) { e.preventDefault(); e.stopPropagation(); }
+        var v = DB.visits.filter(function (x) { return x.id === el.getAttribute('data-vid'); })[0];
+        var a = v && v.atts && v.atts[Number(el.getAttribute('data-att'))];
+        if (a) openAttachment(a);
+      };
+      el.onclick = act;
+      el.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') act(e); };
+    });
+  }
+
+  /* ---------------- 详情：按月考核的三块（月份条 / 分组×月份矩阵 / 当月明细） ----------------
+     单独成函数是为了点月份时只重绘这三块：若走 openDetail 会重建整个抽屉，
+     把用户正在填写的「登记巡检」表单和已选附件一起清掉。 */
+  function monthDetailHtml(c, qk, month) {
+    var units = unitsOf(c), vs = monthVisitsOf(c, qk, month);
+    var cov = coveredUnitsCount(units, vs);
+    var head = month + ' 月 · 共 <b>' + vs.length + '</b> 次有效巡检' +
+      (units.length ? ' · 覆盖 <b>' + cov[0] + '/' + cov[1] + '</b> 组' : '');
+    var body = vs.map(function (v) {
+      var res = visitResultOf(v), mode = visitModeLabel(v), uTag = '';
+      if (units.length) {
+        var vids = unitIdsOf(v);
+        if (!vids.length) uTag = '<span class="vtag mode unit-tag">全部组</span>';
+        else {
+          var unames = vids.map(function (x) { return unitNameOf(c, x); }).filter(Boolean);
+          if (unames.length) uTag = '<span class="vtag mode unit-tag">' + esc(unames.join('、')) + '</span>';
+        }
+      }
+      return '<div class="tl-item">' +
+        '<div class="tl-date">' + fmtDate(v.date) +
+          (mode ? '<span class="vtag mode">' + mode + '</span>' : '') + uTag +
+          (res.label ? '<span class="vtag ' + res.cls + '">' + res.label + '</span>' : '') +
+          (v.by ? '<span class="q">· ' + esc(v.by) + '</span>' : '') +
+        '</div>' +
+        (v.note ? '<div class="tl-note">' + esc(v.note) + '</div>' : '') +
+        attachChips(v.atts, v.id) + '</div>';
+    }).join('');
+    return '<div class="readonly-box md-box">' +
+      '<div class="m-caption md-cap"><span>' + head + '</span>' +
+        '<button type="button" class="btn sm quiet md-close" id="btnMonthClear">返回季度</button></div>' +
+      (body || '<div class="hint" style="padding:2px 0;">该月没有计入考核的巡检记录。</div>') +
+    '</div>';
+  }
+
+  function renderMonthBlocks(c, qk, s) {
+    var mBox = document.getElementById('dMonths');
+    var mDetail = document.getElementById('dMonthDetail');
+    var units = unitsOf(c);
+    var winName = s.half ? '本半年' : '本季度';
+    var sel = s.months ? state.detailMonth : null;
+    /* 切季度后残留的月份可能已不在本季度内，直接丢弃 */
+    if (sel && !s.months.some(function (m) { return m.month === sel; })) sel = null;
+
+    /* ---- 月份条：可点，带当月次数与覆盖组数 ---- */
+    if (s.months) {
+      var lack = missingMonths(s);
+      mBox.style.display = 'block';
+      mBox.innerHTML =
+        '<div class="readonly-box" style="flex-direction:column;align-items:stretch;gap:0;">' +
+          '<div class="m-caption">按月考核（每月 1 次）：本季度共 3 个月，其中已到 <b style="color:var(--ink)">' +
+          s.monthNeed + '</b> 个月，已达标 <b style="color:var(--ink)">' + s.monthDone + '</b> 个月' +
+          (lack.length ? '；<span style="color:var(--danger-ink);font-weight:600;">待补 ' + lack.map(monthLabel).join('、') + '</span>' : '；暂无待补月份') +
+          '　<span style="color:var(--ink-4);">点月份看当月每组情况</span>' +
+          '</div>' +
+          '<div class="mstrip mstrip-lg">' +
+            s.months.map(function (m) {
+              var cls = m.done ? 'done' : (m.elapsed ? 'lack' : 'todo');
+              var on = sel === m.month;
+              return '<button type="button" class="mcell mcell-btn ' + cls + (on ? ' sel' : '') + '"' +
+                ' data-month="' + m.month + '" aria-pressed="' + (on ? 'true' : 'false') + '"' +
+                (m.elapsed ? '' : ' disabled') + '>' +
+                '<span class="mcell-t">' + m.month + ' 月<i>' +
+                  (m.done ? '✓ 已巡检' : (m.elapsed ? '✗ 未巡检' : '· 未到')) + '</i></span>' +
+                '<span class="mcell-s">' + (m.elapsed
+                  ? (m.count + ' 次' + (m.covTotal ? ' · ' + m.covDone + '/' + m.covTotal + ' 组' : ''))
+                  : '无考核窗口') + '</span>' +
+              '</button>';
+            }).join('') +
+          '</div>' +
+        '</div>';
+    } else {
+      mBox.style.display = 'none';
+      mBox.innerHTML = '';
+    }
+
+    /* ---- 当月明细 ---- */
+    if (s.months && sel) {
+      mDetail.style.display = 'block';
+      mDetail.innerHTML = monthDetailHtml(c, qk, sel);
+    } else {
+      mDetail.style.display = 'none';
+      mDetail.innerHTML = '';
+    }
+
+    /* ---- 分组表：按月考核 + 有分组 → 矩阵；否则保持季度三列 ---- */
+    var uBox = document.getElementById('dUnits');
+    var uThead = document.querySelector('#dUnitsTable thead');
+    var uBody = document.querySelector('#dUnitsTable tbody');
+    if (!units.length) {
+      uBox.style.display = 'none';
+      uThead.innerHTML = '<tr><th>分组</th><th>负责人</th><th>本季度状态</th></tr>';
+      uBody.innerHTML = '';
+    } else if (s.months) {
+      var mx = monthUnitMatrix(c, qk), months = s.months.map(function (m) { return m.month; });
+      uBox.style.display = 'block';
+      document.getElementById('dUnitsCaption').innerHTML =
+        '巡检分组 <b>' + units.length + '</b> 个：按月考核，每月每组各需 1 次有效巡检；' +
+        '当月<b>全部</b>分组都被覆盖，该月才算达标。';
+      uThead.innerHTML = '<tr><th>分组</th><th class="mm-owner">负责人</th>' +
+        months.map(function (m) {
+          return '<th class="mm-th' + (sel === m ? ' sel' : '') + '">' + m + ' 月</th>';
+        }).join('') + '<th class="mm-th">季度合计</th></tr>';
+      uBody.innerHTML = mx.map(function (row) {
+        return '<tr><td>' + esc(row.name) + '</td>' +
+          '<td class="mm-owner" style="color:var(--ink-3);">' + esc(row.owner || '—') + '</td>' +
+          row.cells.map(function (cell) {
+            var cls = cell.count > 0 ? 'ok' : (cell.elapsed ? 'miss' : 'na');
+            return '<td class="mm-cell' + (sel === cell.month ? ' sel' : '') + '">' +
+              '<span class="mnum ' + cls + '">' + (cell.elapsed ? cell.count : '—') + '</span></td>';
+          }).join('') +
+          '<td class="mm-cell"><span class="mnum sum">' + row.total + '</span></td></tr>';
+      }).join('');
+    } else {
+      var uvs = windowVisits(c, qk);
+      uBox.style.display = 'block';
+      document.getElementById('dUnitsCaption').innerHTML =
+        '巡检分组 <b>' + units.length + '</b> 个：' + winName + '每个分组都有有效巡检记录，该客户才算达标。';
+      uThead.innerHTML = '<tr><th>分组</th><th>负责人</th><th>' + winName + '状态</th></tr>';
+      uBody.innerHTML = units.map(function (u) {
+        var done = uvs.some(function (v) { return visitCoversUnit(v, u.id); });
+        return '<tr><td>' + esc(u.name) + '</td><td>' + esc(u.owner || '—') + '</td><td>' +
+          (done ? '<span class="vtag res-ok">已巡检</span>' : '<span class="vtag res-issue">未巡检</span>') +
+          '</td></tr>';
+      }).join('');
+    }
+
+    /* ---- 事件：同一月份再点一次取消；「返回季度」直接清空 ---- */
+    Array.prototype.forEach.call(mBox.querySelectorAll('.mcell-btn'), function (b) {
+      b.onclick = function () {
+        var m = Number(b.getAttribute('data-month'));
+        state.detailMonth = (state.detailMonth === m) ? null : m;
+        renderMonthBlocks(c, qk, s);
+      };
+    });
+    var clr = document.getElementById('btnMonthClear');
+    if (clr) clr.onclick = function () { state.detailMonth = null; renderMonthBlocks(c, qk, s); };
+    bindAttChips(mDetail);
+  }
+
   function openDetail(id) {
     var c = DB.customers.filter(function (x) { return x.id === id; })[0];
     if (!c) return;
+    if (state.selectedId !== id) state.detailMonth = null;   /* 换客户时清掉上一位选中的月份 */
     state.selectedId = id;
     var qk = state.quarter, p = quarterParts(qk);
     var s = statusOf(c, qk);
@@ -5489,51 +5713,10 @@
       '<td style="font-weight:600;">' + yVisits.length + ' 次</td>' +
       '<td>' + f.perYear + ' 次</td>';
 
-    /* 按月考核客户的逐月进度 */
-    var mBox = document.getElementById('dMonths');
-    if (s.months) {
-      var lack = missingMonths(s);
-      mBox.style.display = 'block';
-      mBox.innerHTML =
-        '<div class="readonly-box" style="flex-direction:column;align-items:stretch;gap:0;">' +
-          '<div class="m-caption">按月考核（每月 1 次）：本季度共 3 个月，其中已到 <b style="color:var(--text)">' +
-          s.monthNeed + '</b> 个月，已达标 <b style="color:var(--text)">' + s.monthDone + '</b> 个月' +
-          (lack.length ? '；<span style="color:#B91C1C;font-weight:600;">待补 ' + lack.map(monthLabel).join('、') + '</span>' : '；暂无待补月份') +
-          '</div>' +
-          '<div class="mstrip mstrip-lg">' +
-            s.months.map(function (m) {
-              var cls = m.done ? 'done' : (m.elapsed ? 'lack' : 'todo');
-              return '<span class="mcell ' + cls + '">' + m.month + ' 月' +
-                (m.done ? '<i>✓ 已巡检' : (m.elapsed ? '<i>✗ 未巡检' : '<i>· 未到')) + '</i></span>';
-            }).join('') +
-          '</div>' +
-        '</div>';
-    } else {
-      mBox.style.display = 'none';
-      mBox.innerHTML = '';
-    }
-
-    /* 巡检分组：逐组列出负责人与考核窗口内的覆盖状态（未建分组的客户不显示） */
-    var uBox = document.getElementById('dUnits');
+    /* 按月考核：月份条 + 分组×月份矩阵 + 当月明细。
+       抽成独立函数以便点月份时只重绘这三块，不重置下方的登记表单与附件。 */
     var units = unitsOf(c);
-    var winName = s.half ? '本半年' : '本季度';
-    var uTh = document.querySelector('#dUnitsTable thead th:nth-child(3)');
-    if (uTh) uTh.textContent = winName + '状态';
-    if (units.length) {
-      var uvs = windowVisits(c, qk);
-      uBox.style.display = 'block';
-      document.getElementById('dUnitsCaption').innerHTML =
-        '巡检分组 <b>' + units.length + '</b> 个：' + winName + '每个分组都有有效巡检记录，该客户才算达标。';
-      document.querySelector('#dUnitsTable tbody').innerHTML = units.map(function (u) {
-        var done = uvs.some(function (v) { return visitCoversUnit(v, u.id); });
-        return '<tr><td>' + esc(u.name) + '</td><td>' + esc(u.owner || '—') + '</td><td>' +
-          (done ? '<span class="vtag res-ok">已巡检</span>' : '<span class="vtag res-issue">未巡检</span>') +
-          '</td></tr>';
-      }).join('');
-    } else {
-      uBox.style.display = 'none';
-      document.querySelector('#dUnitsTable tbody').innerHTML = '';
-    }
+    renderMonthBlocks(c, qk, s);
 
     /* CRM 现网信息 + 产品与技术信息（匹配成功且当前账号有可见权限才渲染） */
     var crmBox = document.getElementById('dCrmInfo');
@@ -5642,16 +5825,7 @@
         attachChips(v.atts, v.id) + '</div>';
     });
     document.getElementById('dTimeline').innerHTML = html;
-    Array.prototype.forEach.call(document.querySelectorAll('#dTimeline .tl-att'), function (el) {
-      var act = function (e) {
-        if (e) { e.preventDefault(); e.stopPropagation(); }
-        var v = DB.visits.filter(function (x) { return x.id === el.getAttribute('data-vid'); })[0];
-        var a = v && v.atts && v.atts[Number(el.getAttribute('data-att'))];
-        if (a) openAttachment(a);
-      };
-      el.onclick = act;
-      el.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') act(e); };
-    });
+    bindAttChips(document.getElementById('dTimeline'));
     Array.prototype.forEach.call(document.querySelectorAll('#dTimeline .tl-del'), function (b) {
       b.onclick = function () {
         var vid = b.getAttribute('data-vid');
