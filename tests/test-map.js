@@ -390,6 +390,50 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
     w2.close();
   }
 
+  /* ---------- 7. 一次点击就居中：缩放动画/气泡自动平移的干扰必须被校正（2026-11-18） ----------
+     真实 TMap 的 setZoom 带动画，动画帧会继续写中心；infoWindow.open() 还会自动平移地图。
+     旧实现只在动画开始前 setCenter 一次，等于白设 —— 用户要点两下才居中。
+     这里让桩在 setZoom 之后把中心写回旧值（模拟动画收尾），断言最终仍落在客户坐标。 */
+  {
+    const errors3 = [];
+    const dom3 = makeDom({
+      sessionUser: 'admin',
+      data: { admin: JSON.parse(JSON.stringify(DATA)), demo: JSON.parse(JSON.stringify(DATA)) },
+      errors: errors3,
+      installGlobals: installTMap
+    });
+    const w3 = dom3.window, d3 = w3.document;
+    await tick(300);
+    const rec3 = () => w3.__TMAP;
+    /* 无详情抽屉：off=0，目标就是「客户坐标 = 地图中心」 */
+    w3.Element.prototype.getBoundingClientRect = function () {
+      return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    };
+    rec3().map.zoom = 5;
+    const realSetZoom = rec3().map.setZoom.bind(rec3().map);
+    rec3().map.setZoom = function (z) {
+      realSetZoom(z);
+      const oldCenter = this.center;
+      /* 模拟缩放动画：40ms 后把中心写回动画开始时的值 */
+      setTimeout(() => { this.center = oldCenter; }, 40);
+    };
+    const card3 = d3.querySelector('#custList .card-cust');
+    const cid3 = card3 && card3.getAttribute('data-id');
+    const cust3 = (DATA.customers || []).filter(function (c) {
+      return c.id === String(cid3 || '').split('::').pop();
+    })[0];
+    click(w3, card3);
+    await tick(500);                       /* 等 16/180/380ms 三次校正跑完 */
+    const mc3 = rec3().map.center;
+    check('单次点击后中心即为客户坐标（缩放动画覆盖不影响）',
+      !!mc3 && !!cust3 &&
+      Math.abs(mc3.getLat() - cust3.lat) < 1e-9 && Math.abs(mc3.getLng() - cust3.lng) < 1e-9,
+      mc3 ? '中心 ' + mc3.getLat() + ',' + mc3.getLng() + ' / 期望 ' + (cust3 && cust3.lat) + ',' + (cust3 && cust3.lng) : '无中心');
+    check('单次点击同时把缩放拉到城区级', rec3().map.zoom === 12, 'zoom=' + rec3().map.zoom);
+    check('一次点击居中链路无运行期错误', errors3.length === 0, errors3.join('; '));
+    w3.close();
+  }
+
   w.close();
 
   const pass = results.filter(r => r[0] === 'PASS').length;

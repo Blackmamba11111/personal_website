@@ -307,7 +307,13 @@ setTimeout(() => {
     require('path').join(__dirname, '..', 'inspection-dashboard.html'), 'utf8');
   check('打开详情后等抽屉滑入落位再对齐一次',
     /function alignFocusToPanels/.test(dashSrc2) && /alignFocusToPanels\(id\)/.test(dashSrc2) &&
-    /setTimeout\(function \(\) \{ focusOn\(id, true\); \}, 240\)/.test(dashSrc2));
+    /focusAlignTimer = setTimeout\(function \(\) \{[\s\S]{0,160}?reCenterTo\(c\);[\s\S]{0,40}?\}, 260\)/.test(dashSrc2));
+  /* 一次点击就要居中：旧实现 setZoom 后再 setCenter 会被缩放动画/气泡自动平移覆盖，
+     必须存在「动画结束后再校正」的调度，否则要连点两次才落位。 */
+  check('定位带缩放/气泡自动平移后的校正调度',
+    /function scheduleFocusFix/.test(dashSrc2) &&
+    /\[16, 180, 380\]\.forEach/.test(dashSrc2) &&
+    /if \(force\) scheduleFocusFix\(c\)/.test(dashSrc2));
 
   // ============ 输出 ============
   const pass = results.filter(r => r[0] === 'PASS').length;

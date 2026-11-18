@@ -4697,53 +4697,82 @@
   }
 
   /* 把「点 + 屏幕位移」换算成地图中心：dx/dy 为点在屏幕上的位移量（像素）。
-     墨卡托下经度线性、纬度按 cos(lat) 近似，偏移量只有几百像素，误差可忽略。 */
-  function centerWithOffset(lat, lng, dx, dy) {
+     墨卡托下经度线性、纬度按 cos(lat) 近似，偏移量只有几百像素，误差可忽略。
+     zoomOverride：按指定级别换算。缩放动画期间 getZoom 返回的是中间值，直接读会算偏。 */
+  function centerWithOffset(lat, lng, dx, dy, zoomOverride) {
     if (!dx && !dy) return { lat: lat, lng: lng };
-    var z = 5;
-    try { z = map.getZoom(); } catch (e) {}
+    var z = Number(zoomOverride);
+    if (!(z > 0)) { try { z = map.getZoom(); } catch (e) { z = 5; } }
     var world = 256 * Math.pow(2, Number(z) || 5);
     var lngPerPx = 360 / world;
     var latPerPx = lngPerPx * Math.cos(lat * Math.PI / 180);
     return { lat: lat + dy * latPerPx, lng: lng - dx * lngPerPx };
   }
 
-  /* force=true：无视当前视野，强制把该客户居中（左侧列表点选用）。
-     居中 / 缩放放在画高亮环之前：先落视野再画环，避免在旧视野里闪一下。 */
+  /* 把视野中心挪到「点正好落在可见区中心」的位置。off 每次重算：
+     抽屉在滑入动画里位置会变，缓存下来的补偿量会少补一段。 */
+  function reCenterTo(c) {
+    if (!mapReady || !c || typeof c.lng !== 'number') return;
+    var off = mapFocusOffset();
+    var near = centerWithOffset(c.lat, c.lng, off.dx, off.dy);
+    try { map.setCenter(new TMap.LatLng(near.lat, near.lng)); } catch (e) {}
+  }
+
+  /* 一次点击必须落位：旧实现先 setZoom 再 setCenter，在 TMap 上等于白设 ——
+     缩放是带动画的，动画帧会继续覆盖中心；紧接着 infoWindow.open() 又会自动平移，
+     保证气泡完整可见，把刚居中的点再推走。于是第一下看似没反应，第二下（zoom
+     已是目标级、气泡已在原位、两者都不再动手）才居中。
+     现在：订好中心 → 缩放 → 动画与自动平移结束后再校正几次，谁最后动过地图都拉回来。 */
+  var focusFixTimers = [];
+  function clearFocusFix() {
+    for (var i = 0; i < focusFixTimers.length; i++) clearTimeout(focusFixTimers[i]);
+    focusFixTimers = [];
+  }
+  function scheduleFocusFix(c) {
+    [16, 180, 380].forEach(function (ms) {
+      focusFixTimers.push(setTimeout(function () { reCenterTo(c); }, ms));
+    });
+  }
+
+  /* force=true：无视当前视野，强制把该客户移到可见区中心（左侧列表点选用）。 */
   function focusOn(id, force) {
     if (!mapReady) return;
     var c = DB.customers.filter(function (x) { return x.id === id; })[0];
     if (!c || typeof c.lng !== 'number') return;
-    var off = mapFocusOffset();
+    clearFocusFix();
+    /* 详情刚打开时排了一次 260ms 的抽屉落位对齐；这期间又点了别的客户，
+       旧定时器会把视野拉回上一个客户，必须一起清掉。 */
+    clearTimeout(focusAlignTimer);
     if (force) {
-      /* 先定缩放再算补偿：像素↔经纬度换算依赖当前 zoom */
       var z = 7;
       try { z = map.getZoom(); } catch (e) {}
+      reCenterTo(c);                                   /* 先定位，缩放以已落位的中心为锚点 */
       if (!(z >= FOCUS_MIN_ZOOM)) {
         try { map.setZoom(FOCUS_MIN_ZOOM); } catch (e) {}
       }
-      var near = centerWithOffset(c.lat, c.lng, off.dx, off.dy);
-      try { map.setCenter(new TMap.LatLng(near.lat, near.lng)); } catch (e) {}
     } else if (!inView(c)) {
-      var near2 = centerWithOffset(c.lat, c.lng, off.dx, off.dy);
-      try { map.setCenter(new TMap.LatLng(near2.lat, near2.lng)); } catch (e) {}
+      reCenterTo(c);
     }
     focusLayer.setGeometries([{
       id: 'focus', styleId: 'halo',
       center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius()
     }]);
     showInfoFor(c);
+    if (force) scheduleFocusFix(c);
   }
 
   /* 详情抽屉滑入动画（.drawer 200ms）期间 getBoundingClientRect 还在向右移动，
-     只在动画开始时对齐会少补约半个动画位移。这里先对齐一次保证立刻见效，
-     落位后再补一次，把点精确推到「左栏—详情栏」之间可见区的中心。 */
+     补偿量会少算约半个动画位移。落位后按新 rect 补一次，
+     把点精确推到「左栏—详情栏」之间可见区的中心。 */
   var focusAlignTimer = 0;
   function alignFocusToPanels(id) {
     if (!id || !mapReady) return;
     focusOn(id, true);
     clearTimeout(focusAlignTimer);
-    focusAlignTimer = setTimeout(function () { focusOn(id, true); }, 240);
+    focusAlignTimer = setTimeout(function () {
+      var c = DB.customers.filter(function (x) { return x.id === id; })[0];
+      if (c) reCenterTo(c);
+    }, 260);
   }
 
   /* ---------------- 悬浮预览：不改变选中项、不移动视野 ---------------- */
