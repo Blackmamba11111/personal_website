@@ -10242,7 +10242,7 @@
   /* ---------- 企业微信通知（用户级） ----------
      与服务端 worker/wecom-notify.mjs 的变量集合保持一致；
      密钥类字段（webhook 的 key / corpsecret）服务端只回掩码或「已设置」，编辑时留空 = 不修改。 */
-  var WX_DEFAULT_TPL = ['【巡检报告已更新】', '{summary}', '操作人：{actor}', '时间：{time}', '{link}'].join('\n');
+  var WX_DEFAULT_TPL = ['【巡检台账已更新】', '{summary}', '操作人：{actor}', '时间：{time}', '{link}'].join('\n');
   /* 触发动作：新增 / 修改 / 删除。默认三个全勾（与旧行为一致）；全不勾由保存接口拦截报错。
      用户弹窗与批量弹窗共用这套读写，避免两边规则走偏。 */
   var WX_ACT_DEF = [['add', '新增'], ['update', '修改'], ['delete', '删除']];

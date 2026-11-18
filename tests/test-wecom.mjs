@@ -160,7 +160,7 @@ async function testApp() {
 async function testCard() {
   const hook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=cardkey';
   const card = {
-    title: '衡水银行 · 巡检报告已更新',
+    title: '衡水银行 · 巡检台账已更新',
     desc: '衡水银行：新增 1 条\n操作人：潘超',
     url: 'https://10.1.114.115/inspection-dashboard.html?cust=c1',
     rows: [{ key: '操作人', val: '潘超' }, { key: '时间', val: '2026-11-16 22:30' }]
@@ -278,16 +278,21 @@ function testResultFiles() {
   check('filesText 单个', WX.filesText(['巡检报告.pdf']) === '巡检报告.pdf');
   check('filesText 两个全展示不加「等」', WX.filesText(['a.pdf', 'b.jpg']) === 'a.pdf、b.jpg', WX.filesText(['a.pdf', 'b.jpg']));
   const five = WX.filesText(['1.pdf', '2.pdf', '3.pdf', '4.pdf', '5.pdf']);
-  check('filesText 最多 3 个 + 等 N 个（N 为总数）', five === '1.pdf、2.pdf、3.pdf 等 5 个', five);
+  check('filesText 未列全 → 「等 N 个附件」（N 为总数）', five === '1.pdf、2.pdf、3.pdf 等 5 个附件', five);
 
   const longName = '承德银行2026年第四季度巡检报告最终版.docx';
   const oneLong = WX.filesText([longName]);
-  check('filesText 超长名字截断到 20 字以内', oneLong.length <= 20, oneLong);
+  check('filesText 单个超长名截断到 20 字以内并带省略号',
+    oneLong.length <= 20 && oneLong.slice(-1) === '…', oneLong);
+  check('filesText 单个附件不加「等 N 个附件」', oneLong.indexOf('等') < 0, oneLong);
+
+  const mixed = WX.filesText([longName, '链路日志.txt']);
+  check('filesText 名字被截断时标注「等 2 个附件」', mixed.indexOf('等 2 个附件') > 0, mixed);
 
   const heavy = WX.filesText([longName, longName, longName]);
   const bytesOf = (s) => { let n = 0; for (const ch of String(s)) n += ch.codePointAt(0) > 127 ? 3 : 1; return n; };
   check('filesText 超出字节预算时提前收尾', bytesOf(heavy) <= 100, bytesOf(heavy) + 'B: ' + heavy);
-  check('filesText 预算内仍保留「等 N 个」', heavy.indexOf('等 3 个') > 0, heavy);
+  check('filesText 预算内仍保留「等 N 个附件」', heavy.indexOf('等 3 个附件') > 0, heavy);
 }
 
 /* ---------- 巡检人 / 方式 / 备注 / 巡检时间（2026-11-18 第二批）---------- */

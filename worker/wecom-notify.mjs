@@ -15,7 +15,7 @@
 /* 默认消息模板：纯文本，markdown / text 两种 msgtype 下都能正常换行显示。
    用户可在用户管理里自定义，变量见 TPL_VARS。 */
 export const WX_DEFAULT_TPL = [
-  '【巡检报告已更新】',
+  '【巡检台账已更新】',
   '{summary}',
   '操作人：{actor}',
   '时间：{time}',
@@ -56,27 +56,34 @@ export function resultText(vals) {
      放不下就提前收尾，绝不让整条卡片因超长被拒（40058）
    - 单个名字超过 20 字截断，避免一个长文件名吃掉全部预算 */
 export function filesText(names, maxBytes) {
-  const all = (names || []).filter(Boolean).map(function (s) {
-    s = String(s);
-    return s.length > 20 ? s.slice(0, 19) + '…' : s;
-  });
-  if (!all.length) return '无';
+  const raw = (names || []).filter(Boolean).map(function (s) { return String(s); });
+  if (!raw.length) return '无';
   const budget = maxBytes || 100;
-  const MAXN = 3;
+  const MAXN = 3;          /* 明细行最多列 3 个名字，再多看不过来也放不下 */
+  const NAME_MAX = 20;     /* 单个名字超过 20 字截断，否则一个就吃掉整行 */
+  /* 名字过长 → 截断加「…」；只要发生过截断或没列全，末尾统一标「等 N 个附件」 */
+  const items = raw.map(function (s) { return s.length > NAME_MAX ? s.slice(0, NAME_MAX - 1) + '…' : s; });
+  const cutName = items.some(function (t, i) { return t !== raw[i]; });
+  const tailOf = function (n) { return ' 等 ' + n + ' 个附件'; };
   const bytesOf = function (s) {
     let n = 0;
     for (const ch of String(s)) n += ch.codePointAt(0) > 127 ? 3 : 1;
     return n;
   };
   const shown = [];
-  for (let i = 0; i < all.length && shown.length < MAXN; i++) {
-    const trial = shown.concat([all[i]]).join('、');
-    const tail = (shown.length + 1) < all.length ? ' 等 ' + all.length + ' 个' : '';
+  for (let i = 0; i < items.length && shown.length < MAXN; i++) {
+    const trial = shown.concat([items[i]]).join('、');
+    /* 后面还有没列的、或名字被截过，都要给它留出尾部标记的位置 */
+    const needTail = cutName || (i + 1 < items.length);
+    const tail = (needTail && raw.length > 1) ? tailOf(raw.length) : '';
     if (bytesOf(trial + tail) > budget) break;
-    shown.push(all[i]);
+    shown.push(items[i]);
   }
-  if (!shown.length) return all.length + ' 个附件';
-  return shown.join('、') + (shown.length < all.length ? ' 等 ' + all.length + ' 个' : '');
+  if (!shown.length) return raw.length + ' 个附件';
+  /* 全部列全且名字完整 → 干净列表；否则标出总数，避免只看到一部分以为就这些 */
+  const full = shown.length === items.length && !cutName;
+  if (full || raw.length === 1) return shown.join('、');
+  return shown.join('、') + tailOf(raw.length);
 }
 
 /* 巡检方式 → 中文。与前端 VISIT_MODES 保持同一套取值。 */
@@ -243,7 +250,7 @@ export function textCardOf(card) {
   return {
     msgtype: 'textcard',
     textcard: {
-      title: clipBytes(c.title || '巡检报告已更新', 120),
+      title: clipBytes(c.title || '巡检台账已更新', 120),
       description: clipBytes(String(c.desc || '').replace(/\r?\n/g, '<br>'), 480),
       url: String(c.url || ''),
       btntxt: '查看详情'
@@ -260,7 +267,7 @@ export function tplCardOf(card) {
   const tc = {
     card_type: 'text_notice',
     source: { desc: '巡检看板' },
-    main_title: { title: clipBytes(c.title || '巡检报告已更新', 72) },
+    main_title: { title: clipBytes(c.title || '巡检台账已更新', 72) },
     horizontal_content_list: rows,
     card_action: { type: 1, url: String(c.url || '') }
   };

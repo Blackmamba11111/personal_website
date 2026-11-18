@@ -1445,19 +1445,18 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
       .replace(/\n{2,}/g, '\n').trim();
     const card = {
       title: items.length === 1
-        ? (items[0].customer + ' · 巡检报告已更新')
-        : ('巡检报告已更新 · ' + items.length + ' 个客户'),
+        ? (items[0].customer + ' · 巡检台账已更新')
+        : ('巡检台账已更新 · ' + items.length + ' 个客户'),
       desc: cardDesc,
       url: link,
-      /* 企业微信卡片明细行最多 6 项，这里按「谁巡检的、什么时候、怎么巡检、结果、备注、附件」排；
-         操作人放最后一行；变更条数由正文的 {summary} 体现，不再单列。 */
+      /* 明细行只放巡检本身的信息：谁巡检的、什么时候、怎么巡检、结果、备注、附件。
+         操作人、变更条数已由正文体现，不再占位（企业微信明细行上限 6 项，留余量）。 */
       rows: [
         { key: '巡检人', val: byModeTxt },
         { key: '巡检时间', val: vtimeTxt },
         { key: '巡检结果', val: resultTxt },
         { key: '备注', val: noteTxt },
-        { key: '附件', val: filesTxt },
-        { key: '操作人', val: actorName }
+        { key: '附件', val: filesTxt }
       ]
     };
     const r = await WX_P.deliver(cfg, content, { card: card });

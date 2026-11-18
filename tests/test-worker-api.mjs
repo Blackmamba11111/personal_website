@@ -753,10 +753,12 @@ try {
   check('卡片标题含客户名', /衡水银行/.test(sent[0].body.template_card.main_title.title),
     sent[0].body.template_card.main_title.title);
   const kv = sent[0].body.template_card.horizontal_content_list;
-  check('卡片明细 6 项：巡检人/时间/结果/备注/附件/操作人',
-    kv.length === 6 &&
-    ['巡检人', '巡检时间', '巡检结果', '备注', '附件', '操作人'].every((k) => kv.some((x) => x.keyname === k)),
+  check('卡片明细 5 项：巡检人/时间/结果/备注/附件',
+    kv.length === 5 &&
+    ['巡检人', '巡检时间', '巡检结果', '备注', '附件'].every((k) => kv.some((x) => x.keyname === k)),
     JSON.stringify(kv));
+  check('卡片明细不再单列「操作人」（正文已有）',
+    !kv.some((x) => x.keyname === '操作人'), JSON.stringify(kv.map((x) => x.keyname)));
   check('卡片明细不再单列「变更」（条数由正文体现）',
     !kv.some((x) => x.keyname === '变更'), JSON.stringify(kv.map((x) => x.keyname)));
 
