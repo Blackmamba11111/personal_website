@@ -162,7 +162,16 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
     check('光晕为固定地理半径 1.2km（12 级约 40px，与标记比例相称）',
       Math.abs(g.radius - 1200) < 1 && px12 > 34 && px12 < 48, px12.toFixed(1) + 'px / ' + Math.round(g.radius) + 'm');
     check('点选后卡片为选中态', !!(d.querySelector('#custList .card-cust.sel')), cid || '无');
-    check('点选后详情弹窗打开', id('maskDetail').classList.contains('on'));
+    check('点选只定位、不直接弹出详情（2026-11-18）', !id('maskDetail').classList.contains('on'));
+    /* 查看 / 登记巡检统一从地图气泡上的按钮进入，按钮由全局委托接管 */
+    const bub = d.createElement('span');
+    bub.setAttribute('data-act', 'detail');
+    bub.setAttribute('data-id', cid);
+    d.body.appendChild(bub);
+    click(w, bub);
+    await tick(20);
+    check('点气泡「查看 / 登记巡检」按钮才打开详情', id('maskDetail').classList.contains('on'));
+    bub.remove();
 
     /* 再放大到 16 级点一次：半径不变、屏幕尺寸按比例放大 —— 这才是「跟着地图比例缩放」 */
     rec().map.zoom = 16;
@@ -354,6 +363,14 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
       return c.id === String(cid || '').split('::').pop();   /* 卡片 data-id 带台账作用域前缀 */
     })[0];
     click(w2, card);
+    await tick(20);
+    /* 点卡片只定位，详情从气泡按钮进入 —— 对齐发生在抽屉打开之后 */
+    const bub2 = d2.createElement('span');
+    bub2.setAttribute('data-act', 'detail');
+    bub2.setAttribute('data-id', cid);
+    d2.body.appendChild(bub2);
+    click(w2, bub2);
+    bub2.remove();
     await tick(320);                                  /* 等抽屉滑入落位后的二次对齐 */
     const mc = rec2().map.center;
     const dx = (MAP_RECT.left + DR_RECT.left) / 2 - (MAP_RECT.left + MAP_RECT.right) / 2;

@@ -3537,10 +3537,12 @@
       el.onclick = function () {
         var id = el.getAttribute('data-id');
         /* 选中左侧客户即在地图定位（2026-11-09）：居中 + 高亮环 + 信息窗，便于对照地址与坐标。
-           renderList 放最后：重建后按 state.selectedId 补上 .sel，关闭详情时卡片仍是选中态。 */
+           2026-11-18：不再直接弹出详情抽屉——查看 / 登记巡检统一从地图气泡上的按钮进入，
+           避免「只想看一眼位置」也被整块巡检信息打断。地图不可用（气泡不存在）时直接打开详情兜底。
+           renderList 放最后：重建后按 state.selectedId 补上 .sel。 */
         state.selectedId = id;
         focusOn(id, true);
-        openDetail(id);
+        if (!mapReady) openDetail(id);
         renderList();
       };
     });
@@ -4212,8 +4214,9 @@
         /* 点选模式下点中客户标记：同样完成坐标拾取，不再打开详情弹窗 */
         if (pickAt(evt && (evt.latLng || (evt.geometry && evt.geometry.position)))) return;
         var g = evt.geometry; if (!g) return;
+        /* 2026-11-18：只选中并弹气泡，详情从气泡上的「查看 / 登记巡检」按钮进入 */
         state.selectedId = g.id;
-        renderList(); focusOn(g.id); openDetail(g.id);
+        renderList(); focusOn(g.id);
       });
       /* 悬浮预览：hover 在「悬停对象改变」时触发，geometry 为 null 表示已移出全部标记。
          注意腾讯 GL 的 MultiMarker 没有 mouseover/mouseout，只有 hover。 */
