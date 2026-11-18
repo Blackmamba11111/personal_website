@@ -850,6 +850,37 @@ try {
   r = await api('/users/wxu/wx-log', {}, tk);
   check('失败也记流水并带出原因', r.data.logs[0].ok === 0 && /invalid webhook/.test(r.data.logs[0].err),
     JSON.stringify(r.data.logs[0]));
+
+  /* 巡检结论 / 附件名进卡片明细行（2026-11-18 新增）
+     上一段把 fetch 换成了失败桩，这里装回收集桩再发 */
+  globalThis.fetch = async (url, init) => {
+    sent.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
+    return { ok: true, json: async () => ({ errcode: 0, errmsg: 'ok' }) };
+  };
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', fmt: 'card', acts: ['add', 'update', 'delete'] } } }, tk);
+  sent = [];
+  await api('/ledger', {
+    method: 'PUT',
+    body: {
+      scope: 'wxu',
+      data: {
+        regions: [], customers: [{ id: 'wc1', name: '衡水银行' }],
+        visits: [
+          { id: 'wv1', customerId: 'wc1', date: '2026-11-16', by: '张三', result: 'ok', note: '补录' },
+          { id: 'wv2', customerId: 'wc1', date: '2026-11-17', by: '李四', note: '' },
+          { id: 'wv3', customerId: 'wc1', date: '2026-11-18', by: '王五', note: '' },
+          {
+            id: 'wv20', customerId: 'wc1', date: '2026-11-25', by: '赵六', result: 'issue', note: '',
+            atts: [{ id: 'at1', name: '巡检报告.pdf' }, { id: 'at2', name: '现场照片.jpg' }]
+          }
+        ]
+      }
+    }
+  }, tk);
+  const rows2 = sent.length ? sent[0].body.template_card.horizontal_content_list : [];
+  check('卡片明细含「结论」且取巡检结果', rows2.some((x) => x.keyname === '结论' && x.value === '异常'), JSON.stringify(rows2));
+  check('卡片明细含「附件」且列出文件名',
+    rows2.some((x) => x.keyname === '附件' && x.value === '巡检报告.pdf、现场照片.jpg'), JSON.stringify(rows2));
 } finally {
   globalThis.fetch = realFetch;
 }

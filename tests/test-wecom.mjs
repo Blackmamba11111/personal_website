@@ -262,9 +262,38 @@ async function testCard() {
   check('normalizeWx：全新配置默认卡片', n3.cfg && n3.cfg.fmt === 'card', JSON.stringify(n3));
 }
 
+/* ---------- 巡检结论 / 附件名（2026-11-18 新增）---------- */
+function testResultFiles() {
+  check('TPL_VARS 含 result 与 files', WX.TPL_VARS.indexOf('result') >= 0 && WX.TPL_VARS.indexOf('files') >= 0, WX.TPL_VARS.join(','));
+  check('fillTpl 替换 {result}', WX.fillTpl('结论：{result}', { result: '正常' }) === '结论：正常');
+  check('fillTpl 替换 {files}', WX.fillTpl('附件：{files}', { files: 'a.pdf' }) === '附件：a.pdf');
+
+  check('resultText 单值', WX.resultText(['ok']) === '正常', WX.resultText(['ok']));
+  check('resultText 三态映射', WX.resultText(['ok', 'issue', 'other']) === '正常、异常、其他', WX.resultText(['ok', 'issue', 'other']));
+  check('resultText 去重保序', WX.resultText(['issue', 'ok', 'issue']) === '异常、正常', WX.resultText(['issue', 'ok', 'issue']));
+  check('resultText 空集合返回破折号', WX.resultText([]) === '—', WX.resultText([]));
+  check('resultText 未知值不算正常', WX.resultText(['', undefined, 'bogus']) === '—', WX.resultText(['', undefined, 'bogus']));
+
+  check('filesText 无附件', WX.filesText([]) === '无', WX.filesText([]));
+  check('filesText 单个', WX.filesText(['巡检报告.pdf']) === '巡检报告.pdf');
+  check('filesText 两个全展示不加「等」', WX.filesText(['a.pdf', 'b.jpg']) === 'a.pdf、b.jpg', WX.filesText(['a.pdf', 'b.jpg']));
+  const five = WX.filesText(['1.pdf', '2.pdf', '3.pdf', '4.pdf', '5.pdf']);
+  check('filesText 最多 3 个 + 等 N 个（N 为总数）', five === '1.pdf、2.pdf、3.pdf 等 5 个', five);
+
+  const longName = '承德银行2026年第四季度巡检报告最终版.docx';
+  const oneLong = WX.filesText([longName]);
+  check('filesText 超长名字截断到 20 字以内', oneLong.length <= 20, oneLong);
+
+  const heavy = WX.filesText([longName, longName, longName]);
+  const bytesOf = (s) => { let n = 0; for (const ch of String(s)) n += ch.codePointAt(0) > 127 ? 3 : 1; return n; };
+  check('filesText 超出字节预算时提前收尾', bytesOf(heavy) <= 100, bytesOf(heavy) + 'B: ' + heavy);
+  check('filesText 预算内仍保留「等 N 个」', heavy.indexOf('等 3 个') > 0, heavy);
+}
+
 await testRobot();
 await testApp();
 await testCard();
+testResultFiles();
 
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 if (fail) process.exitCode = 1;

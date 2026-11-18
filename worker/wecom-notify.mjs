@@ -22,8 +22,54 @@ export const WX_DEFAULT_TPL = [
   '{link}'
 ].join('\n');
 
-/* 可用变量：{summary} {customer} {changes} {actor} {time} {date} {link} {count} */
-export const TPL_VARS = ['summary', 'customer', 'changes', 'actor', 'time', 'date', 'link', 'count'];
+/* 可用变量：{summary} {customer} {changes} {actor} {time} {date} {link} {count} {result} {files}
+   {result} 巡检结论（本次变更记录的「正常 / 异常 / 其他」，多个去重后用「、」连）
+   {files}  本次变更涉及的附件名（最多列 3 个，其余显示「等 N 个」）
+   默认模板不包含后两个（群机器人卡片另在明细行里展示），需要写进正文时自行添加。 */
+export const TPL_VARS = ['summary', 'customer', 'changes', 'actor', 'time', 'date', 'link', 'count', 'result', 'files'];
+
+/* 巡检结果三态 → 中文。只认这三个值，空值/未知值不计入结论，
+   避免老数据（没有 result 字段）被误报成「正常」。 */
+export const RESULT_LABEL = { ok: '正常', issue: '异常', other: '其他' };
+
+/* 一组巡检记录的结果值 → 短文本，如「正常、异常」。全空时返回「—」 */
+export function resultText(vals) {
+  const seen = [];
+  (vals || []).forEach(function (v) {
+    const t = RESULT_LABEL[v];
+    if (t && seen.indexOf(t) < 0) seen.push(t);
+  });
+  return seen.join('、') || '—';
+}
+
+/* 附件名列表 → 「巡检报告.pdf、现场照片.jpg 等 5 个」。
+   - 最多展示 3 个，其余折叠成「等 N 个」（N 是总数，不是未展示数）
+   - 按 UTF-8 字节预算拼接（默认 100 字节，对齐企业微信卡片明细行的 value 上限），
+     放不下就提前收尾，绝不让整条卡片因超长被拒（40058）
+   - 单个名字超过 20 字截断，避免一个长文件名吃掉全部预算 */
+export function filesText(names, maxBytes) {
+  const all = (names || []).filter(Boolean).map(function (s) {
+    s = String(s);
+    return s.length > 20 ? s.slice(0, 19) + '…' : s;
+  });
+  if (!all.length) return '无';
+  const budget = maxBytes || 100;
+  const MAXN = 3;
+  const bytesOf = function (s) {
+    let n = 0;
+    for (const ch of String(s)) n += ch.codePointAt(0) > 127 ? 3 : 1;
+    return n;
+  };
+  const shown = [];
+  for (let i = 0; i < all.length && shown.length < MAXN; i++) {
+    const trial = shown.concat([all[i]]).join('、');
+    const tail = (shown.length + 1) < all.length ? ' 等 ' + all.length + ' 个' : '';
+    if (bytesOf(trial + tail) > budget) break;
+    shown.push(all[i]);
+  }
+  if (!shown.length) return all.length + ' 个附件';
+  return shown.join('、') + (shown.length < all.length ? ' 等 ' + all.length + ' 个' : '');
+}
 
 export const WX_TYPES = ['robot', 'app'];
 export const WX_LABEL = { robot: '群机器人', app: '自建应用' };

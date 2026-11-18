@@ -1264,20 +1264,39 @@ function diffLedgerLogs(oldD, newD) {
   });
 
   const ov = byId(oldD.visits), nv = byId(newD.visits);
+  /* 通知需要带出「巡检结论」和「附件名」：差分本身只关心字段变化，
+     但推送文案要能展示这两项，因此随日志一并携带（删除时取旧记录的值）。 */
+  const vAtts = function (x) {
+    return (Array.isArray(x && x.atts) ? x.atts : [])
+      .map(function (a) { return a && a.name ? String(a.name) : ''; })
+      .filter(Boolean);
+  };
   Object.keys(nv).forEach(function (id) {
     const v = nv[id];
     const label = cname(newD, v.customerId) + ' · ' + (v.date || '');
-    if (!ov[id]) { logs.push({ kind: 'visit', action: 'add', target: label, detail: (v.by ? '巡检人 ' + v.by : '') }); return; }
+    const extra = { result: v.result || '', atts: vAtts(v) };
+    if (!ov[id]) {
+      logs.push(Object.assign({ kind: 'visit', action: 'add', target: label, detail: (v.by ? '巡检人 ' + v.by : '') }, extra));
+      return;
+    }
     const diffs = [];
     Object.keys(v).forEach(function (k) {
       if (JSON.stringify(ov[id][k]) !== JSON.stringify(v[k])) {
         diffs.push((FIELD_LABELS[k] || k) + '：' + fmtVal(ov[id][k]) + ' → ' + fmtVal(v[k]));
       }
     });
-    if (diffs.length) logs.push({ kind: 'visit', action: 'update', target: label, detail: diffs.join('；') });
+    if (diffs.length) logs.push(Object.assign({ kind: 'visit', action: 'update', target: label, detail: diffs.join('；') }, extra));
   });
   Object.keys(ov).forEach(function (id) {
-    if (!nv[id]) logs.push({ kind: 'visit', action: 'delete', target: cname(oldD, ov[id].customerId) + ' · ' + (ov[id].date || ''), detail: '' });
+    if (!nv[id]) {
+      logs.push({
+        kind: 'visit', action: 'delete',
+        target: cname(oldD, ov[id].customerId) + ' · ' + (ov[id].date || ''),
+        detail: '',
+        result: ov[id].result || '',
+        atts: vAtts(ov[id])
+      });
+    }
   });
 
   const org = byId(oldD.regions), nrg = byId(newD.regions);
@@ -1350,10 +1369,13 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
     const byCust = new Map();
     picked.forEach(function (l) {
       const name = String(l.target || '').split(' · ')[0] || '未知客户';
-      const it = byCust.get(name) || { customer: name, add: 0, upd: 0, del: 0 };
+      const it = byCust.get(name) || { customer: name, add: 0, upd: 0, del: 0, results: [], files: [] };
       if (l.action === 'add') it.add++;
       else if (l.action === 'update') it.upd++;
       else if (l.action === 'delete') it.del++;
+      /* 结论与附件按出现顺序去重：一次改多条时合并展示，不重复刷同一句话 */
+      if (l.result && it.results.indexOf(l.result) < 0) it.results.push(l.result);
+      (l.atts || []).forEach(function (n) { if (it.files.indexOf(n) < 0) it.files.push(n); });
       byCust.set(name, it);
     });
     const items = Array.from(byCust.values());
@@ -1369,6 +1391,15 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
       if (hit && hit.id) custId = String(hit.id);
     } catch (e) { custId = ''; }
     const link = String(origin || '') + '/inspection-dashboard.html' + (custId ? '?cust=' + encodeURIComponent(custId) : '');
+    /* 结论 / 附件：跨客户合并去重，卡片明细行与 {result} {files} 变量共用同一份文本 */
+    const allResults = [];
+    const allFiles = [];
+    items.forEach(function (i) {
+      (i.results || []).forEach(function (x) { if (allResults.indexOf(x) < 0) allResults.push(x); });
+      (i.files || []).forEach(function (x) { if (allFiles.indexOf(x) < 0) allFiles.push(x); });
+    });
+    const resultTxt = WX_P.resultText(allResults);
+    const filesTxt = WX_P.filesText(allFiles);
     const vars = {
       summary: summary,
       customer: items.map(function (i) { return i.customer; }).join('、'),
@@ -1377,7 +1408,9 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
       time: WX_P.fmtTime(now),
       date: WX_P.fmtTime(now, true),
       link: link,
-      count: String(picked.length)
+      count: String(picked.length),
+      result: resultTxt,
+      files: filesTxt
     };
     const content = WX_P.fillTpl(cfg.tpl, vars);
     /* 卡片正文复用同一模板，但去掉 {link} 那一行 —— 链接已经挂在按钮上 */
@@ -1397,6 +1430,8 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
       rows: [
         { key: '操作人', val: actorName },
         { key: '时间', val: vars.time },
+        { key: '结论', val: resultTxt },
+        { key: '附件', val: filesTxt },
         { key: '变更', val: bits.join('、') || '有更新' }
       ]
     };
@@ -2240,7 +2275,10 @@ async function route(request, env, ctx) {
       time: WX_P.fmtTime(now),
       date: WX_P.fmtTime(now, true),
       link: url.origin + '/inspection-dashboard.html',
-      count: '0'
+      count: '0',
+      /* 测试消息给示例值，避免自定义模板里的 {result} {files} 原样露出来 */
+      result: '正常',
+      files: '巡检报告.pdf'
     });
     const r = await WX_P.deliver(v.cfg, content);
     await wxLogAdd(env, target, 'test', r.ok, v.cfg.type, '测试消息', r.err);
