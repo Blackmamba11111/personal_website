@@ -752,8 +752,13 @@ try {
     sent[0].body.template_card.card_action.url);
   check('卡片标题含客户名', /衡水银行/.test(sent[0].body.template_card.main_title.title),
     sent[0].body.template_card.main_title.title);
-  check('卡片键值行含「变更」', sent[0].body.template_card.horizontal_content_list.some((x) => x.keyname === '变更'),
-    JSON.stringify(sent[0].body.template_card.horizontal_content_list));
+  const kv = sent[0].body.template_card.horizontal_content_list;
+  check('卡片明细 6 项：巡检人/时间/结果/备注/附件/操作人',
+    kv.length === 6 &&
+    ['巡检人', '巡检时间', '巡检结果', '备注', '附件', '操作人'].every((k) => kv.some((x) => x.keyname === k)),
+    JSON.stringify(kv));
+  check('卡片明细不再单列「变更」（条数由正文体现）',
+    !kv.some((x) => x.keyname === '变更'), JSON.stringify(kv.map((x) => x.keyname)));
 
   /* 配了接收人时卡片让位给 @（群机器人卡片不支持 @人） */
   await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '13800138000', fmt: 'card' } } }, tk);
@@ -878,7 +883,7 @@ try {
     }
   }, tk);
   const rows2 = sent.length ? sent[0].body.template_card.horizontal_content_list : [];
-  check('卡片明细含「结论」且取巡检结果', rows2.some((x) => x.keyname === '结论' && x.value === '异常'), JSON.stringify(rows2));
+  check('卡片明细的「巡检结果」取真实结果', rows2.some((x) => x.keyname === '巡检结果' && x.value === '异常'), JSON.stringify(rows2));
   check('卡片明细含「附件」且列出文件名',
     rows2.some((x) => x.keyname === '附件' && x.value === '巡检报告.pdf、现场照片.jpg'), JSON.stringify(rows2));
 } finally {

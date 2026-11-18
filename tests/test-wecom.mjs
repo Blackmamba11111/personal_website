@@ -290,10 +290,39 @@ function testResultFiles() {
   check('filesText 预算内仍保留「等 N 个」', heavy.indexOf('等 3 个') > 0, heavy);
 }
 
+/* ---------- 巡检人 / 方式 / 备注 / 巡检时间（2026-11-18 第二批）---------- */
+function testVisitFields() {
+  check('TPL_VARS 含巡检四项',
+    ['inspector', 'vtime', 'mode', 'note'].every((k) => WX.TPL_VARS.indexOf(k) >= 0), WX.TPL_VARS.join(','));
+  check('modeText 映射现场/远程', WX.modeText(['onsite', 'remote']) === '现场/远程', WX.modeText(['onsite', 'remote']));
+  check('modeText 去重保序', WX.modeText(['remote', 'onsite', 'remote']) === '远程/现场', WX.modeText(['remote', 'onsite', 'remote']));
+  check('modeText 空值返回破折号', WX.modeText([]) === '—', WX.modeText([]));
+  check('inspectorText 多人斜杠相连', WX.inspectorText(['潘超', '张三']) === '潘超/张三', WX.inspectorText(['潘超', '张三']));
+  check('inspectorText 去重', WX.inspectorText(['潘超', '潘超']) === '潘超', WX.inspectorText(['潘超', '潘超']));
+  check('byModeText 合并成「人 · 方式」', WX.byModeText(['潘超'], ['onsite']) === '潘超 · 现场', WX.byModeText(['潘超'], ['onsite']));
+  check('byModeText 缺一方时只显示另一方', WX.byModeText([], ['remote']) === '远程', WX.byModeText([], ['remote']));
+  check('byModeText 全空返回破折号', WX.byModeText([], []) === '—', WX.byModeText([], []));
+
+  const shortNote = '机房环境与网络链路正常';
+  check('noteText 短备注原样输出', WX.noteText([shortNote]) === shortNote, WX.noteText([shortNote]));
+  const longNote = '机房环境与网络链路一切正常，空调运行稳定，温湿度在合理区间，UPS 电池组电压正常，核心交换机风扇无异常噪音，消防设施检查合格。';
+  const cut = WX.noteText([longNote]);
+  check('noteText 超 30 字截断并加省略号', cut.length === 31 && cut.slice(-1) === '…', cut.length + ' 字：' + cut);
+  check('noteText 多条取最长的一条',
+    WX.noteText(['短', '这是一条比较长的备注文字']) === '这是一条比较长的备注文字',
+    WX.noteText(['短', '这是一条比较长的备注文字']));
+  check('noteText 空备注返回「无」', WX.noteText(['', '  ']) === '无', WX.noteText(['', '  ']));
+
+  check('latestDate 取最新日期', WX.latestDate(['2026-09-01', '2026-11-18', '2026-03-02']) === '2026-11-18',
+    WX.latestDate(['2026-09-01', '2026-11-18', '2026-03-02']));
+  check('latestDate 空集合返回空串', WX.latestDate([]) === '', JSON.stringify(WX.latestDate([])));
+}
+
 await testRobot();
 await testApp();
 await testCard();
 testResultFiles();
+testVisitFields();
 
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 if (fail) process.exitCode = 1;

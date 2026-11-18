@@ -2131,8 +2131,8 @@
             <div class="field">
               <label for="uWxTpl">消息内容（可自定义）</label>
               <textarea id="uWxTpl" rows="6" placeholder="留空使用默认模板"></textarea>
-              <div class="hint">可用变量：{summary} {customer} {changes} {actor} {time} {date} {result} {files} {link} {count}
-                <br>{result}＝巡检结论，{files}＝附件名（群机器人卡片已在下方明细行展示，正文可不用）
+              <div class="hint">可用变量：{summary} {customer} {changes} {actor} {time} {date} {result} {files} {inspector} {vtime} {mode} {note} {link} {count}
+                <br>{inspector}＝巡检人，{vtime}＝巡检时间，{mode}＝巡检方式，{note}＝备注（群机器人卡片已在明细行展示，正文可不用）
                 <button type="button" class="wx-tpl-link" id="btnWxTplReset">恢复默认</button>
               </div>
             </div>
@@ -2291,7 +2291,7 @@
             <label for="bWxActDel"><input type="checkbox" id="bWxActDel"> 删除</label>
           </div>
           <textarea id="bWxTpl" placeholder="消息模板（留空用默认模板）" style="width:100%;min-height:76px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-sm);font-family:var(--font-mono);font-size:11.5px;line-height:1.6;"></textarea>
-          <div class="hint">变量：{summary} {customer} {changes} {actor} {time} {date} {result} {files} {link} {count}。自建应用的 corpsecret 会写入所选每个账号。</div>
+          <div class="hint">变量：{summary} {customer} {changes} {actor} {time} {date} {result} {files} {inspector} {vtime} {mode} {note} {link} {count}。自建应用的 corpsecret 会写入所选每个账号。</div>
         </div>
         <div class="hint">与单个用户弹窗里的「企业微信通知」是同一套配置：巡检记录新增 / 修改 / 删除后推消息给该账号。</div>
       </div>

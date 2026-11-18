@@ -22,11 +22,19 @@ export const WX_DEFAULT_TPL = [
   '{link}'
 ].join('\n');
 
-/* 可用变量：{summary} {customer} {changes} {actor} {time} {date} {link} {count} {result} {files}
-   {result} 巡检结论（本次变更记录的「正常 / 异常 / 其他」，多个去重后用「、」连）
-   {files}  本次变更涉及的附件名（最多列 3 个，其余显示「等 N 个」）
-   默认模板不包含后两个（群机器人卡片另在明细行里展示），需要写进正文时自行添加。 */
-export const TPL_VARS = ['summary', 'customer', 'changes', 'actor', 'time', 'date', 'link', 'count', 'result', 'files'];
+/* 可用变量：{summary} {customer} {changes} {actor} {time} {date} {link} {count}
+   {result} {files} {inspector} {vtime} {mode} {note}
+   {result}    巡检结果（「正常 / 异常 / 其他」，多个去重后用「、」连）
+   {files}     本次变更涉及的附件名（最多列 3 个，其余显示「等 N 个」）
+   {inspector} 巡检人（多人用「/」连）
+   {vtime}     巡检时间（多条取最新那条的日期）
+   {mode}      巡检方式（现场 / 远程，多个去重后用「/」连）
+   {note}      巡检备注（多条取最长的一条，超过 30 字截断）
+   默认模板不含后四项（群机器人卡片另在明细行里展示），需要写进正文时自行添加。 */
+export const TPL_VARS = [
+  'summary', 'customer', 'changes', 'actor', 'time', 'date', 'link', 'count',
+  'result', 'files', 'inspector', 'vtime', 'mode', 'note'
+];
 
 /* 巡检结果三态 → 中文。只认这三个值，空值/未知值不计入结论，
    避免老数据（没有 result 字段）被误报成「正常」。 */
@@ -69,6 +77,61 @@ export function filesText(names, maxBytes) {
   }
   if (!shown.length) return all.length + ' 个附件';
   return shown.join('、') + (shown.length < all.length ? ' 等 ' + all.length + ' 个' : '');
+}
+
+/* 巡检方式 → 中文。与前端 VISIT_MODES 保持同一套取值。 */
+export const MODE_LABEL = { onsite: '现场', remote: '远程' };
+
+/* 巡检方式列表 → 「现场」「现场/远程」；全空返回「—」 */
+export function modeText(vals) {
+  const seen = [];
+  (vals || []).forEach(function (v) {
+    const t = MODE_LABEL[v];
+    if (t && seen.indexOf(t) < 0) seen.push(t);
+  });
+  return seen.join('/') || '—';
+}
+
+/* 巡检人列表 → 「潘超」「潘超/张三」。保留出现顺序，空值忽略。 */
+export function inspectorText(vals) {
+  const seen = [];
+  (vals || []).forEach(function (v) {
+    const s = String(v == null ? '' : v).trim();
+    if (s && seen.indexOf(s) < 0) seen.push(s);
+  });
+  return seen.join('/') || '—';
+}
+
+/* 巡检人 + 方式合成一行（卡片明细行位置有限，二者合并展示）：「潘超 · 现场」 */
+export function byModeText(bys, modes) {
+  const a = inspectorText(bys), b = modeText(modes);
+  if (a === '—' && b === '—') return '—';
+  if (a === '—') return b;
+  if (b === '—') return a;
+  return a + ' · ' + b;
+}
+
+/* 备注文本：多条取最长的一条（信息量最大），超过 max 字截断加省略号。
+   多个客户/多条记录时不做拼接，避免卡片明细行被一句句话撑爆。 */
+export function noteText(notes, max) {
+  const n = max == null ? 30 : max;
+  let best = '';
+  (notes || []).forEach(function (x) {
+    const s = String(x == null ? '' : x).trim();
+    if (s.length > best.length) best = s;
+  });
+  if (!best) return '无';
+  return best.length > n ? best.slice(0, n) + '…' : best;
+}
+
+/* 一组巡检日期 → 最新那条（ISO 日期串可直接比大小）；全空返回 '' */
+export function latestDate(dates) {
+  let best = '';
+  (dates || []).forEach(function (d) {
+    const s = String(d == null ? '' : d).trim();
+    if (s && s > best) best = s;      /* YYYY-MM-DD 字典序即时间序 */
+  });
+  return best;
 }
 
 export const WX_TYPES = ['robot', 'app'];

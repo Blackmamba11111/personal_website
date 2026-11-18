@@ -1274,7 +1274,12 @@ function diffLedgerLogs(oldD, newD) {
   Object.keys(nv).forEach(function (id) {
     const v = nv[id];
     const label = cname(newD, v.customerId) + ' · ' + (v.date || '');
-    const extra = { result: v.result || '', atts: vAtts(v) };
+    /* 卡片明细要展示巡检人 / 时间 / 方式 / 备注，随日志一并带出；
+       删除时用旧记录的值（见下方 delete 分支）。 */
+    const extra = {
+      result: v.result || '', atts: vAtts(v),
+      by: v.by || '', date: v.date || '', mode: v.mode || '', note: v.note || ''
+    };
     if (!ov[id]) {
       logs.push(Object.assign({ kind: 'visit', action: 'add', target: label, detail: (v.by ? '巡检人 ' + v.by : '') }, extra));
       return;
@@ -1294,7 +1299,8 @@ function diffLedgerLogs(oldD, newD) {
         target: cname(oldD, ov[id].customerId) + ' · ' + (ov[id].date || ''),
         detail: '',
         result: ov[id].result || '',
-        atts: vAtts(ov[id])
+        atts: vAtts(ov[id]),
+        by: ov[id].by || '', date: ov[id].date || '', mode: ov[id].mode || '', note: ov[id].note || ''
       });
     }
   });
@@ -1369,13 +1375,22 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
     const byCust = new Map();
     picked.forEach(function (l) {
       const name = String(l.target || '').split(' · ')[0] || '未知客户';
-      const it = byCust.get(name) || { customer: name, add: 0, upd: 0, del: 0, results: [], files: [] };
+      const it = byCust.get(name) || {
+        customer: name, add: 0, upd: 0, del: 0,
+        results: [], files: [], bys: [], modes: [], notes: [], dates: []
+      };
       if (l.action === 'add') it.add++;
       else if (l.action === 'update') it.upd++;
       else if (l.action === 'delete') it.del++;
       /* 结论与附件按出现顺序去重：一次改多条时合并展示，不重复刷同一句话 */
       if (l.result && it.results.indexOf(l.result) < 0) it.results.push(l.result);
       (l.atts || []).forEach(function (n) { if (it.files.indexOf(n) < 0) it.files.push(n); });
+      /* 巡检人 / 方式 / 备注 / 日期：一次变更可能涉及多条记录，先原样收集，
+         跨客户汇总时再由 byModeText / noteText / latestDate 去重合并。 */
+      if (l.by) it.bys.push(l.by);
+      if (l.mode) it.modes.push(l.mode);
+      if (l.note) it.notes.push(l.note);
+      if (l.date) it.dates.push(l.date);
       byCust.set(name, it);
     });
     const items = Array.from(byCust.values());
@@ -1391,15 +1406,23 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
       if (hit && hit.id) custId = String(hit.id);
     } catch (e) { custId = ''; }
     const link = String(origin || '') + '/inspection-dashboard.html' + (custId ? '?cust=' + encodeURIComponent(custId) : '');
-    /* 结论 / 附件：跨客户合并去重，卡片明细行与 {result} {files} 变量共用同一份文本 */
-    const allResults = [];
-    const allFiles = [];
+    /* 结果 / 附件 / 巡检人 / 方式 / 备注 / 日期：跨客户合并，卡片明细行与模板变量共用同一份文本 */
+    const allResults = [], allFiles = [], allBys = [], allModes = [], allNotes = [], allDates = [];
     items.forEach(function (i) {
       (i.results || []).forEach(function (x) { if (allResults.indexOf(x) < 0) allResults.push(x); });
       (i.files || []).forEach(function (x) { if (allFiles.indexOf(x) < 0) allFiles.push(x); });
+      (i.bys || []).forEach(function (x) { allBys.push(x); });
+      (i.modes || []).forEach(function (x) { allModes.push(x); });
+      (i.notes || []).forEach(function (x) { allNotes.push(x); });
+      (i.dates || []).forEach(function (x) { allDates.push(x); });
     });
     const resultTxt = WX_P.resultText(allResults);
     const filesTxt = WX_P.filesText(allFiles);
+    const byModeTxt = WX_P.byModeText(allBys, allModes);
+    /* 备注最多 30 字，超出省略；多条取最长的一条（信息量最大） */
+    const noteTxt = WX_P.noteText(allNotes, 30);
+    /* 巡检时间取最新那条的日期；老记录没有日期时显示「—」 */
+    const vtimeTxt = WX_P.latestDate(allDates) || '—';
     const vars = {
       summary: summary,
       customer: items.map(function (i) { return i.customer; }).join('、'),
@@ -1410,29 +1433,31 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
       link: link,
       count: String(picked.length),
       result: resultTxt,
-      files: filesTxt
+      files: filesTxt,
+      inspector: WX_P.inspectorText(allBys),
+      vtime: vtimeTxt,
+      mode: WX_P.modeText(allModes),
+      note: noteTxt
     };
     const content = WX_P.fillTpl(cfg.tpl, vars);
     /* 卡片正文复用同一模板，但去掉 {link} 那一行 —— 链接已经挂在按钮上 */
     const cardDesc = WX_P.fillTpl(cfg.tpl, Object.assign({}, vars, { link: '' }))
       .replace(/\n{2,}/g, '\n').trim();
-    const sum = function (k) { return items.reduce(function (n, i) { return n + (i[k] || 0); }, 0); };
-    const bits = [];
-    if (sum('add')) bits.push('新增 ' + sum('add'));
-    if (sum('upd')) bits.push('修改 ' + sum('upd'));
-    if (sum('del')) bits.push('删除 ' + sum('del'));
     const card = {
       title: items.length === 1
         ? (items[0].customer + ' · 巡检报告已更新')
         : ('巡检报告已更新 · ' + items.length + ' 个客户'),
       desc: cardDesc,
       url: link,
+      /* 企业微信卡片明细行最多 6 项，这里按「谁巡检的、什么时候、怎么巡检、结果、备注、附件」排；
+         操作人放最后一行；变更条数由正文的 {summary} 体现，不再单列。 */
       rows: [
-        { key: '操作人', val: actorName },
-        { key: '时间', val: vars.time },
-        { key: '结论', val: resultTxt },
+        { key: '巡检人', val: byModeTxt },
+        { key: '巡检时间', val: vtimeTxt },
+        { key: '巡检结果', val: resultTxt },
+        { key: '备注', val: noteTxt },
         { key: '附件', val: filesTxt },
-        { key: '变更', val: bits.join('、') || '有更新' }
+        { key: '操作人', val: actorName }
       ]
     };
     const r = await WX_P.deliver(cfg, content, { card: card });
@@ -2276,9 +2301,13 @@ async function route(request, env, ctx) {
       date: WX_P.fmtTime(now, true),
       link: url.origin + '/inspection-dashboard.html',
       count: '0',
-      /* 测试消息给示例值，避免自定义模板里的 {result} {files} 原样露出来 */
+      /* 测试消息给示例值，避免自定义模板里的变量原样露出来 */
       result: '正常',
-      files: '巡检报告.pdf'
+      files: '巡检报告.pdf',
+      inspector: '潘超',
+      vtime: '2026-11-18',
+      mode: '现场',
+      note: '测一测备注会不会被截断成三十个字以内'
     });
     const r = await WX_P.deliver(v.cfg, content);
     await wxLogAdd(env, target, 'test', r.ok, v.cfg.type, '测试消息', r.err);
