@@ -3929,6 +3929,8 @@
   }
   /* 暴露门面工厂：自动化测试需要直接用假的 AMap 构造门面，验证图层增量更新语义 */
   window.__buildTMapFacade = buildTMapFacade;
+  /* 暴露遮挡补偿的纯几何：jsdom 里 rect 恒为 0，只有传假 rect 才能验证方向与补偿量 */
+  window.__panelOffsetOf = panelOffsetOf;
 
 
   /* ---------------- 地图 SDK：异步加载（绝不阻塞首屏） ----------------
@@ -4644,11 +4646,43 @@
   /* 点选定位时至少拉到城区级：省级视野里把一个点居中，肉眼等于没动 */
   var FOCUS_MIN_ZOOM = 12;
 
-  /* 抽屉遮挡补偿。
-     右侧抽屉盖住地图右边 dw 像素，几何中心就落在抽屉底下 —— 人眼看着左边可见区，
-     点却在中间偏右，观感就是「位置偏了」。这里返回「点相对几何中心应挪动的像素」：
-     右抽屉 → 点左移半个抽屉宽；底部抽屉 → 点上移半个抽屉高。
-     抽屉几乎铺满地图（全屏形态）时不补偿，否则会把点挤出视野。 */
+  /* 抽屉遮挡补偿（2026-11-18 重写）。
+     目标：点落在「可见区」的视觉中心 —— 即左侧客户栏右边界到右侧详情抽屉左边界的中点。
+     旧实现用 ovW >= ovH 判断抽屉贴右还是贴底，在同一块屏幕里并不可靠：
+     1920 宽下右抽屉与地图重叠 883px、而地图高约 960px，被误判成底部抽屉，
+     补偿方向由「左移」变成「上移」，点自然就歪了。
+     改为按「是否贴住容器右/下边」判断方向，补偿量取可见区中心与几何中心之差。
+     可见区过窄（<28%）时不补偿，否则会把点挤到边缘。 */
+  function panelOffsetOf(m, d) {
+    var out = { dx: 0, dy: 0 };
+    if (!m || !d) return out;
+    if (!m.width || !m.height || !d.width || !d.height) return out;
+    var ovW = Math.min(d.right, m.right) - Math.max(d.left, m.left);
+    var ovH = Math.min(d.bottom, m.bottom) - Math.max(d.top, m.top);
+    if (ovW <= 0 || ovH <= 0) return out;
+    /* 贴边判定：贴右看左边是否落在容器内且右边越过容器右；贴底同理 */
+    var attachRight = (d.left > m.left + m.width * 0.2) && (d.right > m.right - 2);
+    var attachBottom = (d.top > m.top + m.height * 0.2) && (d.bottom > m.bottom - 2);
+    if (!attachRight && !attachBottom) return out;
+    if (attachRight && attachBottom) {           /* 同时贴两边：按遮挡占比大的方向补偿 */
+      if (ovW / m.width >= ovH / m.height) attachBottom = false; else attachRight = false;
+    }
+    var cx = (m.left + m.right) / 2, cy = (m.top + m.bottom) / 2;
+    var ncx = cx, ncy = cy;
+    if (attachRight) {
+      var visW = Math.min(m.right, d.left) - m.left;
+      if (visW < m.width * 0.28) return out;
+      ncx = m.left + visW / 2;
+    } else {
+      var visH = Math.min(m.bottom, d.top) - m.top;
+      if (visH < m.height * 0.28) return out;
+      ncy = m.top + visH / 2;
+    }
+    out.dx = ncx - cx;
+    out.dy = ncy - cy;
+    return out;
+  }
+
   function mapFocusOffset() {
     var out = { dx: 0, dy: 0 };
     var mk = document.getElementById('maskDetail');
@@ -4656,14 +4690,7 @@
     var dr = mk.querySelector('.detail-drawer');
     var el = document.getElementById('map');
     if (!dr || !el) return out;
-    var d = dr.getBoundingClientRect(), m = el.getBoundingClientRect();
-    if (!d.width || !d.height || !m.width || !m.height) return out;
-    var ovW = Math.max(0, Math.min(d.right, m.right) - Math.max(d.left, m.left));
-    var ovH = Math.max(0, Math.min(d.bottom, m.bottom) - Math.max(d.top, m.top));
-    if (ovW >= m.width * 0.86 && ovH >= m.height * 0.7) return out;
-    if (ovW >= ovH) out.dx = -ovW / 2;
-    else out.dy = -ovH / 2;
-    return out;
+    return panelOffsetOf(el.getBoundingClientRect(), dr.getBoundingClientRect());
   }
 
   /* 把「点 + 屏幕位移」换算成地图中心：dx/dy 为点在屏幕上的位移量（像素）。
@@ -4703,6 +4730,17 @@
       center: new TMap.LatLng(c.lat, c.lng), radius: haloRadius()
     }]);
     showInfoFor(c);
+  }
+
+  /* 详情抽屉滑入动画（.drawer 200ms）期间 getBoundingClientRect 还在向右移动，
+     只在动画开始时对齐会少补约半个动画位移。这里先对齐一次保证立刻见效，
+     落位后再补一次，把点精确推到「左栏—详情栏」之间可见区的中心。 */
+  var focusAlignTimer = 0;
+  function alignFocusToPanels(id) {
+    if (!id || !mapReady) return;
+    focusOn(id, true);
+    clearTimeout(focusAlignTimer);
+    focusAlignTimer = setTimeout(function () { focusOn(id, true); }, 240);
   }
 
   /* ---------------- 悬浮预览：不改变选中项、不移动视野 ---------------- */
@@ -6076,8 +6114,9 @@
     openModal('maskDetail');
     scheduleMapResize();
     /* 强制对齐：抽屉此刻已展开，才能按真实遮挡把点推到「可见区」中心；
-       列表点选的 focusOn 发生在抽屉展开之前，必须在这里补一次 */
-    focusOn(id, true);
+       列表点选的 focusOn 发生在抽屉展开之前，必须在这里补一次。
+       抽屉有 200ms 滑入动画，动画期间 rect 还在变，由 alignFocusToPanels 在落位后补第二次。 */
+    alignFocusToPanels(id);
   }
 
   /* ---------------- 客户表单 ---------------- */

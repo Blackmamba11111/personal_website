@@ -276,6 +276,39 @@ setTimeout(() => {
   check('打开后弹层自动收起', !id('morePop').classList.contains('on'));
   click(d.querySelector('#maskRegion [data-close]'));
 
+  // ============ 地图遮挡补偿：点在「左栏—详情栏」可见区居中 ============
+  check('暴露遮挡补偿纯几何', typeof w.__panelOffsetOf === 'function');
+  if (typeof w.__panelOffsetOf === 'function') {
+    /* 1920×1080：地图 372→1920（宽 1548、高 960），右抽屉 1037→1920（宽 883）。
+       注意 ovW(883) < ovH(960)，旧实现按「重叠宽高比大小」会误判成底部抽屉。 */
+    const M1 = { left: 372, right: 1920, top: 56, bottom: 1016, width: 1548, height: 960 };
+    const D1 = { left: 1037, right: 1920, top: 0, bottom: 1080, width: 883, height: 1080 };
+    const o1 = w.__panelOffsetOf(M1, D1);
+    check('大屏右抽屉只做横向补偿（不再误判为底部抽屉）', o1.dy === 0 && o1.dx < 0,
+      'dx=' + o1.dx + ' dy=' + o1.dy);
+    const vis1 = (M1.left + 1037) / 2;
+    check('补偿后点落在地图与抽屉之间的可见区中心',
+      Math.abs(((M1.left + M1.right) / 2 + o1.dx) - vis1) < 0.51,
+      '实际 ' + ((M1.left + M1.right) / 2 + o1.dx) + ' / 期望 ' + vis1);
+
+    /* 底部抽屉（<1200）：只做纵向补偿，可见区 = 地图顶部到抽屉上沿 */
+    const M2 = { left: 0, right: 1200, top: 0, bottom: 600, width: 1200, height: 600 };
+    const D2 = { left: 0, right: 1200, top: 216, bottom: 600, width: 1200, height: 600 };
+    const o2 = w.__panelOffsetOf(M2, D2);
+    check('窄屏底部抽屉只做纵向补偿', o2.dx === 0 && Math.abs(o2.dy - (108 - 300)) < 0.51,
+      'dx=' + o2.dx + ' dy=' + o2.dy);
+
+    check('无遮挡时不补偿',
+      w.__panelOffsetOf(M2, { left: 1930, right: 2500, top: 0, bottom: 600, width: 570, height: 600 }).dx === 0);
+    check('可见区过窄时放弃补偿（避免把点挤出视野）',
+      w.__panelOffsetOf(M2, { left: 100, right: 1930, top: 0, bottom: 600, width: 1830, height: 600 }).dx === 0);
+  }
+  const dashSrc2 = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'inspection-dashboard.html'), 'utf8');
+  check('打开详情后等抽屉滑入落位再对齐一次',
+    /function alignFocusToPanels/.test(dashSrc2) && /alignFocusToPanels\(id\)/.test(dashSrc2) &&
+    /setTimeout\(function \(\) \{ focusOn\(id, true\); \}, 240\)/.test(dashSrc2));
+
   // ============ 输出 ============
   const pass = results.filter(r => r[0] === 'PASS').length;
   const fail = results.filter(r => r[0] === 'FAIL');

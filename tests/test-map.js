@@ -324,6 +324,55 @@ const findLayer = (rec, geomKey) => rec.layers.filter(L => L.geometries.length &
       })());
   }
 
+  /* ---------- 6. 详情抽屉打开后，客户标记落在「左栏—详情栏」可见区中心（2026-11-18） ----------
+     jsdom 的 rect 恒为 0，这里单独起一个 dom 并在点击前把 #map 与 .detail-drawer
+     的 getBoundingClientRect 打成真实布局值，走完整的「点卡片 → 开详情 → 对齐」链路。 */
+  {
+    const errors2 = [];
+    const dom2 = makeDom({
+      sessionUser: 'admin',
+      data: { admin: JSON.parse(JSON.stringify(DATA)), demo: JSON.parse(JSON.stringify(DATA)) },
+      errors: errors2,
+      installGlobals: installTMap
+    });
+    const w2 = dom2.window, d2 = w2.document;
+    await tick(300);
+    const rec2 = () => w2.__TMAP;
+    /* 1920×1080：地图 372→1920（宽 1548、高 960），右抽屉 1037→1920（宽 883）。
+       注意重叠宽 883 < 地图高 960 —— 旧实现按「重叠宽高比大小」会误判成底部抽屉。 */
+    const MAP_RECT = { left: 372, right: 1920, top: 56, bottom: 1016, width: 1548, height: 960 };
+    const DR_RECT = { left: 1037, right: 1920, top: 0, bottom: 1080, width: 883, height: 1080 };
+    w2.Element.prototype.getBoundingClientRect = function () {
+      if (this.id === 'map') return MAP_RECT;
+      if (this.classList && this.classList.contains('detail-drawer')) return DR_RECT;
+      return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    };
+    rec2().map.zoom = 15;
+    const card = d2.querySelector('#custList .card-cust');
+    const cid = card && card.getAttribute('data-id');
+    const cust = (DATA.customers || []).filter(function (c) {
+      return c.id === String(cid || '').split('::').pop();   /* 卡片 data-id 带台账作用域前缀 */
+    })[0];
+    click(w2, card);
+    await tick(320);                                  /* 等抽屉滑入落位后的二次对齐 */
+    const mc = rec2().map.center;
+    const dx = (MAP_RECT.left + DR_RECT.left) / 2 - (MAP_RECT.left + MAP_RECT.right) / 2;
+    const lngPerPx = 360 / (256 * Math.pow(2, rec2().map.zoom));
+    const expLng = cust ? cust.lng - dx * lngPerPx : NaN;
+    check('打开详情后点被推到可见区中心（横向补偿，不是上移）',
+      !!mc && Math.abs(mc.getLng() - expLng) < 1e-6 &&
+      Math.abs(mc.getLat() - (cust ? cust.lat : 0)) < 1e-6,
+      mc ? '中心 ' + mc.getLng().toFixed(5) + ',' + mc.getLat().toFixed(5) +
+        ' / 期望 ' + expLng.toFixed(5) : '无中心');
+    /* 换算回屏幕：地图中心相对客户坐标右移 441.5px，等价于点落在可见区中心（372+1037)/2=704.5 */
+    const pxFromCenter = (mc && cust) ? (mc.getLng() - cust.lng) / lngPerPx : NaN;
+    check('补偿量 = 可见区中心与几何中心之差（-441.5px）',
+      Math.abs(pxFromCenter - (-dx)) < 0.5 && Math.abs(dx + 441.5) < 0.5,
+      'dx=' + dx.toFixed(1) + ' 中心右移=' + pxFromCenter.toFixed(1) + 'px');
+    check('遮挡补偿未触发运行期错误', errors2.length === 0, errors2.join('; '));
+    w2.close();
+  }
+
   w.close();
 
   const pass = results.filter(r => r[0] === 'PASS').length;
