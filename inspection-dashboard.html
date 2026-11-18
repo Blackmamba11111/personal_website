@@ -2083,6 +2083,15 @@
                 <input type="text" id="uWxHook" autocomplete="off" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx">
                 <div class="hint" id="uWxHookHint">在企业微信目标群点右上角「⋯」→「群机器人」→ 添加机器人 → 复制 Webhook 地址。</div>
               </div>
+              <div class="field">
+                <label for="uWxPhone">企业微信手机号</label>
+                <input type="text" id="uWxPhone" autocomplete="off" placeholder="如 13800138000，只填一个">
+                <div class="hint" id="uWxPhoneHint">用于「卡片之后 @ 归属人」。须与企业微信通讯录里的手机号一致，且该人在这个群里；留空则不 @。</div>
+              </div>
+              <div class="field">
+                <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uWxAt"> 台账已共享时 @ 我（归属人）</label>
+                <div class="hint">企业微信卡片没有 @ 位，开启后在卡片之后补发一条「巡检台账已更新…」的文本并 @ 该人。未共享的台账只有本人看，不会 @。</div>
+              </div>
             </div>
             <div id="uWxAppWrap" style="display:none;">
               <div style="display:flex;gap:10px;">
@@ -2271,6 +2280,8 @@
           </select>
           <div id="bWxRobotWrap">
             <input type="text" id="bWxHook" placeholder="Webhook 地址（https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…）" style="margin-bottom:8px;">
+            <input type="text" id="bWxPhone" placeholder="企业微信手机号（用于 @ 归属人；留空保留各账号原值）" style="margin-bottom:8px;">
+            <label style="display:flex;align-items:center;gap:7px;cursor:pointer;margin-bottom:8px;font-size:12px;"><input type="checkbox" id="bWxAt" checked> 台账已共享时 @ 该账号（归属人）</label>
           </div>
           <div id="bWxAppWrap" style="display:none;">
             <div style="display:flex;gap:8px;margin-bottom:8px;">
@@ -9753,6 +9764,8 @@
     document.getElementById('bWxMode').value = 'on';
     document.getElementById('bWxType').value = 'robot';
     document.getElementById('bWxHook').value = '';
+    document.getElementById('bWxPhone').value = '';
+    document.getElementById('bWxAt').checked = true;
     document.getElementById('bWxCorpId').value = '';
     document.getElementById('bWxAgentId').value = '';
     document.getElementById('bWxSecret').value = '';
@@ -9868,6 +9881,10 @@
         } else {
           bwx.hook = document.getElementById('bWxHook').value.trim();
           if (!bwx.hook) { toast('请填写群机器人 Webhook 地址'); return; }
+          /* 手机号留空表示「各账号保留原值」，批量不误清已有配置 */
+          var bwxPhone = document.getElementById('bWxPhone').value.trim();
+          if (bwxPhone) bwx.phone = bwxPhone;
+          bwx.atOwner = document.getElementById('bWxAt').checked ? 1 : 0;
         }
       }
       basePatch.wx = bwx;
@@ -10282,6 +10299,8 @@
       ? '已保存密钥，留空即保持原值；填写则覆盖。'
       : '只保存在服务端，不会回显。';
     document.getElementById('uWxTo').value = w.to || '';
+    document.getElementById('uWxPhone').value = w.phone || '';
+    document.getElementById('uWxAt').checked = w.atOwner !== false;
     document.getElementById('uWxFmt').value = (w.fmt === 'text' || w.fmt === 'markdown') ? w.fmt : 'card';
     document.getElementById('uWxSkipSelf').checked = !!w.skipSelf;
     wxActsWrite(U_WX_ACT, w.acts);
@@ -10304,6 +10323,8 @@
       corpid: document.getElementById('uWxCorpId').value.trim(),
       agentid: document.getElementById('uWxAgentId').value.trim(),
       to: document.getElementById('uWxTo').value.trim(),
+      phone: document.getElementById('uWxPhone').value.trim(),
+      atOwner: document.getElementById('uWxAt').checked ? 1 : 0,
       fmt: document.getElementById('uWxFmt').value,
       tpl: document.getElementById('uWxTpl').value,
       skipSelf: document.getElementById('uWxSkipSelf').checked,

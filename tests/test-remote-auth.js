@@ -352,6 +352,7 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('勾选启用后展开参数区', id('uWxBody').style.display === 'block', id('uWxBody').style.display);
     check('默认接入方式为群机器人', id('uWxRobotWrap').style.display === 'block' && id('uWxAppWrap').style.display === 'none');
     check('消息形式默认卡片', id('uWxFmt').value === 'card', id('uWxFmt').value);
+    check('@ 归属人默认勾选', id('uWxAt').checked === true, String(id('uWxAt').checked));
     check('触发动作默认三个全勾',
       id('uWxActAdd').checked && id('uWxActUpd').checked && id('uWxActDel').checked,
       [id('uWxActAdd').checked, id('uWxActUpd').checked, id('uWxActDel').checked].join(','));
@@ -364,6 +365,7 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     const wxHook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcd1234';
     id('uWxHook').value = wxHook;
     id('uWxTo').value = '13800138000';
+    id('uWxPhone').value = '139 0013 9000';
     id('uWxTpl').value = '【巡检】{summary}';
     id('uWxFmt').value = 'text';
     /* 触发动作收窄：取消「修改」，只留新增 + 删除 */
@@ -376,6 +378,8 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('接收人保存', wu && wu.wx.to === '13800138000', wu && wu.wx.to);
     check('自定义模板保存', wu && wu.wx.tpl === '【巡检】{summary}', wu && wu.wx.tpl);
     check('消息形式保存', wu && wu.wx.fmt === 'text', wu && wu.wx.fmt);
+    check('企业微信手机号保存（去空格）', wu && wu.wx.phone === '13900139000', wu && wu.wx.phone);
+    check('@ 归属人开关随用户保存', wu && wu.wx.atOwner === true, wu && JSON.stringify(wu.wx.atOwner));
     check('触发动作按勾选保存（未勾修改）', wu && JSON.stringify(wu.wx.acts) === '["add","delete"]',
       wu && JSON.stringify(wu.wx.acts));
     check('列表出现「机器人」标记',
@@ -387,6 +391,8 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('编辑时提示已保存', id('uWxHookHint').textContent.indexOf('已保存') >= 0, id('uWxHookHint').textContent);
     check('编辑时回填模板', id('uWxTpl').value === '【巡检】{summary}', id('uWxTpl').value);
     check('编辑时回填消息形式', id('uWxFmt').value === 'text', id('uWxFmt').value);
+    check('编辑时回填企业微信手机号', id('uWxPhone').value === '13900139000', id('uWxPhone').value);
+    check('编辑时回填 @ 归属人开关', id('uWxAt').checked === true, String(id('uWxAt').checked));
     check('编辑时回填触发动作',
       id('uWxActAdd').checked && !id('uWxActUpd').checked && id('uWxActDel').checked,
       [id('uWxActAdd').checked, id('uWxActUpd').checked, id('uWxActDel').checked].join(','));
@@ -432,6 +438,7 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     fire(w, id('bWxMode'), 'change');
     check('启用模式显示参数区', id('bWxDetail').style.display === 'block', id('bWxDetail').style.display);
     id('bWxHook').value = wxHook;
+    id('bWxPhone').value = '13700137000';
     id('bWxFmt').value = 'markdown';
     id('bWxActUpd').checked = false;
     id('bWxActDel').checked = false;
@@ -441,6 +448,7 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('批量启用的消息形式已下发', wu3 && wu3.wx.fmt === 'markdown', wu3 && wu3.wx.fmt);
     check('批量启用的触发动作已下发', wu3 && wu3.wx.enabled && JSON.stringify(wu3.wx.acts) === '["add"]',
       wu3 && JSON.stringify(wu3.wx));
+    check('批量下发的企业微信手机号生效', wu3 && wu3.wx.phone === '13700137000', wu3 && wu3.wx.phone);
 
     w.close();
   }

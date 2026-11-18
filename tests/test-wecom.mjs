@@ -323,11 +323,52 @@ function testVisitFields() {
   check('latestDate 空集合返回空串', WX.latestDate([]) === '', JSON.stringify(WX.latestDate([])));
 }
 
+/* ---------- 卡片之后的 @ 提醒 + 手机号配置（2026-11-18 第三批） ---------- */
+async function testMention() {
+  const hook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc-123';
+  let hit = null;
+  const fake = async (url, init) => {
+    hit = { url: String(url), body: JSON.parse(init.body) };
+    return { ok: true, json: async () => ({ errcode: 0, errmsg: 'ok' }) };
+  };
+
+  let r = await WX.sendMention({ hook: hook, phone: '13800138000' }, '台账已更新', { fetch: fake });
+  check('sendMention 发 text 并带 mentioned_mobile_list',
+    r.ok && hit.body.msgtype === 'text' &&
+    JSON.stringify(hit.body.text.mentioned_mobile_list) === '["13800138000"]',
+    JSON.stringify(hit && hit.body));
+  check('sendMention 正文原样发送', hit.body.text.content === '台账已更新');
+
+  hit = null;
+  r = await WX.sendMention({ hook: hook, phone: '' }, 'x', { fetch: fake });
+  check('没填手机号时跳过发送', r.ok === true && r.skipped === 'no-phone' && hit === null, JSON.stringify(r));
+
+  hit = null;
+  r = await WX.sendMention({ hook: 'https://example.com/x', phone: '13800138000' }, 'x', { fetch: fake });
+  check('Webhook 非法时跳过', r.ok === false && r.skipped === 'bad-hook' && hit === null, JSON.stringify(r));
+
+  /* 配置项：手机号归一化 + @ 开关默认值 */
+  let n = WX.normalizeWx({ type: 'robot', hook: hook, enabled: 1, phone: '139 0013 9000' }, {});
+  check('手机号保存时去掉空格与横线', !n.err && n.cfg.phone === '13900139000', JSON.stringify(n));
+  n = WX.normalizeWx({ type: 'robot', hook: hook, enabled: 1, phone: '138-0013-8000' }, {});
+  check('手机号允许带横线', !n.err && n.cfg.phone === '13800138000', JSON.stringify(n.cfg && n.cfg.phone));
+  n = WX.normalizeWx({ type: 'robot', hook: hook, enabled: 1, phone: '13800138000,13900139000' }, {});
+  check('手机号只接受单个号码', !!n.err && /手机号/.test(n.err), JSON.stringify(n));
+  n = WX.normalizeWx({ type: 'robot', hook: hook, enabled: 1 }, {});
+  check('@ 归属人默认开启', !n.err && n.cfg.atOwner === 1, JSON.stringify(n.cfg && n.cfg.atOwner));
+  n = WX.normalizeWx({ type: 'robot', hook: hook, enabled: 1, atOwner: 0 }, {});
+  check('@ 归属人可关闭', !n.err && n.cfg.atOwner === 0, JSON.stringify(n.cfg && n.cfg.atOwner));
+  n = WX.normalizeWx({ type: 'robot', hook: hook, enabled: 1 }, { phone: '13800138000', atOwner: 0 });
+  check('未提交时沿用旧手机号与开关', !n.err && n.cfg.phone === '13800138000' && n.cfg.atOwner === 0,
+    JSON.stringify(n.cfg && [n.cfg.phone, n.cfg.atOwner]));
+}
+
 await testRobot();
 await testApp();
 await testCard();
 testResultFiles();
 testVisitFields();
+await testMention();
 
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 if (fail) process.exitCode = 1;

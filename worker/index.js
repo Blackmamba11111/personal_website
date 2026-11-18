@@ -129,6 +129,8 @@ function nowIso() { return new Date().toISOString(); }
    投递逻辑在 ./wecom-notify.mjs（与内网版共用）；本段只做配置归一化与脱敏视图。
    密钥（webhook 的 key / corpsecret）只落库，接口一律只回「已设置」或掩码。 */
 const WX_HOOK_RE = /^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=[A-Za-z0-9_-]+$/;
+/* 企业微信手机号（@ 归属人用）：单号，允许 + 国家码 */
+const WX_PHONE_RE = /^\+?\d{5,20}$/;
 /* 触发动作（新增/修改/删除）合集，顺序与前端、wecom-notify.mjs 保持一致 */
 const WX_ACTS = ['add', 'update', 'delete'];
 /* v 未传 = 沿用 base；base 也没有 = 全选（兼容没有 acts 字段的旧配置） */
@@ -172,6 +174,10 @@ function wxView(enabled, raw) {
     agentid: c.agentid || '',
     hasSecret: !!c.secret,
     to: to,
+    /* 手机号只用于「卡片后补发一条 @ 归属人」，与接收人(to) 解耦 */
+    phone: c.phone || '',
+    /* @ 归属人开关：默认开；关闭后卡片就是最后一条消息 */
+    atOwner: c.atOwner !== undefined ? !!c.atOwner : true,
     tpl: c.tpl || '',
     skipSelf: !!c.skipSelf,
     /* 消息形式：card（默认，带跳转卡片）/ text / markdown */
@@ -194,6 +200,8 @@ function ensureWxInput(input, base) {
     secret: base.secret || '',
     agentid: base.agentid || '',
     to: base.to || '',
+    phone: base.phone || '',
+    atOwner: base.atOwner !== undefined ? (base.atOwner ? 1 : 0) : 1,
     tpl: base.tpl || '',
     skipSelf: base.skipSelf ? 1 : 0,
     fmt: wxNormFmt(undefined, base.fmt),
@@ -214,6 +222,12 @@ function ensureWxInput(input, base) {
   if (input.secret) cfg.secret = String(input.secret).trim();
   if (input.clearSecret) cfg.secret = '';
   if (input.to !== undefined) cfg.to = wxSplitTo(input.to).join(', ');
+  if (input.phone !== undefined) {
+    const ph = String(input.phone || '').replace(/[\s()（）-]/g, '');
+    if (ph && !WX_PHONE_RE.test(ph)) return { err: '企业微信手机号格式不正确（只填一个号码，可带 + 与国家码）' };
+    cfg.phone = ph;
+  }
+  if (input.atOwner !== undefined) cfg.atOwner = input.atOwner ? 1 : 0;
   if (input.tpl !== undefined) {
     const t = String(input.tpl || '');
     if (t.length > 2000) return { err: '消息模板最多 2000 字' };
@@ -1358,6 +1372,24 @@ async function displayNameOf(env, username) {
   if (!r) return username;
   return String(r.name_cn || '').trim() || r.name || username;
 }
+/* 卡片之后的 @ 提醒。触发条件见配置说明：群机器人 + 手机号 + 已共享台账。 */
+async function notifyMention(env, ownerName, cfg, items, count, link) {
+  if (!cfg || cfg.type !== 'robot' || !cfg.atOwner) return;
+  if (!String(cfg.phone || '').trim()) return;
+  /* 非卡片形态或填了接收人时，主消息本身就是带 @ 的文本，不再补发 */
+  if (wxNormFmt(undefined, cfg.fmt) !== 'card') return;
+  if (wxSplitTo(cfg.to).length) return;
+  if (!(await hasSharedTo(env, ownerName))) return;
+  try {
+    const names = items.map(function (i) { return i.customer; }).join('、');
+    const text = '巡检台账已更新：' + names + '（' + count + ' 条变更），请查看。\n' + link;
+    const r = await WX_P.sendMention(cfg, text);
+    if (!r || r.skipped) return;
+    await wxLogAdd(env, ownerName, 'mention', r.ok, cfg.type, '提醒 ' + names, r.err);
+  } catch (e) {
+    console.error('[wx] @ 提醒失败：' + (e && e.message));
+  }
+}
 async function notifyVisitChange(env, ownerName, actor, logs, origin) {
   try {
     const vs = (logs || []).filter(function (l) { return l.kind === 'visit' && l.action; });
@@ -1461,6 +1493,7 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
     };
     const r = await WX_P.deliver(cfg, content, { card: card });
     await wxLogAdd(env, row.username, 'notify', r.ok, cfg.type, String(summary).split('\n')[0], r.err);
+    await notifyMention(env, row.username, cfg, items, picked.length, link);
   } catch (e) {
     console.error('[wx] 巡检通知失败：' + (e && e.message));
   }

@@ -168,6 +168,9 @@ export function actAllowed(cfg, action) {
 
 const HOOK_RE = /^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=[A-Za-z0-9_-]+$/;
 
+/* 企业微信手机号（@ 用）：单号，允许 + 国家码；不接受逗号，多号请用「接收人」 */
+export const PHONE_RE = /^\+?\d{5,20}$/;
+
 /* 接收人列表：「13800138000, lizhi」→ ['13800138000','lizhi']（同时兼容手机号与 userid） */
 export function splitTo(v) {
   return String(v == null ? '' : v)
@@ -280,6 +283,41 @@ export function tplCardOf(card) {
 const CARD_ERR = [40058, 40035, 40008, 40004, 44004, 40003, 40002];
 
 /* ---------------- 群机器人 ---------------- */
+/* 向群机器人 POST 一份报文。企业微信把业务错误放在 body.errcode 里，
+   HTTP 200 也可能是失败，所以两处都要判。 */
+async function postRobot(hook, body, f) {
+  try {
+    const r = await f(hook, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    let j = null;
+    try { j = await r.json(); } catch (e) { j = null; }
+    if (!r.ok) return { ok: false, err: 'HTTP ' + r.status };
+    if (!j || j.errcode !== 0) return { ok: false, err: (j && j.errmsg) || '企业微信返回异常', code: (j && j.errcode) };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, err: (e && e.message) || '网络错误' };
+  }
+}
+
+/* 卡片没有 @ 位。需要提醒某人时，在卡片之后再补发一条纯文本
+   —— 企业微信只有 text 支持 mentioned_mobile_list。
+   phones 为空直接跳过（skipped），调用方据此不记流水。 */
+export async function sendMention(cfg, content, opts) {
+  opts = opts || {};
+  const f = opts.fetch || fetch;
+  const hook = String((cfg && cfg.hook) || '').trim();
+  if (!HOOK_RE.test(hook)) return { ok: false, skipped: 'bad-hook', err: 'Webhook 地址格式不正确' };
+  const phones = splitTo(opts.phones != null ? opts.phones : cfg.phone);
+  if (!phones.length) return { ok: true, skipped: 'no-phone' };
+  return postRobot(hook, {
+    msgtype: 'text',
+    text: { content: String(content || ''), mentioned_mobile_list: phones }
+  }, f);
+}
+
 export async function sendRobot(cfg, content, opts) {
   opts = opts || {};
   const f = opts.fetch || fetch;
@@ -303,22 +341,7 @@ export async function sendRobot(cfg, content, opts) {
   else if (fmt === 'markdown') body = phones.length ? textBody() : mdBody();
   else body = fallbackBody();   /* 卡片 + @人 / 卡片缺数据 → 文本（保住 @ 提醒与发送） */
 
-  const post = async function (b) {
-    try {
-      const r = await f(hook, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(b)
-      });
-      let j = null;
-      try { j = await r.json(); } catch (e) { j = null; }
-      if (!r.ok) return { ok: false, err: 'HTTP ' + r.status };
-      if (!j || j.errcode !== 0) return { ok: false, err: (j && j.errmsg) || '企业微信返回异常', code: (j && j.errcode) };
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, err: (e && e.message) || '网络错误' };
-    }
-  };
+  const post = function (b) { return postRobot(hook, b, f); };
 
   const r = await post(body);
   if (r.ok || body.msgtype !== 'template_card') return r;
@@ -440,6 +463,8 @@ export function normalizeWx(input, base) {
     secret: base.secret || '',
     agentid: base.agentid || '',
     to: base.to || '',
+    phone: base.phone || '',
+    atOwner: base.atOwner !== undefined ? (base.atOwner ? 1 : 0) : 1,
     tpl: base.tpl || '',
     skipSelf: base.skipSelf ? 1 : 0,
     fmt: normFmt(undefined, base.fmt),
@@ -457,6 +482,12 @@ export function normalizeWx(input, base) {
   if (input.secret) cfg.secret = String(input.secret).trim();
   if (input.clearSecret) cfg.secret = '';
   if (input.to !== undefined) cfg.to = splitTo(input.to).join(', ');
+  if (input.phone !== undefined) {
+    const ph = String(input.phone || '').replace(/[\s()（）-]/g, '');
+    if (ph && !PHONE_RE.test(ph)) return { err: '企业微信手机号格式不正确（只填一个号码，可带 + 与国家码）' };
+    cfg.phone = ph;
+  }
+  if (input.atOwner !== undefined) cfg.atOwner = input.atOwner ? 1 : 0;
   if (input.tpl !== undefined) {
     const t = String(input.tpl || '');
     if (t.length > 2000) return { err: '消息模板最多 2000 字' };

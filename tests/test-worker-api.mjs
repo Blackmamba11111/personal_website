@@ -888,6 +888,50 @@ try {
   check('卡片明细的「巡检结果」取真实结果', rows2.some((x) => x.keyname === '巡检结果' && x.value === '异常'), JSON.stringify(rows2));
   check('卡片明细含「附件」且列出文件名',
     rows2.some((x) => x.keyname === '附件' && x.value === '巡检报告.pdf、现场照片.jpg'), JSON.stringify(rows2));
+
+  /* ---------- 卡片之后 @ 归属人（2026-11-18 第三批） ----------
+     企业微信卡片没有 @ 位，因此卡片之后再补一条 text。
+     三个条件必须同时成立：群机器人 + 填了手机号且开关开 + 该台账已共享（有下家）。 */
+  r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', fmt: 'card', phone: '139 0013 9000', atOwner: 1 } } }, tk);
+  check('手机号去空格后保存', r.data.user.wx.phone === '13900139000', JSON.stringify(r.data.user.wx.phone));
+  check('@ 归属人开关可回传', r.data.user.wx.atOwner === true, JSON.stringify(r.data.user.wx.atOwner));
+
+  sent = [];
+  await putVisits(kept.concat([{ id: 'wv30', customerId: 'wc1', date: '2026-11-26', by: '张三', note: '' }]));
+  check('未共享的台账只发卡片、不 @ 人',
+    sent.length === 1 && sent[0].body.msgtype === 'template_card',
+    sent.length + ' 条 ' + JSON.stringify(sent.map((x) => x.body.msgtype)));
+
+  r = await api('/users', { method: 'POST', body: { username: 'wxdown', name: '共享下家', password: 'Down@123', shareFrom: 'wxu' } }, tk);
+  check('创建下家使台账变为已共享', r.ok === true && r.data.user.shareFrom === 'wxu', JSON.stringify(r));
+
+  sent = [];
+  await putVisits(kept.concat([
+    { id: 'wv30', customerId: 'wc1', date: '2026-11-26', by: '张三', note: '' },
+    { id: 'wv31', customerId: 'wc1', date: '2026-11-27', by: '张三', note: '' }
+  ]));
+  check('台账已共享时，卡片之后补一条 @ 归属人的文本',
+    sent.length === 2 && sent[0].body.msgtype === 'template_card' && sent[1].body.msgtype === 'text',
+    sent.length + ' 条 ' + JSON.stringify(sent.map((x) => x.body.msgtype)));
+  check('@ 文本带 mentioned_mobile_list',
+    sent.length === 2 && JSON.stringify(sent[1].body.text.mentioned_mobile_list) === '["13900139000"]',
+    sent.length === 2 ? JSON.stringify(sent[1].body.text.mentioned_mobile_list) : '未发送');
+  check('@ 文本含客户名与条数',
+    sent.length === 2 && /衡水银行/.test(sent[1].body.text.content) && /1 条变更/.test(sent[1].body.text.content),
+    sent.length === 2 ? sent[1].body.text.content : '未发送');
+
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, atOwner: 0 } } }, tk);
+  sent = [];
+  await putVisits(kept.concat([
+    { id: 'wv30', customerId: 'wc1', date: '2026-11-26', by: '张三', note: '' },
+    { id: 'wv31', customerId: 'wc1', date: '2026-11-27', by: '张三', note: '' },
+    { id: 'wv32', customerId: 'wc1', date: '2026-11-28', by: '张三', note: '' }
+  ]));
+  check('关掉「@ 归属人」后不再补发', sent.length === 1, sent.length + ' 条');
+
+  /* 复位：手机号清空、开关恢复；下家删除，避免影响后续用例 */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, phone: '', atOwner: 1 } } }, tk);
+  await api('/users/wxdown', { method: 'DELETE' }, tk);
 } finally {
   globalThis.fetch = realFetch;
 }

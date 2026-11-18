@@ -58,6 +58,8 @@ function userView(u) {
         agentid: w.agentid || '',
         hasSecret: !!w.secret,
         to: to,
+        phone: w.phone || '',
+        atOwner: w.atOwner !== undefined ? !!w.atOwner : true,
         tpl: w.tpl || '',
         skipSelf: !!w.skipSelf,
         fmt: (w.fmt === 'text' || w.fmt === 'markdown') ? w.fmt : 'card',
@@ -87,6 +89,7 @@ function applyWx(base, input) {
     type: b.type === 'app' ? 'app' : 'robot',
     hook: b.hook || '', corpid: b.corpid || '', secret: b.secret || '',
     agentid: b.agentid || '', to: b.to || '', tpl: b.tpl || '', skipSelf: !!b.skipSelf,
+    phone: b.phone || '', atOwner: b.atOwner !== undefined ? !!b.atOwner : true,
     fmt: (b.fmt === 'text' || b.fmt === 'markdown') ? b.fmt : 'card',
     acts: (Array.isArray(b.acts) && b.acts.length) ? b.acts.slice() : ['add', 'update', 'delete']
   };
@@ -104,6 +107,8 @@ function applyWx(base, input) {
   if (input.agentid !== undefined) cfg.agentid = String(input.agentid || '').trim();
   if (input.secret) cfg.secret = String(input.secret).trim();
   if (input.to !== undefined) cfg.to = String(input.to || '').trim();
+  if (input.phone !== undefined) cfg.phone = String(input.phone || '').replace(/[\s()（）-]/g, '');
+  if (input.atOwner !== undefined) cfg.atOwner = !!input.atOwner;
   if (input.tpl !== undefined) cfg.tpl = String(input.tpl || '');
   if (input.skipSelf !== undefined) cfg.skipSelf = !!input.skipSelf;
   if (input.fmt !== undefined) cfg.fmt = (input.fmt === 'text' || input.fmt === 'markdown') ? input.fmt : 'card';
