@@ -46,9 +46,12 @@ COPY . .
 
 RUN mkdir -p /data /data/preview
 
-EXPOSE 18080
+# 实际对外端口由 docker-compose.yml 决定（8443 HTTPS / 8080 跳转），这里只作声明
+EXPOSE 8443 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=8s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||18080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# 健康检查独立成文件：协议按 TLS_CERT 自适应（HTTPS 时忽略自签证书），端口读 PORT。
+# 不要改回内联的 `http://…:${PORT}` —— 那会让开了 TLS 的容器永远 unhealthy。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["node", "/app/healthcheck.js"]
 
 CMD ["node", "server.js"]

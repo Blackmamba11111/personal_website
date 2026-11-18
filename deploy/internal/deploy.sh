@@ -18,9 +18,13 @@ TS=$(date +%Y%m%d-%H%M)
 # 动态加载的共享模块，必须与 server.js 同级；源文件放在 worker/ 下供两版服务端共用）
 # Dockerfile / office-cjk.conf 决定镜像是否带 LibreOffice + 中文字体（附件转 PDF 预览），
 # 必须一起同步，否则服务器永远用旧镜像、转换功能不生效。
-SRC_FILES=(deploy/internal/server.js index.html inspection-dashboard.html worker/auth-protocols.mjs worker/crm-client.mjs worker/wecom-notify.mjs deploy/internal/Dockerfile deploy/internal/office-cjk.conf)
-DST_FILES=(server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs wecom-notify.mjs Dockerfile office-cjk.conf)
-REMOTE_LIST="server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs wecom-notify.mjs Dockerfile office-cjk.conf"
+# healthcheck.js / docker-compose.yml 也必须纳入 ——
+#   这两者决定「容器健康状态是否可信」和「端口/环境变量」：
+#   曾经 compose 只在服务器上手工改成 1.2.0（443/8443 + TLS），仓库还停在 1.1.0（18080），
+#   健康检查按 18080 明文探测，容器连续 unhealthy 35 小时却无人发现。
+SRC_FILES=(deploy/internal/server.js index.html inspection-dashboard.html worker/auth-protocols.mjs worker/crm-client.mjs worker/wecom-notify.mjs deploy/internal/Dockerfile deploy/internal/office-cjk.conf deploy/internal/healthcheck.js deploy/internal/docker-compose.yml)
+DST_FILES=(server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs wecom-notify.mjs Dockerfile office-cjk.conf healthcheck.js docker-compose.yml)
+REMOTE_LIST="server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs wecom-notify.mjs Dockerfile office-cjk.conf healthcheck.js docker-compose.yml"
 
 # --verify：只做 git ↔ 内网一致性校验，不上传、不重建
 VERIFY_ONLY=false
@@ -113,6 +117,12 @@ echo "==> 部署前校验：CRM 客户端模块必须存在（询盘云台账关
 echo "==> 部署前校验：企业微信通知模块必须存在（巡检报告更新推送依赖它）"
 [ -f "$REPO_ROOT/worker/wecom-notify.mjs" ] || { echo '!! worker/wecom-notify.mjs 缺失，终止'; exit 1; }
 
+echo "==> 部署前校验：健康检查脚本与编排文件必须存在（端口 / TLS / healthy 判定依赖它）"
+[ -f "$REPO_ROOT/deploy/internal/healthcheck.js" ] || { echo '!! deploy/internal/healthcheck.js 缺失，终止'; exit 1; }
+[ -f "$REPO_ROOT/deploy/internal/docker-compose.yml" ] || { echo '!! deploy/internal/docker-compose.yml 缺失，终止'; exit 1; }
+grep -q 'TLS_CERT' "$REPO_ROOT/deploy/internal/docker-compose.yml" || { echo '!! docker-compose.yml 缺少 TLS 配置，终止'; exit 1; }
+grep -q 'healthcheck.js' "$REPO_ROOT/deploy/internal/Dockerfile" || { echo '!! Dockerfile 未引用 healthcheck.js，终止'; exit 1; }
+
 echo "==> 部署前校验：Dockerfile 必须安装 LibreOffice 与中文字体（附件原样预览依赖它）"
 grep -q 'libreoffice-writer' "$REPO_ROOT/deploy/internal/Dockerfile" || { echo '!! Dockerfile 缺少 LibreOffice，终止'; exit 1; }
 grep -q 'fonts-noto-cjk' "$REPO_ROOT/deploy/internal/Dockerfile" || { echo '!! Dockerfile 缺少中文字体，终止'; exit 1; }
@@ -146,7 +156,27 @@ $SSH "cd $REMOTE_DIR && docker compose build 2>&1 | tail -3 && docker compose up
 
 echo "==> 健康检查"
 sleep 4
-$SSH "curl -sk https://127.0.0.1/healthz && echo && docker compose -f $REMOTE_DIR/docker-compose.yml ps --format '{{.Status}}'" </dev/null
+$SSH "curl -sk https://127.0.0.1/healthz && echo" </dev/null
+
+# 容器自身的 HEALTHCHECK：unhealthy 意味着「探针的协议/端口」与「服务实际监听」脱节，
+# 服务可能完全可用，但监控会一直报警（曾经连续 unhealthy 35 小时没人发现）。
+# 因此这里必须等出明确结论，而不是只看一次 curl。
+echo "==> 容器健康状态（最多等 90 秒）"
+$SSH '
+  s=""
+  for i in $(seq 1 30); do
+    s=$(docker inspect -f "{{.State.Health.Status}}" inspection-ledger 2>/dev/null || echo "")
+    [ "$s" = "healthy" ] && break
+    sleep 3
+  done
+  echo "    状态: ${s:-unknown}"
+  if [ "$s" != "healthy" ]; then
+    echo "    最近探针输出："
+    docker inspect --format "{{json .State.Health.Log}}" inspection-ledger 2>/dev/null | tail -c 600
+    echo
+  fi
+  [ "$s" = "healthy" ]
+' </dev/null || { echo '!! 容器健康检查未通过（探针与端口/协议不匹配，或服务未就绪）'; exit 1; }
 
 echo
 RC=0

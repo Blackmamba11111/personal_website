@@ -1,17 +1,30 @@
+# 内网实例编排（10.1.114.115）
+#
+# 【必须与仓库一致】本文件已纳入 deploy.sh 的一致性校验：
+#   git HEAD 与 /opt/inspection/docker-compose.yml 必须逐字节相同。
+#   曾因为本文件没纳入校验，服务器上跑的是 1.2.0（443/8443 + TLS），
+#   仓库里还是 1.1.0（18080 明文），导致容器健康检查按 18080 探测、连续失败。
+#   改端口 / 环境变量请改这里，不要在服务器上直接编辑。
 services:
   inspection:
     build: .
-    image: inspection-ledger:1.1.0
+    image: inspection-ledger:1.2.0
     container_name: inspection-ledger
     restart: unless-stopped
     init: true
     ports:
-      - "18080:18080"
+      - "443:8443"     # HTTPS（对外主入口）
+      - "80:8080"      # 明文入口，仅 301 跳转到 HTTPS
     volumes:
       - ./data:/data
+      - ./certs:/certs:ro
     environment:
       - TZ=Asia/Shanghai
-      - PORT=18080
+      - PORT=8443
+      - HTTPS_PORT=443
+      - HTTP_REDIRECT_PORT=8080
+      - TLS_CERT=/certs/server.crt
+      - TLS_KEY=/certs/server.key
     logging:
       driver: json-file
       options:

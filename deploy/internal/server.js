@@ -2913,7 +2913,7 @@ const MIME = {
   '.map': 'application/json; charset=utf-8'
 };
 const COMPRESSIBLE = /^(text\/|application\/(javascript|json)|image\/svg)/;
-const BLOCKED = /^\/(server\.js|auth-protocols\.mjs|crm-client\.mjs|wecom-notify\.mjs|package(-lock)?\.json|Dockerfile|docker-compose\.yml|\.dockerignore|data\/|node_modules\/|\.git\/|tests\/|worker\/)/;
+const BLOCKED = /^\/(server\.js|healthcheck\.js|auth-protocols\.mjs|crm-client\.mjs|wecom-notify\.mjs|package(-lock)?\.json|Dockerfile|docker-compose\.yml|\.dockerignore|data\/|node_modules\/|\.git\/|tests\/|worker\/)/;
 
 const cache = new Map(); // key: file:mtime:size -> { buf, gz, br }
 const CACHE_MAX = 40;
