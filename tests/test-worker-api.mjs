@@ -892,7 +892,7 @@ try {
   /* ---------- 卡片之后 @ 归属人（2026-11-18 第三批） ----------
      企业微信卡片没有 @ 位，因此卡片之后再补一条 text。
      三个条件必须同时成立：群机器人 + 填了手机号且开关开 + 该台账已共享（有下家）。 */
-  r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', fmt: 'card', phone: '139 0013 9000', atOwner: 1 } } }, tk);
+  r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', fmt: 'card', phone: '139 0013 9000', atOwner: 1, tpl: '' } } }, tk);
   check('手机号去空格后保存', r.data.user.wx.phone === '13900139000', JSON.stringify(r.data.user.wx.phone));
   check('@ 归属人开关可回传', r.data.user.wx.atOwner === true, JSON.stringify(r.data.user.wx.atOwner));
 
@@ -916,9 +916,13 @@ try {
   check('@ 文本带 mentioned_mobile_list',
     sent.length === 2 && JSON.stringify(sent[1].body.text.mentioned_mobile_list) === '["13900139000"]',
     sent.length === 2 ? JSON.stringify(sent[1].body.text.mentioned_mobile_list) : '未发送');
-  check('@ 文本含客户名与条数',
-    sent.length === 2 && /衡水银行/.test(sent[1].body.text.content) && /1 条变更/.test(sent[1].body.text.content),
-    sent.length === 2 ? sent[1].body.text.content : '未发送');
+  check('@ 文本与卡片正文同一模板（正文一致、多一行链接）', (function () {
+    if (sent.length !== 2) return false;
+    const d = String(sent[0].body.template_card.sub_title_text || '');
+    const t = String(sent[1].body.text.content || '');
+    return d.indexOf('衡水银行') > 0 && t.indexOf(d) === 0
+      && /inspection-dashboard\.html\?cust=wc1/.test(t) && /【巡检台账已更新】/.test(t);
+  })(), sent.length === 2 ? sent[1].body.text.content : '未发送');
 
   await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, atOwner: 0 } } }, tk);
   sent = [];

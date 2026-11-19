@@ -2090,7 +2090,7 @@
               </div>
               <div class="field">
                 <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" id="uWxAt"> 台账已共享时 @ 我（归属人）</label>
-                <div class="hint">企业微信卡片没有 @ 位，开启后在卡片之后补发一条「巡检台账已更新…」的文本并 @ 该人。未共享的台账只有本人看，不会 @。</div>
+                <div class="hint">企业微信卡片没有 @ 位，开启后在卡片之后补发一条与卡片正文同源的文本并 @ 该人。未共享的台账只有本人看，不会 @。</div>
               </div>
             </div>
             <div id="uWxAppWrap" style="display:none;">
@@ -2138,9 +2138,9 @@
               <div class="hint">开启后，只有别人改动该账号的台账才推送，自己录完不打扰自己。</div>
             </div>
             <div class="field">
-              <label for="uWxTpl">消息内容（可自定义）</label>
+                <label for="uWxTpl">消息内容（可自定义）</label>
               <textarea id="uWxTpl" rows="6" placeholder="留空使用默认模板"></textarea>
-              <div class="hint">可用变量：{summary} {customer} {changes} {actor} {time} {date} {result} {files} {inspector} {vtime} {mode} {note} {link} {count}
+              <div class="hint">卡片正文与 @ 归属人的文本共用这一份模板（@ 的文本是多一行链接的纯文本）。可用变量：{summary} {customer} {changes} {actor} {time} {date} {result} {files} {inspector} {vtime} {mode} {note} {link} {count}
                 <br>{inspector}＝巡检人，{vtime}＝巡检时间，{mode}＝巡检方式，{note}＝备注（群机器人卡片已在明细行展示，正文可不用）
                 <button type="button" class="wx-tpl-link" id="btnWxTplReset">恢复默认</button>
               </div>
@@ -10304,7 +10304,7 @@
     document.getElementById('uWxFmt').value = (w.fmt === 'text' || w.fmt === 'markdown') ? w.fmt : 'card';
     document.getElementById('uWxSkipSelf').checked = !!w.skipSelf;
     wxActsWrite(U_WX_ACT, w.acts);
-    document.getElementById('uWxTpl').value = w.tpl || '';
+    document.getElementById('uWxTpl').value = w.tpl || WX_DEFAULT_TPL;
     var out = document.getElementById('uWxTestOut');
     out.textContent = ''; out.style.color = '';
     var logBox = document.getElementById('uWxLog');
@@ -10317,6 +10317,8 @@
   }
   /* 收集表单值。hook / secret 留空表示「不修改」——服务端按 base 合并，不会清空 */
   function collectWx() {
+    /* 与默认模板一字不差时按「留空」提交：以后默认模板升级，这些账号自动跟随 */
+    var tplVal = document.getElementById('uWxTpl').value;
     var wx = {
       enabled: document.getElementById('uWxOn').checked,
       type: document.getElementById('uWxType').value === 'app' ? 'app' : 'robot',
@@ -10326,7 +10328,7 @@
       phone: document.getElementById('uWxPhone').value.trim(),
       atOwner: document.getElementById('uWxAt').checked ? 1 : 0,
       fmt: document.getElementById('uWxFmt').value,
-      tpl: document.getElementById('uWxTpl').value,
+      tpl: tplVal.trim() === WX_DEFAULT_TPL ? '' : tplVal,
       skipSelf: document.getElementById('uWxSkipSelf').checked,
       acts: wxActsRead(U_WX_ACT)
     };

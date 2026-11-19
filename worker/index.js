@@ -1372,20 +1372,22 @@ async function displayNameOf(env, username) {
   if (!r) return username;
   return String(r.name_cn || '').trim() || r.name || username;
 }
-/* 卡片之后的 @ 提醒。触发条件见配置说明：群机器人 + 手机号 + 已共享台账。 */
-async function notifyMention(env, ownerName, cfg, items, count, link) {
+/* 卡片之后的 @ 提醒。触发条件见配置说明：群机器人 + 手机号 + 已共享台账。
+   文案与卡片同源：直接用「消息内容」模板的渲染结果（含 {link} 行，文本消息能带链接），
+   不再写死一句话，改模板时卡片正文与 @ 文本一起变。 */
+async function notifyMention(env, ownerName, cfg, text, label) {
   if (!cfg || cfg.type !== 'robot' || !cfg.atOwner) return;
   if (!String(cfg.phone || '').trim()) return;
   /* 非卡片形态或填了接收人时，主消息本身就是带 @ 的文本，不再补发 */
   if (wxNormFmt(undefined, cfg.fmt) !== 'card') return;
   if (wxSplitTo(cfg.to).length) return;
+  const body = String(text || '').trim();
+  if (!body) return;
   if (!(await hasSharedTo(env, ownerName))) return;
   try {
-    const names = items.map(function (i) { return i.customer; }).join('、');
-    const text = '巡检台账已更新：' + names + '（' + count + ' 条变更），请查看。\n' + link;
-    const r = await WX_P.sendMention(cfg, text);
+    const r = await WX_P.sendMention(cfg, body);
     if (!r || r.skipped) return;
-    await wxLogAdd(env, ownerName, 'mention', r.ok, cfg.type, '提醒 ' + names, r.err);
+    await wxLogAdd(env, ownerName, 'mention', r.ok, cfg.type, '提醒 ' + (label || ''), r.err);
   } catch (e) {
     console.error('[wx] @ 提醒失败：' + (e && e.message));
   }
@@ -1493,7 +1495,7 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
     };
     const r = await WX_P.deliver(cfg, content, { card: card });
     await wxLogAdd(env, row.username, 'notify', r.ok, cfg.type, String(summary).split('\n')[0], r.err);
-    await notifyMention(env, row.username, cfg, items, picked.length, link);
+    await notifyMention(env, row.username, cfg, content, items.map(function (i) { return i.customer; }).join('、'));
   } catch (e) {
     console.error('[wx] 巡检通知失败：' + (e && e.message));
   }

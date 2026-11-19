@@ -1498,21 +1498,22 @@ function displayNameOf(username) {
 /* 卡片之后的 @ 提醒（企业微信卡片没有 @ 位，只有 text 支持 mentioned_mobile_list）。
    三个条件同时满足才发：① 群机器人通道（自建应用是 touser 直推，不需要 @）；
    ② 填了企业微信手机号且开了「@ 归属人」；③ 该台账已共享给人（有下家）。
-   未共享的台账只有归属者本人看，@ 自己没有意义，因此不发。 */
-async function notifyMention(ownerName, cfg, items, count, link) {
+   未共享的台账只有归属者本人看，@ 自己没有意义，因此不发。
+   文案与卡片同源：直接复用「消息内容」模板的渲染结果（text 能带 {link}），改模板两条一起变。 */
+async function notifyMention(ownerName, cfg, text, label) {
   if (!cfg || cfg.type !== 'robot' || !cfg.atOwner) return;
   if (!String(cfg.phone || '').trim()) return;
   /* 非卡片形态（text / markdown）或填了接收人时，主消息本身已经是带 @ 的文本，不再补发 */
   if (wxNormFmt(undefined, cfg.fmt) !== 'card') return;
   if (wxSplitTo(cfg.to).length) return;
+  const body = String(text || '').trim();
+  if (!body) return;
   if (!hasSharedTo(ownerName)) return;
   try {
     const mod = await loadWxMod();
-    const names = items.map(function (i) { return i.customer; }).join('、');
-    const text = '巡检台账已更新：' + names + '（' + count + ' 条变更），请查看。\n' + link;
-    const r = await mod.sendMention(cfg, text);
+    const r = await mod.sendMention(cfg, body);
     if (!r || r.skipped) return;
-    wxLogAdd(ownerName, 'mention', r.ok, cfg.type, '提醒 ' + names, r.err);
+    wxLogAdd(ownerName, 'mention', r.ok, cfg.type, '提醒 ' + (label || ''), r.err);
   } catch (e) {
     console.error('[wx] @ 提醒失败：' + (e && e.message));
   }
@@ -1621,7 +1622,7 @@ async function notifyVisitChange(ownerName, actor, logs, req) {
     };
     const r = await mod.deliver(cfg, content, { card: card });
     wxLogAdd(row.username, 'notify', r.ok, cfg.type, String(summary).split('\n')[0], r.err);
-    await notifyMention(row.username, cfg, items, picked.length, link);
+    await notifyMention(row.username, cfg, content, items.map(function (i) { return i.customer; }).join('、'));
   } catch (e) {
     console.error('[wx] 巡检通知失败：' + (e && e.message));
   }
