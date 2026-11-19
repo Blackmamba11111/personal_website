@@ -1372,26 +1372,8 @@ async function displayNameOf(env, username) {
   if (!r) return username;
   return String(r.name_cn || '').trim() || r.name || username;
 }
-/* 卡片之后的 @ 提醒。触发条件见配置说明：群机器人 + 手机号 + 已共享台账。
-   文案与卡片同源：直接用「消息内容」模板的渲染结果（含 {link} 行，文本消息能带链接），
-   不再写死一句话，改模板时卡片正文与 @ 文本一起变。 */
-async function notifyMention(env, ownerName, cfg, text, label) {
-  if (!cfg || cfg.type !== 'robot' || !cfg.atOwner) return;
-  if (!String(cfg.phone || '').trim()) return;
-  /* 非卡片形态或填了接收人时，主消息本身就是带 @ 的文本，不再补发 */
-  if (wxNormFmt(undefined, cfg.fmt) !== 'card') return;
-  if (wxSplitTo(cfg.to).length) return;
-  const body = String(text || '').trim();
-  if (!body) return;
-  if (!(await hasSharedTo(env, ownerName))) return;
-  try {
-    const r = await WX_P.sendMention(cfg, body);
-    if (!r || r.skipped) return;
-    await wxLogAdd(env, ownerName, 'mention', r.ok, cfg.type, '提醒 ' + (label || ''), r.err);
-  } catch (e) {
-    console.error('[wx] @ 提醒失败：' + (e && e.message));
-  }
-}
+/* 卡片之后的 @ 提醒已取消（2026-11-19）：勾选「@ 归属人」后主消息直接走带 @ 的文本，
+   不再发卡片，也就没有第二条。sendMention 仍保留在模块里供自检 / 未来复用。 */
 async function notifyVisitChange(env, ownerName, actor, logs, origin) {
   try {
     const vs = (logs || []).filter(function (l) { return l.kind === 'visit' && l.action; });
@@ -1495,9 +1477,15 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
         { key: '附件', val: filesTxt }
       ]
     };
-    const r = await WX_P.deliver(cfg, content, { card: card });
+    /* 「@ 归属人」勾选后主消息改走文本、不再发卡片 —— 卡片没有 @ 位，发卡片还得再补一条
+       内容重复的文本。手机号留空视为没配，仍走卡片；是否真 @ 看台账有没有共享出去。 */
+    const atPhone = String(cfg.phone || '').trim();
+    const atOn = cfg.type === 'robot' && cfg.atOwner && atPhone;
+    const atList = (atOn && await hasSharedTo(env, row.username)) ? [atPhone] : [];
+    /* 勾了就按纯文本发（fmt 临时改 text），否则卡片被拿掉时会掉进 markdown 兜底 */
+    const wcfg = atOn ? Object.assign({}, cfg, { fmt: 'text' }) : cfg;
+    const r = await WX_P.deliver(wcfg, content, { card: atOn ? null : card, atPhones: atList });
     await wxLogAdd(env, row.username, 'notify', r.ok, cfg.type, String(summary).split('\n')[0], r.err);
-    await notifyMention(env, row.username, cfg, content, items.map(function (i) { return i.customer; }).join('、'));
   } catch (e) {
     console.error('[wx] 巡检通知失败：' + (e && e.message));
   }

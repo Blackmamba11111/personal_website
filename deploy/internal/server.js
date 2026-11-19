@@ -1495,29 +1495,8 @@ function displayNameOf(username) {
   if (!r) return username;
   return (r.name_cn || '').trim() || r.name || username;
 }
-/* 卡片之后的 @ 提醒（企业微信卡片没有 @ 位，只有 text 支持 mentioned_mobile_list）。
-   三个条件同时满足才发：① 群机器人通道（自建应用是 touser 直推，不需要 @）；
-   ② 填了企业微信手机号且开了「@ 归属人」；③ 该台账已共享给人（有下家）。
-   未共享的台账只有归属者本人看，@ 自己没有意义，因此不发。
-   文案与卡片同源：直接复用「消息内容」模板的渲染结果（text 能带 {link}），改模板两条一起变。 */
-async function notifyMention(ownerName, cfg, text, label) {
-  if (!cfg || cfg.type !== 'robot' || !cfg.atOwner) return;
-  if (!String(cfg.phone || '').trim()) return;
-  /* 非卡片形态（text / markdown）或填了接收人时，主消息本身已经是带 @ 的文本，不再补发 */
-  if (wxNormFmt(undefined, cfg.fmt) !== 'card') return;
-  if (wxSplitTo(cfg.to).length) return;
-  const body = String(text || '').trim();
-  if (!body) return;
-  if (!hasSharedTo(ownerName)) return;
-  try {
-    const mod = await loadWxMod();
-    const r = await mod.sendMention(cfg, body);
-    if (!r || r.skipped) return;
-    wxLogAdd(ownerName, 'mention', r.ok, cfg.type, '提醒 ' + (label || ''), r.err);
-  } catch (e) {
-    console.error('[wx] @ 提醒失败：' + (e && e.message));
-  }
-}
+/* 卡片之后的 @ 提醒已取消（2026-11-19）：勾选「@ 归属人」后主消息直接走带 @ 的文本，
+   不再发卡片，也就没有第二条。sendMention 仍保留在模块里供自检 / 未来复用。 */
 /* 台账变更 → 给数据归属者推一条消息。同一个客户的多条变更合并成一行。 */
 async function notifyVisitChange(ownerName, actor, logs, req) {
   try {
@@ -1622,9 +1601,15 @@ async function notifyVisitChange(ownerName, actor, logs, req) {
         { key: '附件', val: filesTxt }
       ]
     };
-    const r = await mod.deliver(cfg, content, { card: card });
+    /* 「@ 归属人」勾选后主消息改走文本、不再发卡片 —— 卡片没有 @ 位，发卡片还得再补一条
+       内容重复的文本。手机号留空视为没配，仍走卡片；是否真 @ 看台账有没有共享出去。 */
+    const atPhone = String(cfg.phone || '').trim();
+    const atOn = cfg.type === 'robot' && cfg.atOwner && atPhone;
+    const atList = (atOn && hasSharedTo(row.username)) ? [atPhone] : [];
+    /* 勾了就按纯文本发（fmt 临时改 text），否则卡片被拿掉时会掉进 markdown 兜底 */
+    const wcfg = atOn ? Object.assign({}, cfg, { fmt: 'text' }) : cfg;
+    const r = await mod.deliver(wcfg, content, { card: atOn ? null : card, atPhones: atList });
     wxLogAdd(row.username, 'notify', r.ok, cfg.type, String(summary).split('\n')[0], r.err);
-    await notifyMention(row.username, cfg, content, items.map(function (i) { return i.customer; }).join('、'));
   } catch (e) {
     console.error('[wx] 巡检通知失败：' + (e && e.message));
   }

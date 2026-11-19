@@ -889,17 +889,17 @@ try {
   check('卡片明细含「附件」且列出文件名',
     rows2.some((x) => x.keyname === '附件' && x.value === '巡检报告.pdf、现场照片.jpg'), JSON.stringify(rows2));
 
-  /* ---------- 卡片之后 @ 归属人（2026-11-18 第三批） ----------
-     企业微信卡片没有 @ 位，因此卡片之后再补一条 text。
-     三个条件必须同时成立：群机器人 + 填了手机号且开关开 + 该台账已共享（有下家）。 */
+  /* ---------- 「@ 归属人」= 用文本替代卡片（2026-11-19 改） ----------
+     勾选后主消息直接走 text（带 @），不再发卡片，所以只会有一条消息。
+     是否真 @ 看台账有没有共享出去；手机号留空视为没配，仍走卡片。 */
   r = await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, type: 'robot', hook: wxHook, to: '', fmt: 'card', phone: '139 0013 9000', atOwner: 1, tpl: '' } } }, tk);
   check('手机号去空格后保存', r.data.user.wx.phone === '13900139000', JSON.stringify(r.data.user.wx.phone));
   check('@ 归属人开关可回传', r.data.user.wx.atOwner === true, JSON.stringify(r.data.user.wx.atOwner));
 
   sent = [];
   await putVisits(kept.concat([{ id: 'wv30', customerId: 'wc1', date: '2026-11-26', by: '张三', note: '' }]));
-  check('未共享的台账只发卡片、不 @ 人',
-    sent.length === 1 && sent[0].body.msgtype === 'template_card',
+  check('未共享时停发卡片，改发不带 @ 的文本',
+    sent.length === 1 && sent[0].body.msgtype === 'text' && !sent[0].body.text.mentioned_mobile_list,
     sent.length + ' 条 ' + JSON.stringify(sent.map((x) => x.body.msgtype)));
 
   r = await api('/users', { method: 'POST', body: { username: 'wxdown', name: '共享下家', password: 'Down@123', shareFrom: 'wxu' } }, tk);
@@ -910,20 +910,17 @@ try {
     { id: 'wv30', customerId: 'wc1', date: '2026-11-26', by: '张三', note: '' },
     { id: 'wv31', customerId: 'wc1', date: '2026-11-27', by: '张三', note: '' }
   ]));
-  check('台账已共享时，卡片之后补一条 @ 归属人的文本',
-    sent.length === 2 && sent[0].body.msgtype === 'template_card' && sent[1].body.msgtype === 'text',
+  check('已共享时只发一条带 @ 的文本、不再发卡片',
+    sent.length === 1 && sent[0].body.msgtype === 'text' &&
+    JSON.stringify(sent[0].body.text.mentioned_mobile_list) === '["13900139000"]',
     sent.length + ' 条 ' + JSON.stringify(sent.map((x) => x.body.msgtype)));
-  check('@ 文本带 mentioned_mobile_list',
-    sent.length === 2 && JSON.stringify(sent[1].body.text.mentioned_mobile_list) === '["13900139000"]',
-    sent.length === 2 ? JSON.stringify(sent[1].body.text.mentioned_mobile_list) : '未发送');
-  check('@ 文本与卡片正文同一模板（标题 + 正文 + 链接）', (function () {
-    if (sent.length !== 2) return false;
-    const d = String(sent[0].body.template_card.sub_title_text || '');
-    const t = String(sent[1].body.text.content || '');
-    return d.indexOf('衡水银行') === 0 && t.indexOf(d) > 0
-      && t.indexOf('衡水银行 · 巡检台账已更新') === 0
+  check('文本内容 = 模板全貌（标题 + 明细 + 链接）', (function () {
+    if (sent.length !== 1) return false;
+    const t = String(sent[0].body.text.content || '');
+    return t.indexOf('衡水银行 · 巡检台账已更新') === 0
+      && /巡检人：/.test(t) && /附件：/.test(t)
       && /inspection-dashboard\.html\?cust=wc1/.test(t);
-  })(), sent.length === 2 ? sent[1].body.text.content : '未发送');
+  })(), sent.length === 1 ? sent[0].body.text.content : '未发送');
 
   await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, atOwner: 0 } } }, tk);
   sent = [];
@@ -932,7 +929,8 @@ try {
     { id: 'wv31', customerId: 'wc1', date: '2026-11-27', by: '张三', note: '' },
     { id: 'wv32', customerId: 'wc1', date: '2026-11-28', by: '张三', note: '' }
   ]));
-  check('关掉「@ 归属人」后不再补发', sent.length === 1, sent.length + ' 条');
+  check('取消勾选后恢复卡片', sent.length === 1 && sent[0].body.msgtype === 'template_card',
+    sent.length + ' 条 ' + JSON.stringify(sent.map((x) => x.body.msgtype)));
 
   /* 卡片结构由模板决定（2026-11-19）：模板里只写「巡检结果」→ 卡片就只显示这一行 */
   await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, tpl: '{title}\n{summary}\n巡检结果：{result}' } } }, tk);
@@ -950,6 +948,20 @@ try {
   check('模板首行 {title} → 卡片主标题',
     sent.length === 1 && sent[0].body.template_card.main_title.title === '衡水银行 · 巡检台账已更新',
     sent.length ? sent[0].body.template_card.main_title.title : '未发送');
+
+  /* 勾了开关但没填手机号 → 视为没配，仍走卡片 */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, phone: '', atOwner: 1, tpl: '' } } }, tk);
+  sent = [];
+  await putVisits(kept.concat([
+    { id: 'wv30', customerId: 'wc1', date: '2026-11-26', by: '张三', note: '' },
+    { id: 'wv31', customerId: 'wc1', date: '2026-11-27', by: '张三', note: '' },
+    { id: 'wv32', customerId: 'wc1', date: '2026-11-28', by: '张三', note: '' },
+    { id: 'wv33', customerId: 'wc1', date: '2026-11-29', by: '张三', result: 'issue', note: '' },
+    { id: 'wv34', customerId: 'wc1', date: '2026-11-30', by: '张三', result: 'ok', note: '' }
+  ]));
+  check('勾了开关但没填手机号 → 仍发卡片',
+    sent.length === 1 && sent[0].body.msgtype === 'template_card',
+    sent.length + ' 条 ' + JSON.stringify(sent.map((x) => x.body.msgtype)));
 
   /* 复位：手机号清空、开关恢复；下家删除，避免影响后续用例 */
   await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, phone: '', atOwner: 1, tpl: '' } } }, tk);

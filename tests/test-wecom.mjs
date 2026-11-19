@@ -217,7 +217,23 @@ async function testCard() {
   f = rec({ errcode: 0 });
   r = await WX.sendRobot({ hook: hook, fmt: 'card', to: '13800138000' }, '文本', { fetch: f, card: card });
   check('群机器人：配了接收人时卡片让位给 @', r.ok && f.hits[0].body.msgtype === 'text', f.hits[0].body.msgtype);
-  check('群机器人：@ 手机号仍在', JSON.stringify(f.hits[0].body.text.mentioned_mobile_list) === '["13800138000"]');
+
+  /* atPhones（归属人手机号）也走 text；与接收人去重，不重复 @ */
+  f = rec({ errcode: 0 });
+  r = await WX.sendRobot({ hook: hook, fmt: 'card' }, '文本', { fetch: f, card: card, atPhones: ['13900139000'] });
+  check('atPhones 让卡片让位给 @',
+    r.ok && f.hits[0].body.msgtype === 'text' &&
+    JSON.stringify(f.hits[0].body.text.mentioned_mobile_list) === '["13900139000"]',
+    JSON.stringify(f.hits[0].body));
+  f = rec({ errcode: 0 });
+  r = await WX.sendRobot({ hook: hook, fmt: 'card', to: '13900139000' }, '文本', { fetch: f, card: card, atPhones: ['13900139000'] });
+  check('atPhones 与接收人重复时只 @ 一次',
+    JSON.stringify(f.hits[0].body.text.mentioned_mobile_list) === '["13900139000"]',
+    JSON.stringify(f.hits[0].body.text.mentioned_mobile_list));
+  f = rec({ errcode: 0 });
+  await WX.sendRobot({ hook: hook, fmt: 'card', to: '13800138000' }, '文本', { fetch: f, card: card });
+  check('群机器人：接收人的 @ 手机号仍在', JSON.stringify(f.hits[0].body.text.mentioned_mobile_list) === '["13800138000"]',
+    JSON.stringify(f.hits[0].body.text.mentioned_mobile_list));
 
   /* 纯文本 / Markdown 两种显式选择 */
   f = rec({ errcode: 0 });

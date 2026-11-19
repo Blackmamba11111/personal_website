@@ -365,7 +365,13 @@ export async function sendRobot(cfg, content, opts) {
   const f = opts.fetch || fetch;
   const hook = String((cfg && cfg.hook) || '').trim();
   if (!HOOK_RE.test(hook)) return { ok: false, err: 'Webhook 地址格式不正确（应以 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key= 开头）' };
-  const phones = splitTo(cfg.to);
+  /* atPhones：卡片之外要 @ 的人（归属人手机号）。是否已共享由调用方判定，
+     这里只管去重合并 —— 一旦有 @ 就只能发 text，卡片没有 @ 位。 */
+  const phones = [];
+  splitTo(cfg.to).concat(opts.atPhones || []).forEach(function (p) {
+    const s = String(p || '').trim();
+    if (s && phones.indexOf(s) < 0) phones.push(s);
+  });
   const card = (opts.card && opts.card.url) ? opts.card : null;
   const fmt = normFmt(cfg.fmt, undefined);
 
