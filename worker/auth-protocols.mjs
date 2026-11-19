@@ -688,6 +688,7 @@ export async function oidcExchange(cfg, endpoints, o) {
   const timeout = Math.min(15000, Math.max(3000, (parseInt(cfg && cfg.timeout, 10) || 8) * 1000));
   let last = null;
   let triedBoth = false;
+  let failAuth = false;
   for (let i = 0; i < order.length; i++) {
     const mode = order[i];
     const ctl = typeof AbortController === 'function' ? new AbortController() : null;
@@ -718,13 +719,21 @@ export async function oidcExchange(cfg, endpoints, o) {
     const errCode = String((data && data.error) || '');
     const m = data && (data.error_description || data.error);
     last = { ok: false, code: 'http' + r.status, message: '换取令牌失败：' + (m || ('HTTP ' + r.status)) };
+    const authRejected = errCode === 'invalid_client' || r.status === 401;
+    /* invalid_grant 说明客户端凭据已被平台认可（只是授权码本身无效），
+       把这次的方式记下来，下次直接用它，省掉一次 401。 */
+    if (errCode === 'invalid_grant') TOKEN_AUTH_MEMO.set(tokenAuthKey(cfg), mode);
     /* 只有「客户端认证方式不被接受」才值得换另一种重试：授权码无效/过期重试无意义，
        而且失败的那次 401 不会消耗授权码，所以换法重试是安全的。 */
-    const canRetry = errCode === 'invalid_client' || r.status === 401;
-    if (!canRetry || i === order.length - 1) break;
+    if (!authRejected || i === order.length - 1) {
+      failAuth = authRejected;
+      break;
+    }
     triedBoth = true;
   }
-  if (triedBoth && last) last.message += '（已分别用 HTTP Basic 与表单两种方式提交客户端凭据，请核对 Client Secret）';
+  if (triedBoth && failAuth && last) {
+    last.message += '（已分别用 HTTP Basic 与表单两种方式提交客户端凭据，请核对 Client Secret）';
+  }
   return last || { ok: false, code: 'http', message: '换取令牌失败' };
 }
 

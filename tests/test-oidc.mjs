@@ -159,6 +159,25 @@ const fGrant = mockFetch({ '/token': { ok: false, status: 400, json: async () =>
 const exGrant = await P.oidcExchange(cfgGrant, P.oidcEndpoints(cfgGrant, {}), { code: 'c', redirectUri: 'r', fetch: fGrant });
 check('invalid_grant 不触发换法重试', !exGrant.ok && fGrant.hits.length === 1, fGrant.hits.length + ' 次');
 
+/* 换法之后拿到 invalid_grant：说明凭据没问题（只是码无效），提示不该甩锅给 Client Secret */
+const cfgMix = { issuer: 'https://mix.example.com', clientId: 'c5', clientSecret: 's1' };
+function mixFetch() {
+  return mockFetch({
+    '/token': (init) => (init.headers && init.headers.authorization)
+      ? { ok: false, status: 401, json: async () => ({ error: 'invalid_client' }) }
+      : { ok: false, status: 400, json: async () => ({ error: 'invalid_grant', error_description: 'authorization code is invalid' }) }
+  });
+}
+const fMix = mixFetch();
+const exMix = await P.oidcExchange(cfgMix, P.oidcEndpoints(cfgMix, {}), { code: 'c', redirectUri: 'r', fetch: fMix });
+check('换法后失败于授权码时不误导为密钥问题',
+  !exMix.ok && /authorization code is invalid/.test(exMix.message) && !/Client Secret/.test(exMix.message),
+  exMix.message);
+const fMix2 = mixFetch();
+await P.oidcExchange(cfgMix, P.oidcEndpoints(cfgMix, {}), { code: 'c', redirectUri: 'r', fetch: fMix2 });
+check('平台认可过的方式会被记住（凭据被接受即记）', fMix2.hits.length === 1 && !fMix2.hits[0].init.headers.authorization,
+  fMix2.hits.length + ' 次');
+
 /* ---------- ID Token 验签 ---------- */
 const kp = await WC.subtle.generateKey(
   { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
