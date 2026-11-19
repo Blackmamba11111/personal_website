@@ -159,6 +159,17 @@ CREATE TABLE IF NOT EXISTS ledger_logs (
   at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_logs_owner ON ledger_logs(username, at);
+/* 多认证源绑定（2026-11-19）：一个账号可同时挂多个认证源，登录以本表为准；
+   users.source / server_id 降级为「主绑定」快照，供旧界面与旧接口读取。 */
+CREATE TABLE IF NOT EXISTS user_auth_sources (
+  username    TEXT NOT NULL,
+  server_id   TEXT NOT NULL,
+  external_id TEXT NOT NULL DEFAULT '',
+  is_primary  INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (username, server_id)
+);
+CREATE INDEX IF NOT EXISTS idx_uas_server ON user_auth_sources(server_id);
 CREATE TABLE IF NOT EXISTS crm_config (
   k          TEXT PRIMARY KEY,               -- 固定 'main'（单行配置）
   v          TEXT NOT NULL                   -- JSON：loginName / password / intervalHours / lastSyncAt / lastResult / session
@@ -219,6 +230,17 @@ try {
   });
 } catch (e) {
   console.error('[migrate] users 账号来源列处理失败：' + (e && e.message));
+}
+
+/* 一次性回填：历史单源账号转成一条主绑定。已存在则跳过，可反复执行。 */
+try {
+  const n = db.prepare(
+    'INSERT OR IGNORE INTO user_auth_sources (username, server_id, external_id, is_primary, created_at) ' +
+    "SELECT username, server_id, '', 1, ? FROM users WHERE server_id <> '' AND source <> 'local'"
+  ).run(nowIso()).changes;
+  if (n) console.log('[migrate] 认证源绑定回填 ' + n + ' 条');
+} catch (e) {
+  console.error('[migrate] 认证源绑定回填失败：' + (e && e.message));
 }
 
 /* ---------------- 基础工具 ---------------- */
@@ -483,6 +505,86 @@ function serversMap() {
   db.prepare('SELECT * FROM auth_servers').all().forEach(function (r) { out[r.id] = r; });
   return out;
 }
+
+/* ---------------- 多认证源绑定 ----------------
+   user_auth_sources 是登录的唯一依据；users.source / server_id 只是主绑定快照。
+   排序固定为「主源在前」，登录时按该顺序逐个尝试口令型认证源。 */
+function bindingsOf(username) {
+  try {
+    return db.prepare(
+      'SELECT b.server_id, b.external_id, b.is_primary, s.name, s.type, s.enabled, s.host, s.port, s.cfg ' +
+      'FROM user_auth_sources b LEFT JOIN auth_servers s ON s.id = b.server_id ' +
+      'WHERE b.username = ? ORDER BY b.is_primary DESC, b.created_at'
+    ).all(username);
+  } catch (e) { return []; }
+}
+function bindingsAll() {
+  const out = {};
+  try {
+    db.prepare(
+      'SELECT b.username, b.server_id, b.external_id, b.is_primary, s.name, s.type, s.enabled ' +
+      'FROM user_auth_sources b LEFT JOIN auth_servers s ON s.id = b.server_id ' +
+      'ORDER BY b.is_primary DESC, b.created_at'
+    ).all().forEach(function (b) { (out[b.username] = out[b.username] || []).push(b); });
+  } catch (e) { /* 表未建立时按无绑定处理 */ }
+  return out;
+}
+function bindView(b) {
+  return {
+    serverId: b.server_id,
+    name: b.name || '（认证源已删除）',
+    type: b.type || '',
+    sso: isSsoType(b.type),
+    enabled: b.enabled == null ? true : !!b.enabled,
+    externalId: b.external_id || '',
+    primary: !!b.is_primary
+  };
+}
+/* 给用户视图补上多源信息：一次查全表再分发，避免逐账号查询 */
+function attachBindings(users) {
+  const bmap = bindingsAll();
+  users.forEach(function (x) {
+    const list = bmap[x.username] || [];
+    x.authSources = list.map(bindView);
+    x.serverIds = list.map(function (b) { return b.server_id; });
+  });
+  return users;
+}
+function normServerIds(body) {
+  let raw = body ? body.serverIds : undefined;
+  if (raw === undefined && body && body.serverId !== undefined) raw = [body.serverId];
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) raw = [raw];
+  const out = [];
+  raw.forEach(function (v) {
+    const s = String(v == null ? '' : v).trim();
+    if (s && out.indexOf(s) < 0) out.push(s);
+  });
+  return out;
+}
+function resolveServers(ids) {
+  const servers = [];
+  for (const id of ids) {
+    const srv = db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(id);
+    if (!srv) return { err: '所选认证服务器不存在' };
+    if (!srv.enabled) return { err: '所选认证服务器「' + srv.name + '」已停用' };
+    servers.push(srv);
+  }
+  return { servers: servers };
+}
+/* 整体重写某个账号的绑定：第一条为主源，并同步 users 快照 */
+function setBindings(username, servers) {
+  db.prepare('DELETE FROM user_auth_sources WHERE username = ?').run(username);
+  servers.forEach(function (srv, i) {
+    db.prepare(
+      'INSERT INTO user_auth_sources (username, server_id, external_id, is_primary, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(username, srv.id, '', i === 0 ? 1 : 0, nowIso());
+  });
+  const p = servers[0] || null;
+  db.prepare('UPDATE users SET source = ?, server_id = ? WHERE username = ?')
+    .run(p ? p.type : 'local', p ? p.id : '', username);
+  return p;
+}
 function serverView(row, userCount) {
   const cfg = parseCfg(row.cfg);
   const sso = isSsoType(row.type);
@@ -517,7 +619,7 @@ function serverView(row, userCount) {
 }
 function listServers() {
   const counts = {};
-  db.prepare("SELECT server_id, COUNT(*) AS n FROM users WHERE server_id <> '' GROUP BY server_id")
+  db.prepare('SELECT server_id, COUNT(*) AS n FROM user_auth_sources GROUP BY server_id')
     .all().forEach(function (r) { counts[r.server_id] = r.n; });
   return db.prepare('SELECT * FROM auth_servers ORDER BY created_at').all()
     .map(function (r) { return serverView(r, counts[r.id] || 0); });
@@ -1645,6 +1747,7 @@ function bundleFor(u) {
   } else {
     users = [mapUser(u, srvMap)];
   }
+  attachBindings(users);
   users.forEach(function (x) { x.sharedWith = shareMembers(x.username).map(function (m) { return m.username; }); });
   /* 下家清单必须先算：台账「已被共享给别人」的账号同样可以开第二份台账 */
   const meRec = users.filter(function (x) { return x.username === u.username; })[0];
@@ -2072,25 +2175,35 @@ async function handleApi(req, res, url) {
     const u = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
     /* 账号不存在与密码错误统一提示，避免账号枚举 */
     if (!u) return bad(res, '用户名或密码不正确。', 401);
-    /* 口令来源：本地哈希，或转发给 RADIUS / TACACS+ / LDAP 服务器校验 */
-    const source = u.source || 'local';
-    if (source === 'local') {
+    /* 口令路径：按绑定表逐个尝试口令型认证源（主源优先）。免认证型绑定不参与
+       口令校验，一个可用口令源都没有时给出统一身份入口提示；无绑定 = 本地口令。 */
+    const binds = bindingsOf(u.username);
+    const pwBinds = binds.filter(function (b) { return !isSsoType(b.type); });
+    if (!binds.length) {
       if (hashPwd(password, u.salt) !== u.hash) return bad(res, '用户名或密码不正确。', 401);
     } else {
       /* 远程账号先判停用，避免拿已停用账号去撞认证服务器（可能触发锁定计数） */
       if (u.status !== 'active') return bad(res, '该账号已停用，请联系超级管理员。', 403);
-      const srv = db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(u.server_id || '');
-      if (!srv || !srv.enabled) return bad(res, '认证服务暂时不可用，请联系超级管理员。', 503);
-      /* 免认证源没有口令可校验：给出明确指引，而不是让它去撞 RADIUS/LDAP 超时 */
-      if (isSsoType(srv.type)) {
-        return bad(res, '该账号使用「' + (AUTH_LABEL[srv.type] || srv.type) + '」免认证登录，请使用登录页的「统一身份登录」入口。', 400);
+      if (!pwBinds.length) {
+        const t = binds[0].type;
+        return bad(res, '该账号使用「' + (AUTH_LABEL[t] || t) + '」免认证登录，请使用登录页的「统一身份登录」入口。', 400);
       }
-      const r = await remoteAuth(srv, u.username, password);
-      if (!r.ok) {
-        /* 只有明确的「口令不对」才回统一话术；连不上/密钥不匹配属于配置问题，给管理员可读的提示 */
-        if (r.code === 'reject' || r.code === 'nouser') return bad(res, '用户名或密码不正确。', 401);
-        console.warn('[auth] 远程认证失败 ' + username + ' @' + srv.type + ':' + srv.host + ' → ' + r.code + ' ' + r.message);
-        return bad(res, '认证服务暂时不可用（' + r.message + '），请联系超级管理员。', 502);
+      let pass = null, offline = null, enabledAny = false;
+      for (const b of pwBinds) {
+        if (!b.enabled) continue;
+        enabledAny = true;
+        const r = await remoteAuth({ type: b.type, host: b.host, port: b.port, cfg: b.cfg }, u.username, password);
+        if (r.ok) { pass = b; break; }
+        /* 只有明确的「口令不对」才继续试下一个源；连不上/密钥不匹配属于配置问题 */
+        if (r.code !== 'reject' && r.code !== 'nouser' && !offline) offline = { b: b, r: r };
+      }
+      if (!pass) {
+        if (!enabledAny) return bad(res, '认证服务暂时不可用，请联系超级管理员。', 503);
+        if (offline) {
+          console.warn('[auth] 远程认证失败 ' + username + ' @' + offline.b.type + ':' + offline.b.host + ' → ' + offline.r.code + ' ' + offline.r.message);
+          return bad(res, '认证服务暂时不可用（' + offline.r.message + '），请联系超级管理员。', 502);
+        }
+        return bad(res, '用户名或密码不正确。', 401);
       }
     }
     if (u.status !== 'active') return bad(res, '该账号已停用，请联系超级管理员。', 403);
@@ -2099,7 +2212,7 @@ async function handleApi(req, res, url) {
     /* 远程账号（RADIUS/TACACS+/LDAP）的口令由认证服务器掌管，本系统不存在
        「首登改密」。历史遗留的 must_change=1 在登录时自动校正，否则登录后
        会弹出改密弹窗且该账号永远无法完成。 */
-    if (source !== 'local' && u.must_change) {
+    if (binds.length && u.must_change) {
       try { db.prepare('UPDATE users SET must_change = 0 WHERE username = ?').run(u.username); } catch (e) {}
       u.must_change = 0;
     }
@@ -2405,7 +2518,8 @@ async function handleApi(req, res, url) {
     }
 
     if (method === 'DELETE') {
-      const n = db.prepare('SELECT COUNT(*) AS n FROM users WHERE server_id = ?').get(srow.id).n;
+      /* 按绑定表计数：主源与附加源都要拦，否则删掉后附加绑定会变成悬空记录 */
+      const n = db.prepare('SELECT COUNT(*) AS n FROM user_auth_sources WHERE server_id = ?').get(srow.id).n;
       if (n > 0) return bad(res, '仍有 ' + n + ' 个账号使用该认证服务器，请先改绑或删除这些账号');
       db.prepare('DELETE FROM auth_servers WHERE id = ?').run(srow.id);
       return ok(res, null);
@@ -2577,8 +2691,8 @@ async function handleApi(req, res, url) {
   if (p === '/api/users' && method === 'GET') {
     if (!isAdmin) return bad(res, '仅超级管理员可查看用户列表', 403);
     const smap = serversMap();
-    const users = db.prepare('SELECT ' + USER_COLS + ' FROM users ORDER BY created_at').all()
-      .map(function (r) { return mapUser(r, smap); });
+    const users = attachBindings(db.prepare('SELECT ' + USER_COLS + ' FROM users ORDER BY created_at').all()
+      .map(function (r) { return mapUser(r, smap); }));
     return ok(res, { users: users });
   }
 
@@ -2594,15 +2708,12 @@ async function handleApi(req, res, url) {
     }
     /* 权限：只读 ro 不能改台账；超管恒为读写 */
     const perm = role === 'admin' ? 'rw' : (body.perm === 'ro' ? 'ro' : 'rw');
-    /* 账号来源：指定认证服务器即为远程账号，类型取服务器自身的 type（不信任前端传值） */
-    const serverId = String(body.serverId || '').trim();
-    let source = 'local';
-    if (serverId) {
-      const srv = db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(serverId);
-      if (!srv) return bad(res, '所选认证服务器不存在');
-      if (!srv.enabled) return bad(res, '所选认证服务器已停用');
-      source = srv.type;
-    }
+    /* 认证源：serverIds 数组，第一条为主源；类型取服务器自身的 type（不信任前端传值） */
+    const rs = resolveServers(normServerIds(body) || []);
+    if (rs.err) return bad(res, rs.err);
+    const primary = rs.servers[0] || null;
+    const source = primary ? primary.type : 'local';
+    const serverId = primary ? primary.id : '';
 
     /* 数据集：shareFrom = 与该用户共用同一份台账（双向同步），不复制数据；
        来源本身也是共享成员时，直接挂到数据归属者，避免链式引用 */
@@ -2650,10 +2761,11 @@ async function handleApi(req, res, url) {
       'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger, wx_enabled, wx_cfg) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0, multiLedger, wxIn.enabled, JSON.stringify(wxIn.cfg));
+    setBindings(username, rs.servers);
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
     return ok(res, {
-      user: mapUser(db.prepare('SELECT ' + USER_COLS + ' FROM users WHERE username = ?').get(username), serversMap())
+      user: attachBindings([mapUser(db.prepare('SELECT ' + USER_COLS + ' FROM users WHERE username = ?').get(username), serversMap())])[0]
     });
   }
 
@@ -2720,21 +2832,18 @@ async function handleApi(req, res, url) {
         return bad(res, '至少需要保留一个启用的超级管理员');
       }
 
-      /* 来源变更：body.serverId 传空串表示改回本地账号 */
+      /* 来源变更：serverIds 数组为空表示改回本地账号；未传表示不动 */
       let source = row.source || 'local';
       let serverId = row.server_id || '';
       let sourceChanged = false;
-      if (body.serverId !== undefined) {
-        const sid = String(body.serverId || '').trim();
-        if (sid) {
-          const srv = db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(sid);
-          if (!srv) return bad(res, '所选认证服务器不存在');
-          if (!srv.enabled) return bad(res, '所选认证服务器已停用');
-          source = srv.type;
-        } else {
-          source = 'local';
-        }
-        serverId = sid;
+      let nextServers = null;
+      const nextIds = normServerIds(body);
+      if (nextIds !== null) {
+        const rs = resolveServers(nextIds);
+        if (rs.err) return bad(res, rs.err);
+        nextServers = rs.servers;
+        source = nextServers.length ? nextServers[0].type : 'local';
+        serverId = nextServers.length ? nextServers[0].id : '';
         sourceChanged = (source !== (row.source || 'local')) || (serverId !== (row.server_id || ''));
       }
       /* 从远程改回本地时必须给一个本地口令，否则这个账号将无法登录 */
@@ -2762,6 +2871,7 @@ async function handleApi(req, res, url) {
       }
       db.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ?, stat_visible = ?, multi_ledger = ?, wx_enabled = ?, wx_cfg = ? WHERE username = ?')
         .run(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), body.nameCn == null ? (row.name_cn || '') : String(body.nameCn).trim(), body.crmVisible == null ? (row.crm_visible ? 1 : 0) : (body.crmVisible ? 1 : 0), body.statVisible == null ? (row.stat_visible ? 1 : 0) : (body.statVisible ? 1 : 0), multiNow, wxNow.enabled, JSON.stringify(wxNow.cfg), target);
+      if (nextServers !== null) setBindings(target, nextServers);
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad(res, '密码至少 6 位');
@@ -2778,7 +2888,7 @@ async function handleApi(req, res, url) {
         }
       }
       return ok(res, {
-        user: mapUser(db.prepare('SELECT ' + USER_COLS + ' FROM users WHERE username = ?').get(target), serversMap())
+        user: attachBindings([mapUser(db.prepare('SELECT ' + USER_COLS + ' FROM users WHERE username = ?').get(target), serversMap())])[0]
       });
     }
 

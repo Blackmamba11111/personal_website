@@ -328,6 +328,21 @@ async function ensureSchema(env) {
     try { await env.DB.prepare(sql).run(); } catch (e) { /* 列已存在 */ }
   }
   try {
+    /* 多认证源绑定（2026-11-19）：一个账号可同时挂多个认证源，登录以本表为准；
+       users.source / server_id 降级为「主绑定」快照，供旧界面与旧接口读取。 */
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS user_auth_sources (username TEXT NOT NULL, server_id TEXT NOT NULL, ' +
+      "external_id TEXT NOT NULL DEFAULT '', is_primary INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, " +
+      'PRIMARY KEY (username, server_id))'
+    ).run();
+    await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_uas_server ON user_auth_sources (server_id)').run();
+    /* 一次性回填：历史单源账号转成一条主绑定。已存在则跳过，可反复执行。 */
+    await env.DB.prepare(
+      'INSERT OR IGNORE INTO user_auth_sources (username, server_id, external_id, is_primary, created_at) ' +
+      "SELECT username, server_id, '', 1, ? FROM users WHERE server_id <> '' AND source <> 'local'"
+    ).bind(nowIso()).run();
+  } catch (e) { /* 迁移失败不阻断主流程 */ }
+  try {
     await env.DB.prepare(
       "CREATE TABLE IF NOT EXISTS crm_config (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
     ).run();
@@ -385,6 +400,86 @@ async function serversMap(env) {
   } catch (e) { /* 表尚未建立时按「没有服务器」处理 */ }
   return out;
 }
+
+/* ---------------- 多认证源绑定 ----------------
+   user_auth_sources 是登录的唯一依据；users.source / server_id 只是主绑定快照。
+   排序固定为「主源在前」，登录时按该顺序逐个尝试口令型认证源。 */
+async function bindingsOf(env, username) {
+  try {
+    const r = await env.DB.prepare(
+      'SELECT b.server_id, b.external_id, b.is_primary, s.name, s.type, s.enabled, s.host, s.port, s.cfg ' +
+      'FROM user_auth_sources b LEFT JOIN auth_servers s ON s.id = b.server_id ' +
+      'WHERE b.username = ? ORDER BY b.is_primary DESC, b.created_at'
+    ).bind(username).all();
+    return r.results || [];
+  } catch (e) { return []; }
+}
+async function bindingsAll(env) {
+  const out = {};
+  try {
+    const r = await env.DB.prepare(
+      'SELECT b.username, b.server_id, b.external_id, b.is_primary, s.name, s.type, s.enabled ' +
+      'FROM user_auth_sources b LEFT JOIN auth_servers s ON s.id = b.server_id ' +
+      'ORDER BY b.is_primary DESC, b.created_at'
+    ).all();
+    (r.results || []).forEach(function (b) { (out[b.username] = out[b.username] || []).push(b); });
+  } catch (e) { /* 表未建立时按无绑定处理 */ }
+  return out;
+}
+function bindView(b) {
+  return {
+    serverId: b.server_id,
+    name: b.name || '（认证源已删除）',
+    type: b.type || '',
+    sso: isSsoType(b.type),
+    enabled: b.enabled == null ? true : !!b.enabled,
+    externalId: b.external_id || '',
+    primary: !!b.is_primary
+  };
+}
+/* 单账号视图补齐多源信息（建号 / 改号 / me 用） */
+async function withBindings(env, u) {
+  const list = await bindingsOf(env, u.username);
+  u.authSources = list.map(bindView);
+  u.serverIds = list.map(function (b) { return b.server_id; });
+  return u;
+}
+/* 前端可传 serverIds 数组，也可沿用旧的单个 serverId 字符串；未传返回 null */
+function normServerIds(body) {
+  let raw = body ? body.serverIds : undefined;
+  if (raw === undefined && body && body.serverId !== undefined) raw = [body.serverId];
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) raw = [raw];
+  const out = [];
+  raw.forEach(function (v) {
+    const s = String(v == null ? '' : v).trim();
+    if (s && out.indexOf(s) < 0) out.push(s);
+  });
+  return out;
+}
+async function resolveServers(env, ids) {
+  const servers = [];
+  for (const id of ids) {
+    const srv = await env.DB.prepare('SELECT * FROM auth_servers WHERE id = ?').bind(id).first();
+    if (!srv) return { err: '所选认证服务器不存在' };
+    if (!srv.enabled) return { err: '所选认证服务器「' + srv.name + '」已停用' };
+    servers.push(srv);
+  }
+  return { servers: servers };
+}
+/* 整体重写某个账号的绑定：第一条为主源，并同步 users 快照 */
+async function setBindings(env, username, servers) {
+  await env.DB.prepare('DELETE FROM user_auth_sources WHERE username = ?').bind(username).run();
+  for (let i = 0; i < servers.length; i++) {
+    await env.DB.prepare(
+      'INSERT INTO user_auth_sources (username, server_id, external_id, is_primary, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).bind(username, servers[i].id, '', i === 0 ? 1 : 0, nowIso()).run();
+  }
+  const p = servers[0] || null;
+  await env.DB.prepare('UPDATE users SET source = ?, server_id = ? WHERE username = ?')
+    .bind(p ? p.type : 'local', p ? p.id : '', username).run();
+  return p;
+}
 /* cfg 里可能含共享密钥：只回传非敏感项 + hasSecret 标记 */
 function serverView(row, userCount) {
   const cfg = parseCfg(row.cfg);
@@ -419,7 +514,7 @@ function serverView(row, userCount) {
 async function listServers(env) {
   const counts = {};
   try {
-    const r = await env.DB.prepare("SELECT server_id, COUNT(*) AS n FROM users WHERE server_id <> '' GROUP BY server_id").all();
+    const r = await env.DB.prepare('SELECT server_id, COUNT(*) AS n FROM user_auth_sources GROUP BY server_id').all();
     (r.results || []).forEach(function (row) { counts[row.server_id] = row.n; });
   } catch (e) {}
   const r2 = await env.DB.prepare('SELECT * FROM auth_servers ORDER BY created_at').all();
@@ -1534,6 +1629,13 @@ async function bundleFor(env, u) {
   } else {
     users = [mapUser(u, srvMap)];
   }
+  /* 多认证源：一次查全表再按账号分发，避免逐账号查询 */
+  const bmap = await bindingsAll(env);
+  users.forEach(function (x) {
+    const list = bmap[x.username] || [];
+    x.authSources = list.map(bindView);
+    x.serverIds = list.map(function (b) { return b.server_id; });
+  });
   /* 下家清单必须先算：台账「已被共享给别人」的账号同样可以开第二份台账 */
   for (const x of users) {
     x.sharedWith = await shareMembers(env, x.username);
@@ -1708,23 +1810,35 @@ async function route(request, env, ctx) {
     const u = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
     /* 账号不存在与密码错误统一提示，避免账号枚举 */
     if (!u) return bad('用户名或密码不正确。', 401);
-    /* 口令来源：本地哈希，或转发给 RADIUS / TACACS+ / LDAP 服务器校验 */
-    const source = u.source || 'local';
-    if (source === 'local') {
+    /* 口令路径：按绑定表逐个尝试口令型认证源（主源优先）。免认证型绑定不参与
+       口令校验，一个可用口令源都没有时给出统一身份入口提示；无绑定 = 本地口令。 */
+    const binds = await bindingsOf(env, u.username);
+    const pwBinds = binds.filter(function (b) { return !isSsoType(b.type); });
+    if (!binds.length) {
       const h = await hashPwd(password, u.salt);
       if (h !== u.hash) return bad('用户名或密码不正确。', 401);
     } else {
       if (u.status !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
-      const srv = await env.DB.prepare('SELECT * FROM auth_servers WHERE id = ?').bind(u.server_id || '').first();
-      if (!srv || !srv.enabled) return bad('认证服务暂时不可用，请联系超级管理员。', 503);
-      /* 免认证源没有口令可校验：给出明确指引 */
-      if (isSsoType(srv.type)) {
-        return bad('该账号使用「' + (AUTH_LABEL[srv.type] || srv.type) + '」免认证登录，请使用登录页的「统一身份登录」入口。', 400);
+      if (!pwBinds.length) {
+        const t = binds[0].type;
+        return bad('该账号使用「' + (AUTH_LABEL[t] || t) + '」免认证登录，请使用登录页的「统一身份登录」入口。', 400);
       }
-      const r = await remoteAuth(srv, u.username, password);
-      if (!r.ok) {
-        if (r.code === 'reject' || r.code === 'nouser') return bad('用户名或密码不正确。', 401);
-        return bad('认证服务暂时不可用（' + r.message + '），请联系超级管理员。', 502);
+      let pass = null, offline = null, enabledAny = false;
+      for (const b of pwBinds) {
+        if (!b.enabled) continue;
+        enabledAny = true;
+        const r = await remoteAuth({ type: b.type, host: b.host, port: b.port, cfg: b.cfg }, u.username, password);
+        if (r.ok) { pass = b; break; }
+        /* 连不上/配置错属于服务问题，先记下；明确的「口令不对」继续试下一个源 */
+        if (r.code !== 'reject' && r.code !== 'nouser' && !offline) offline = { b: b, r: r };
+      }
+      if (!pass) {
+        if (!enabledAny) return bad('认证服务暂时不可用，请联系超级管理员。', 503);
+        if (offline) {
+          console.warn('[auth] 远程认证失败 ' + u.username + ' @' + offline.b.type + ':' + offline.b.host + ' → ' + offline.r.code + ' ' + offline.r.message);
+          return bad('认证服务暂时不可用（' + offline.r.message + '），请联系超级管理员。', 502);
+        }
+        return bad('用户名或密码不正确。', 401);
       }
     }
     if (u.status !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
@@ -1732,7 +1846,7 @@ async function route(request, env, ctx) {
     /* 远程账号（RADIUS/TACACS+/LDAP）的口令由认证服务器掌管，本系统不存在
        「首登改密」。历史遗留的 must_change=1 在登录时自动校正，否则登录后
        会弹出改密弹窗且该账号永远无法完成。 */
-    if (source !== 'local' && u.must_change) {
+    if (binds.length && u.must_change) {
       try { await env.DB.prepare('UPDATE users SET must_change = 0 WHERE username = ?').bind(u.username).run(); } catch (e) {}
       u.must_change = 0;
     }
@@ -2033,7 +2147,8 @@ async function route(request, env, ctx) {
     }
 
     if (method === 'DELETE') {
-      const cnt = await env.DB.prepare('SELECT COUNT(*) AS n FROM users WHERE server_id = ?').bind(srow.id).first();
+      /* 按绑定表计数：主源与附加源都要拦，否则删掉后附加绑定会变成悬空记录 */
+      const cnt = await env.DB.prepare('SELECT COUNT(*) AS n FROM user_auth_sources WHERE server_id = ?').bind(srow.id).first();
       const n = cnt ? cnt.n : 0;
       if (n > 0) return bad('仍有 ' + n + ' 个账号使用该认证服务器，请先改绑或删除这些账号');
       await env.DB.prepare('DELETE FROM auth_servers WHERE id = ?').bind(srow.id).run();
@@ -2220,7 +2335,14 @@ async function route(request, env, ctx) {
     const r = await env.DB.prepare(
       'SELECT ' + USER_COLS + ' FROM users ORDER BY created_at'
     ).all();
-    return ok({ users: (r.results || []).map(function (row) { return mapUser(row, smap); }) });
+    const bmap = await bindingsAll(env);
+    return ok({ users: (r.results || []).map(function (row) {
+      const u = mapUser(row, smap);
+      const list = bmap[u.username] || [];
+      u.authSources = list.map(bindView);
+      u.serverIds = list.map(function (b) { return b.server_id; });
+      return u;
+    }) });
   }
 
   if (p === '/api/users' && method === 'POST') {
@@ -2234,15 +2356,12 @@ async function route(request, env, ctx) {
     if (dup) return bad('用户名「' + username + '」已存在');
     /* 权限：只读 ro 不能改台账；超管恒为读写 */
     const perm = role === 'admin' ? 'rw' : (body.perm === 'ro' ? 'ro' : 'rw');
-    /* 账号来源：指定认证服务器即为远程账号，类型取服务器自身的 type（不信任前端传值） */
-    const serverId = String(body.serverId || '').trim();
-    let source = 'local';
-    if (serverId) {
-      const srv = await env.DB.prepare('SELECT * FROM auth_servers WHERE id = ?').bind(serverId).first();
-      if (!srv) return bad('所选认证服务器不存在');
-      if (!srv.enabled) return bad('所选认证服务器已停用');
-      source = srv.type;
-    }
+    /* 认证源：serverIds 数组，第一条为主源；类型取服务器自身的 type（不信任前端传值） */
+    const rs = await resolveServers(env, normServerIds(body) || []);
+    if (rs.err) return bad(rs.err);
+    const primary = rs.servers[0] || null;
+    const source = primary ? primary.type : 'local';
+    const serverId = primary ? primary.id : '';
 
     /* 数据集：shareFrom = 与该用户共用同一份台账（双向同步），不复制数据 */
     let shareFrom = '';
@@ -2288,11 +2407,12 @@ async function route(request, env, ctx) {
       'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger, wx_enabled, wx_cfg) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0, multiLedger, wxIn.enabled, JSON.stringify(wxIn.cfg)).run();
+    await setBindings(env, username, rs.servers);
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) await writeLedger(env, username, sanitizeLedger(body.data), me.username);
-    return ok({ user: mapUser(await env.DB.prepare(
+    return ok({ user: await withBindings(env, mapUser(await env.DB.prepare(
       'SELECT ' + USER_COLS + ' FROM users WHERE username = ?'
-    ).bind(username).first(), await serversMap(env)) });
+    ).bind(username).first(), await serversMap(env))) });
   }
 
   /* 企业微信：发送测试消息 / 查询最近推送流水（均限超管） */
@@ -2358,21 +2478,18 @@ async function route(request, env, ctx) {
         return bad('至少需要保留一个启用的超级管理员');
       }
 
-      /* 来源变更：body.serverId 传空串表示改回本地账号 */
+      /* 来源变更：serverIds 数组为空表示改回本地账号；未传表示不动 */
       let source = row.source || 'local';
       let serverId = row.server_id || '';
       let sourceChanged = false;
-      if (body.serverId !== undefined) {
-        const sid = String(body.serverId || '').trim();
-        if (sid) {
-          const srv = await env.DB.prepare('SELECT * FROM auth_servers WHERE id = ?').bind(sid).first();
-          if (!srv) return bad('所选认证服务器不存在');
-          if (!srv.enabled) return bad('所选认证服务器已停用');
-          source = srv.type;
-        } else {
-          source = 'local';
-        }
-        serverId = sid;
+      let nextServers = null;
+      const nextIds = normServerIds(body);
+      if (nextIds !== null) {
+        const rs = await resolveServers(env, nextIds);
+        if (rs.err) return bad(rs.err);
+        nextServers = rs.servers;
+        source = nextServers.length ? nextServers[0].type : 'local';
+        serverId = nextServers.length ? nextServers[0].id : '';
         sourceChanged = (source !== (row.source || 'local')) || (serverId !== (row.server_id || ''));
       }
       /* 从远程改回本地时必须给一个本地口令，否则这个账号将无法登录 */
@@ -2400,6 +2517,7 @@ async function route(request, env, ctx) {
       }
       await env.DB.prepare('UPDATE users SET name = ?, role = ?, status = ?, note = ?, perm = ?, source = ?, server_id = ?, session_mins = ?, hide_sensitive = ?, name_cn = ?, crm_visible = ?, stat_visible = ?, multi_ledger = ?, wx_enabled = ?, wx_cfg = ? WHERE username = ?')
         .bind(name, role, status, note, perm, source, serverId, normSessionMins(body.sessionMins == null ? row.session_mins : body.sessionMins), body.hideSensitive == null ? (row.hide_sensitive ? 1 : 0) : (body.hideSensitive ? 1 : 0), body.nameCn == null ? (row.name_cn || '') : String(body.nameCn).trim(), body.crmVisible == null ? (row.crm_visible ? 1 : 0) : (body.crmVisible ? 1 : 0), body.statVisible == null ? (row.stat_visible ? 1 : 0) : (body.statVisible ? 1 : 0), multiNow, wxNow.enabled, JSON.stringify(wxNow.cfg), target).run();
+      if (nextServers !== null) await setBindings(env, target, nextServers);
       if (body.password != null && String(body.password).length) {
         const np = String(body.password);
         if (np.length < 6) return bad('密码至少 6 位');
@@ -2415,9 +2533,9 @@ async function route(request, env, ctx) {
           await env.DB.prepare('UPDATE users SET salt = ?, hash = ?, must_change = 0 WHERE username = ?').bind('', '', target).run();
         }
       }
-      return ok({ user: mapUser(await env.DB.prepare(
+      return ok({ user: await withBindings(env, mapUser(await env.DB.prepare(
         'SELECT ' + USER_COLS + ' FROM users WHERE username = ?'
-      ).bind(target).first(), await serversMap(env)) });
+      ).bind(target).first(), await serversMap(env))) });
     }
 
     if (method === 'DELETE') {

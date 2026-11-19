@@ -179,10 +179,17 @@ function installApiStub(window, opts) {
     if (!u || (u.status || 'active') !== 'active') return null;
     return u;
   };
+  const sidsOf = (u) => Array.isArray(u.serverIds) ? u.serverIds : (u.serverId ? [u.serverId] : []);
   const viewOf = (u) => {
     const v = userView(u);
+    const ids = sidsOf(u);
     const s = srv.servers.filter(x => x.id === (u.serverId || ''))[0];
     if (s) { v.serverName = s.name; v.serverType = s.type; }
+    v.serverIds = ids;
+    v.authSources = ids.map(function (id) {
+      const x = srv.servers.filter(y => y.id === id)[0];
+      return { serverId: id, name: x ? x.name : '（认证源已删除）', type: x ? x.type : '', sso: !!(x && x.sso), primary: id === ids[0] };
+    });
     v.sharedWith = srv.users.filter(x => (x.shareFrom || '') === u.username).map(x => x.username);
     return v;
   };
@@ -262,7 +269,7 @@ function installApiStub(window, opts) {
       id: s.id, name: s.name, type: s.type, sso: sso, host: s.host, port: s.port,
       enabled: s.enabled !== false,
       createdAt: '2026-01-01', updatedAt: '',
-      userCount: srv.users.filter(u => u.serverId === s.id).length,
+      userCount: srv.users.filter(u => sidsOf(u).indexOf(s.id) >= 0).length,
       hasSecret: !!cfg.secret || STUB_SSO_SECRETS.some(k => !!cfg[k]),
       secretKeys: sso ? STUB_SSO_SECRETS.filter(k => !!cfg[k]) : [],
       cfg: null
@@ -337,17 +344,19 @@ function installApiStub(window, opts) {
     if (p === '/auth/login' && method === 'POST') {      const u = findUser(body.username);
       if (!u) return bad('用户名或密码不正确。', 401);
       const src = u.source || 'local';
-      if (src === 'local') {
+      const ids = sidsOf(u);
+      if (!ids.length) {
         if (H.hashPwd(String(body.password || ''), u.salt) !== u.pwd) return bad('用户名或密码不正确。', 401);
       } else {
-        const s = srv.servers.filter(x => x.id === (u.serverId || ''))[0];
-        if (!s || s.enabled === false) return bad('认证服务暂时不可用，请联系超级管理员。', 503);
+        const list = ids.map(id => srv.servers.filter(x => x.id === id)[0]).filter(Boolean);
+        const pw = list.filter(x => x.enabled !== false && !x.sso);
+        if (!pw.length) return bad('该账号使用「' + ((list[0] && list[0].type) || src) + '」免认证登录，请使用登录页的「统一身份登录」入口。', 400);
         if (String(body.password || '') !== REMOTE_PASSWORD) return bad('用户名或密码不正确。', 401);
       }
       if ((u.status || 'active') !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
       /* 与两版真实服务端同口径：远程账号口令由认证服务器掌管，登录成功即校正
          历史遗留的 mustChange=true（否则登录后弹改密弹窗且永远无法完成） */
-      if (src !== 'local' && u.mustChange) u.mustChange = false;
+      if (ids.length && u.mustChange) u.mustChange = false;
       me = u.username;
       window.sessionStorage.setItem(TOKEN_KEY, TOKEN);
       return ok(bundle(u));
@@ -655,7 +664,7 @@ function installApiStub(window, opts) {
         return ok({ server: serverView(s) });
       }
       if (method === 'DELETE') {
-        const n = srv.users.filter(u => u.serverId === s.id).length;
+        const n = srv.users.filter(u => sidsOf(u).indexOf(s.id) >= 0).length;
         if (n > 0) return bad('仍有 ' + n + ' 个账号使用该认证服务器，请先改绑或删除这些账号');
         srv.servers = srv.servers.filter(x => x.id !== s.id);
         return ok(null);
@@ -670,9 +679,11 @@ function installApiStub(window, opts) {
       if (auth.role !== 'admin') return bad('仅超级管理员可创建用户', 403);
       const un = String(body.username || '').toLowerCase();
       if (findUser(un)) return bad('用户名「' + un + '」已存在');
-      const serverId = String(body.serverId || '');
-      const s = serverId ? srv.servers.filter(x => x.id === serverId)[0] : null;
-      if (serverId && !s) return bad('所选认证服务器不存在');
+      const ids = Array.isArray(body.serverIds) ? body.serverIds.slice() : (body.serverId ? [body.serverId] : []);
+      const srvs = ids.map(id => srv.servers.filter(x => x.id === id)[0]);
+      if (srvs.some(x => !x)) return bad('所选认证服务器不存在');
+      const s = srvs[0] || null;
+      const serverId = s ? s.id : '';
       const salt = 'salt-' + un;
       /* 共享数据集：shareFrom 解析到数据归属者（避免链式），不复制数据 */
       let shareFrom = '';
@@ -696,6 +707,7 @@ function installApiStub(window, opts) {
         source: s ? s.type : 'local',
         perm: body.role === 'admin' ? 'rw' : (body.perm === 'ro' ? 'ro' : 'rw'),
         serverId: serverId,
+        serverIds: ids,
         shareFrom: shareFrom,
         salt: salt,
         pwd: s ? '' : H.hashPwd(String(body.password || ''), salt),
@@ -763,11 +775,13 @@ function installApiStub(window, opts) {
           const n = Math.round(Number(body.sessionMins));
           t.sessionMins = isFinite(n) ? Math.min(43200, Math.max(5, n)) : 30;
         }
-        if (body.serverId !== undefined) {
-          const sid = String(body.serverId || '');
-          const s = sid ? srv.servers.filter(x => x.id === sid)[0] : null;
-          if (sid && !s) return bad('所选认证服务器不存在');
-          t.serverId = sid;
+        if (body.serverIds !== undefined || body.serverId !== undefined) {
+          const ids = Array.isArray(body.serverIds) ? body.serverIds.slice() : (body.serverId ? [body.serverId] : []);
+          const srvs = ids.map(id => srv.servers.filter(x => x.id === id)[0]);
+          if (srvs.some(x => !x)) return bad('所选认证服务器不存在');
+          const s = srvs[0] || null;
+          t.serverIds = ids;
+          t.serverId = s ? s.id : '';
           t.source = s ? s.type : 'local';
           if (!s) t.pwd = '';
           /* 改为远程认证后本系统无法改密，遗留的强制改密标记一并清除（与真实服务端同口径） */

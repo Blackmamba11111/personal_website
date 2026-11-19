@@ -141,6 +141,35 @@ check('改本地后 mustChange=true（强制改初始密码）', r.data.user.mus
 r = await api('/auth-servers/' + srvId, { method: 'DELETE' }, tk);
 check('解除引用后可删除服务器', r.ok === true, JSON.stringify(r));
 
+/* 6.5 多认证源绑定（一个账号同时挂 LDAP 与免认证） */
+r = await api('/auth-servers', { method: 'POST', body: { name: '主 LDAP', type: 'ldap', host: '127.0.0.1', port: 389, cfg: { bindPattern: 'uid={user},dc=x' } } }, tk);
+const ldap2 = r.data.server.id;
+r = await api('/auth-servers', { method: 'POST', body: { name: '集团 SSO', type: 'oidc', cfg: { issuer: 'https://sso.zdns.cn', clientId: 'c1', clientSecret: 's1' } } }, tk);
+const sso2 = r.data.server.id;
+
+r = await api('/users', { method: 'POST', body: { username: 'dualauth', name: '双源用户', serverIds: [ldap2, sso2] } }, tk);
+check('一个账号可绑定多个认证源', r.ok === true && r.data.user.serverIds.length === 2, JSON.stringify(r.data && r.data.user));
+check('主源快照取第一个绑定', r.data.user.source === 'ldap' && r.data.user.serverId === ldap2, r.data.user.source + '/' + r.data.user.serverId);
+check('authSources 标出免认证源', r.data.user.authSources[1].sso === true && r.data.user.authSources[0].sso === false);
+
+r = await api('/users/dualauth', { method: 'PATCH', body: { serverIds: [sso2] } }, tk);
+check('改绑后主源快照同步', r.ok === true && r.data.user.source === 'oidc' && r.data.user.serverId === sso2, JSON.stringify(r));
+
+r = await api('/auth/login', { method: 'POST', body: { username: 'dualauth', password: 'whatever' } });
+check('只剩免认证绑定时口令入口给统一身份提示',
+  r.ok === false && r.status === 400 && /统一身份/.test(r.error), JSON.stringify(r));
+
+r = await api('/auth-servers/' + ldap2, { method: 'DELETE' }, tk);
+check('解绑后可删除原认证源', r.ok === true, JSON.stringify(r));
+r = await api('/auth-servers/' + sso2, { method: 'DELETE' }, tk);
+check('免认证绑定仍被引用时禁止删除', r.ok === false && /仍有 1 个账号/.test(r.error), JSON.stringify(r));
+
+/* 复原：改回本地 → 删源 → 删号，避免影响后续「六类免认证源」计数 */
+await api('/users/dualauth', { method: 'PATCH', body: { serverIds: [], password: 'Dual@123' } }, tk);
+r = await api('/auth-servers/' + sso2, { method: 'DELETE' }, tk);
+check('改回本地后可删除免认证源', r.ok === true, JSON.stringify(r));
+await api('/users/dualauth', { method: 'DELETE' }, tk);
+
 /* 7. 非管理员不得触碰用户/服务器接口 */
 r = await api('/auth-servers', { method: 'GET' }, vk);
 check('普通用户看不到认证服务器', r.status === 403);

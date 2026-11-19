@@ -1153,7 +1153,7 @@
 </style>
 </head>
 <body>
-<!-- ==================== V2：登录页 ==================== -->
+<!-- V2：登录页 -->
 <div class="auth" id="authView">
   <div class="auth-card">
     <div class="auth-side">
@@ -1434,7 +1434,7 @@
         <button type="button" class="icon-btn" data-close="maskDetail" title="关闭">✕</button>
       </div>
     </div>
-    <!-- 分段导航（2026-11-09）：详情内容较长，用固定锚点行替代长滚动 -->
+    <!-- 分段导航：固定锚点行替代长滚动 -->
     <div class="dnav" id="dNav">
       <button type="button" class="on" data-dnav="top">概览</button>
       <button type="button" data-dnav="dCrmInfo">维保与现网</button>
@@ -1482,7 +1482,7 @@
         </div>
       </div>
 
-      <!-- CRM 现网信息（询盘云匹配到的项目数据；未关联 / 无权限时整块隐藏） -->
+      <!-- CRM 现网信息：未关联或无权限时整块隐藏 -->
       <div class="readonly-box" id="dCrmInfo" style="display:none;margin-bottom:13px;">
         <div class="m-caption">客户现网信息 <span class="sub2" id="dCrmSrc"></span></div>
         <div id="dCrmBase" class="crm-kv"></div>
@@ -1599,7 +1599,7 @@
   </div>
 </div>
 
-<!-- 导入数据（从看板 / 客户管理内容页打开 → 需 .high 浮于内容页之上） -->
+<!-- 导入数据：需 .high 浮于内容页之上 -->
 <div class="mask high" id="maskImport">
   <div class="modal">
     <div class="modal-head">
@@ -1699,7 +1699,7 @@
 
 <div class="toast" id="toast"></div>
 
-<!-- ==================== V2：账号下拉菜单（fixed，避免被 topbar 的 overflow 裁剪） ==================== -->
+<!-- V2：账号下拉菜单（fixed，避免被 topbar 的 overflow 裁剪） -->
 <div class="umenu" id="userMenu">
   <div class="umenu-head">
     <div class="n" id="umName">—</div>
@@ -1709,7 +1709,7 @@
     <div class="umenu-lb">数据范围</div>
     <select id="scopeSel"></select>
   </div>
-  <!-- 多台账：只有「已设共享来源 + 开了多台账权限」的账号才显示 -->
+  <!-- 多台账：需共享关系 + 多台账权限才显示 -->
   <div id="umLedgerWrap" style="display:none;">
     <div class="umenu-lb">台账（两份）</div>
     <div class="seg" id="ledgerSeg">
@@ -1725,7 +1725,7 @@
   <button type="button" id="umLogout" class="danger">退出登录</button>
 </div>
 
-<!-- ==================== 总览页（2026-11-09 重设计新增） ==================== -->
+<!-- 总览页（2026-11-09 重设计新增） -->
 <div class="page" id="overviewView">
   <div class="page-head">
     <button type="button" class="btn sm" id="btnOverviewBack">← 返回看板</button>
@@ -1766,7 +1766,7 @@
   </div>
 </div>
 
-<!-- ==================== V2：用户管理页（超级管理员） ==================== -->
+<!-- V2：用户管理页（超级管理员） -->
 <div class="page" id="usersView">
   <div class="page-head">
     <button type="button" class="btn" id="btnUsersBack">← 返回看板</button>
@@ -1790,7 +1790,7 @@
   </div>
 </div>
 
-<!-- ==================== V3：认证服务器管理页（超级管理员） ==================== -->
+<!-- V3：认证服务器管理页（超级管理员） -->
 <div class="page" id="serversView">
   <div class="page-head">
     <button type="button" class="btn" id="btnServersBack">← 返回用户管理</button>
@@ -1811,7 +1811,7 @@
   </div>
 </div>
 
-<!-- ==================== V4：数据变更日志页（超管可切数据集；普通用户固定看自己） ==================== -->
+<!-- V4：数据变更日志页（超管可切数据集；普通用户固定看自己） -->
 <div class="page" id="logsView">
   <div class="page-head">
     <button type="button" class="btn" id="btnLogsBack">← 返回用户管理</button>
@@ -1834,7 +1834,7 @@
   </div>
 </div>
 
-<!-- ==================== V5：CRM 台账关联页（超级管理员） ==================== -->
+<!-- V5：CRM 台账关联页（超级管理员） -->
 <div class="page" id="crmView">
   <div class="page-head">
     <button type="button" class="btn" id="btnCrmBack">← 返回看板</button>
@@ -1892,7 +1892,7 @@
   </div>
 </div>
 
-<!-- ==================== V6：区域统计页（超管 + 按账号授权，2026-11-06） ==================== -->
+<!-- V6：区域统计页（超管 + 按账号授权，2026-11-06） -->
 <div class="page" id="statView">
   <div class="page-head">
     <button type="button" class="btn" id="btnStatBack">← 返回 CRM</button>
@@ -1928,7 +1928,7 @@
         <button type="button" data-stat-tab="sum">型号汇总 <b id="crmStatTabSum">0</b></button>
         <span class="crm-stat-filter" id="crmStatFilter" style="display:none;"></span>
       </div>
-      <!-- 明细筛选（2026-11-06）：项目名称 / 客户名称 / 销售 / 型号，实时过滤，与型号下钻叠加 -->
+      <!-- 明细筛选：项目 / 客户 / 销售 / 型号，实时过滤 -->
       <div class="crm-stat-q" id="crmStatQ" style="display:none;">
         <input type="search" id="crmStatQProject" placeholder="项目名称" autocomplete="off">
         <input type="search" id="crmStatQCustomer" placeholder="客户名称" autocomplete="off">
@@ -1949,7 +1949,7 @@
   </div>
 </div>
 
-<!-- ==================== V3：客户管理页（客户主数据，不含巡检记录） ==================== -->
+<!-- V3：客户管理页（客户主数据，不含巡检记录） -->
 <div class="page" id="custsView">
   <div class="page-head">
     <button type="button" class="btn" id="btnCustsBack">← 返回看板</button>
@@ -1984,7 +1984,7 @@
   </div>
 </div>
 
-<!-- ==================== V2：新建 / 编辑用户 ==================== -->
+<!-- V2：新建 / 编辑用户 -->
 <div class="mask high" id="maskUser">
   <div class="modal" style="max-width:520px;">
     <div class="modal-head">
@@ -2014,9 +2014,9 @@
         </select>
       </div>
       <div class="field" id="uServerField" style="display:none;">
-        <label for="uServer">认证源 <span class="req">*</span></label>
-        <select id="uServer"></select>
-        <div class="hint" id="uServerHint">登录时把用户名与密码转发给该服务器校验，本站不保存密码。</div>
+        <label for="uServer">认证源（可多选，首项为主源） <span class="req">*</span></label>
+        <select id="uServer" multiple size="4"></select>
+        <div class="hint" id="uServerHint">登录时按绑定顺序逐个尝试口令型认证源；免认证源只接受统一身份跳转。本站不保存密码。</div>
       </div>
       <div class="field">
         <label for="uRole">角色</label>
@@ -2175,7 +2175,7 @@
   </div>
 </div>
 
-<!-- ==================== 用户批量编辑（超管） ==================== -->
+<!-- 用户批量编辑（超管） -->
 <div class="mask high" id="maskBatchUser">
   <div class="modal" style="max-width:520px;">
     <div class="modal-head">
@@ -2314,7 +2314,7 @@
   </div>
 </div>
 
-<!-- ==================== V3：认证服务器 新建 / 编辑 ==================== -->
+<!-- V3：认证服务器 新建 / 编辑 -->
 <div class="mask high" id="maskServer">
   <div class="modal" style="max-width:760px;">
     <div class="modal-head">
@@ -2735,7 +2735,7 @@
   </div>
 </div>
 
-<!-- ==================== V2：修改 / 重置密码 ==================== -->
+<!-- V2：修改 / 重置密码 -->
 <div class="mask high" id="maskPwd">
   <div class="modal" style="max-width:440px;">
     <div class="modal-head">
@@ -2776,7 +2776,7 @@
     </div>
   </div>
 </div>
-<!-- ==================== 高德地图 SDK（2026-10 由腾讯地图切换） ====================
+<!-- 高德地图 SDK（2026-10 由腾讯地图切换） ====================
      已配置 Key（下方 window.AMAP_KEY，Web 端 JS API 与 Web 服务检索共用）。
      注意：该 Key 是浏览器端公开密钥，安全依赖「高德开放平台控制台 → 域名白名单」，
      如配置了白名单需登记站点域名；留空则不携带 Key 请求。
@@ -7579,10 +7579,27 @@
     AUTH.user = null; AUTH.scope = '';
     clearMapLayers();
     DB = { regions: [], customers: [], visits: [] };
-    closeUsersPage();
+    closeAllOverlays();
     renderAll();
     showAuth();
     authError(msg || '登录状态已失效，请重新登录。');
+  }
+  window.__authExpired = onAuthExpired;
+
+  /* 退出 / 会话失效：关掉所有浮层并复位详情状态，
+     否则登录页上会残留上一个账号的登记抽屉或表单 */
+  function closeAllOverlays() {
+    closeUsersPage();
+    document.getElementById('userMenu').classList.remove('on');
+    CUSTS_OPEN = false; CUSTS_SEL = {}; USERS_SEL = {};
+    document.getElementById('custsView').classList.remove('on');
+    ['maskCust', 'maskDetail', 'maskRegion', 'maskImport', 'maskExport', 'maskConfirm', 'maskRemind',
+      'maskUser', 'maskBatchUser', 'maskPwd', 'maskServer', 'maskViewer'].forEach(function (id) {
+      var el = document.getElementById(id); if (el) el.classList.remove('on');
+    });
+    state.selectedId = null;
+    state.detailMonth = null;
+    try { if (infoWindow) infoWindow.close(); } catch (e) {}
   }
 
   /* ---------- 空闲自动登出 ----------
@@ -8179,20 +8196,8 @@
     if (SYNC.timer) { clearTimeout(SYNC.timer); SYNC.timer = null; }
     AUTH.user = null;
     AUTH.scope = '';
-    document.getElementById('userMenu').classList.remove('on');
-    document.getElementById('usersView').classList.remove('on');
-    document.getElementById('serversView').classList.remove('on');
-    document.getElementById('crmView').classList.remove('on');
-    CUSTS_OPEN = false;
-    CUSTS_SEL = {};
-    USERS_SEL = {};
-    document.getElementById('custsView').classList.remove('on');
-    ['maskCust', 'maskDetail', 'maskRegion', 'maskImport', 'maskConfirm', 'maskRemind', 'maskUser', 'maskBatchUser', 'maskPwd', 'maskServer'].forEach(function (id) {
-      var el = document.getElementById(id); if (el) el.classList.remove('on');
-    });
+    closeAllOverlays();
     clearMapLayers();
-    /* 清空数据并重渲染，避免退出后 DOM / 地图里仍残留上一账号的内容 */
-    state.selectedId = null;
     state.regionFilter = 'all';
     state.keyword = '';
     var kwEl = document.getElementById('searchInput');
@@ -9820,8 +9825,8 @@
       var s = serverById(document.getElementById('bServer').value);
       hint.textContent = s
         ? (isSsoServer(s)
-            ? ('所选账号将改由「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + '）统一身份登录，本站不再保存其密码；已是该认证源的账号跳过。')
-            : ('所选远程账号的口令将改由「' + s.name + '」校验，本站不再保存其密码；已是该类型的账号跳过。'))
+            ? ('所选账号将改由「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + '）统一身份登录，原有绑定会被覆盖；已是唯一认证源的账号跳过。')
+            : ('所选远程账号的口令将改由「' + s.name + '」校验，原有绑定会被覆盖；已是唯一认证源的账号跳过。'))
         : '还没有可用的认证源，请先到「认证管理」页新增。';
     } else {
       hint.textContent = '仅对远程账号生效：改回本地需统一初始密码；已是本地账号的跳过。';
@@ -9938,7 +9943,7 @@
       if (srcOn) {
         var wasRemote = (u.source || 'local') !== 'local';
         if (srcType === 'remote') {
-          if (wasRemote && u.serverId === srcSid) { skip.push(u.name + '（已由该认证服务器校验）'); return; }
+          if (wasRemote && u.serverId === srcSid && (u.serverIds || []).length <= 1) { skip.push(u.name + '（已由该认证服务器校验）'); return; }
           patch.serverId = srcSid;
         } else {
           if (!wasRemote) { skip.push(u.name + '（已是本地账号）'); return; }
@@ -9998,10 +10003,19 @@
   }
 
   /* ---------- 账号来源 / 权限的展示文案 ---------- */
+  /* 多选认证源的选中值；部分环境设置 select.value 不落 selected，兜底取 value */
+  function pickedIds(sel) {
+    var out = [];
+    Array.prototype.forEach.call(sel.options, function (o) { if (o.selected && o.value) out.push(o.value); });
+    if (!out.length && sel.value) out.push(sel.value);
+    return out;
+  }
   function sourceText(u) {
-    if (!u || (u.source || 'local') === 'local') return '本地';
-    var label = AUTH_LABELS[u.source] || String(u.source).toUpperCase();
-    return label;
+    if (!u) return '本地';
+    var list = u.authSources || [];
+    if (list.length) return list.map(function (b) { return b.name; }).join(' / ');
+    if ((u.source || 'local') === 'local') return '本地';
+    return AUTH_LABELS[u.source] || String(u.source).toUpperCase();
   }
   var AUTH_LABELS = {
     local: '本地', radius: 'RADIUS', tacacs: 'TACACS+', ldap: 'LDAP',
@@ -10183,13 +10197,15 @@
     /* 远程账号的口令在认证服务器上，这里只需要说明由谁校验 */
     var hint = document.getElementById('uServerHint');
     if (remote) {
-      var sid = document.getElementById('uServer').value;
-      var s = serverById(sid);
-      hint.textContent = s
-        ? (isSsoServer(s)
-            ? ('该账号通过「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + '）统一身份登录：本站不保存密码，平台认证后按登录名匹配本账号。')
-            : ('登录时把用户名与密码转发给「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + ' ' + s.host + ':' + s.port + '）校验，本站不保存密码。'))
-        : '还没有可用的认证源，请先到「认证管理」页新增。';
+      var picked = pickedIds(document.getElementById('uServer'));
+      var s = picked.length ? serverById(picked[0]) : null;
+      hint.textContent = !s
+        ? '还没有可用的认证源，请先到「认证管理」页新增。'
+        : (picked.length > 1
+            ? ('已绑定 ' + picked.length + ' 个源，首项「' + s.name + '」为主源；口令按序尝试，免认证源走统一身份跳转。')
+            : (isSsoServer(s)
+                ? ('该账号通过「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + '）统一身份登录：本站不保存密码，平台认证后按登录名匹配本账号。')
+                : ('登录时把用户名与密码转发给「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + ' ' + s.host + ':' + s.port + '）校验，本站不保存密码。')));
     }
     syncMultiLedgerField();
   }
@@ -10416,7 +10432,11 @@
     var remote = !!u && (u.source || 'local') !== 'local';
     editingWasRemote = remote;
     document.getElementById('uSourceType').value = remote ? 'remote' : 'local';
-    if (remote && u.serverId) sel.value = u.serverId;
+    /* 多认证源：回填已绑定的全部服务器，顺序即主源优先顺序 */
+    var picked = (u && (u.serverIds || (u.serverId ? [u.serverId] : []))) || [];
+    Array.prototype.forEach.call(sel.options, function (o) { o.selected = picked.indexOf(o.value) >= 0; });
+    /* 新建时默认选中第一个源，保持与旧单选一致的开箱行为 */
+    if (!picked.length && sel.options.length && sel.options[0].value) sel.options[0].selected = true;
 
     document.getElementById('uSeed').parentNode.style.display = u ? 'none' : 'block';
     document.getElementById('uSeedHint').style.display = u ? 'none' : 'block';
@@ -10440,7 +10460,8 @@
         document.getElementById('uNote').value = cloneFrom.note || '';
         var cRemote = (cloneFrom.source || 'local') !== 'local';
         document.getElementById('uSourceType').value = cRemote ? 'remote' : 'local';
-        if (cRemote && cloneFrom.serverId) document.getElementById('uServer').value = cloneFrom.serverId;
+        var cPick = cloneFrom.serverIds || (cloneFrom.serverId ? [cloneFrom.serverId] : []);
+        Array.prototype.forEach.call(document.getElementById('uServer').options, function (o) { o.selected = cPick.indexOf(o.value) >= 0; });
         document.getElementById('uSeed').value = 'copy';
         document.getElementById('uSeedCopyWrap').style.display = 'block';
         document.getElementById('uSeedUser').value = seedOwner.username;
@@ -10505,7 +10526,9 @@
     var perm = document.getElementById('uPerm').value === 'ro' ? 'ro' : 'rw';
     var note = document.getElementById('uNote').value.trim();
     var remote = document.getElementById('uSourceType').value === 'remote';
-    var serverId = remote ? document.getElementById('uServer').value : '';
+    /* 多认证源：选中顺序即绑定顺序，第一项为主源 */
+    var serverIds = remote ? pickedIds(document.getElementById('uServer')) : [];
+    var serverId = serverIds[0] || '';
     var minsRaw = document.getElementById('uSessionMins').value.trim();
     var mins = Number(minsRaw);
     if (minsRaw === '') mins = 30;
@@ -10513,7 +10536,7 @@
       toast('登录超时需为 5–43200 之间的整数分钟（留空默认 30）'); return;
     }
     if (!name) { toast('请填写区域展示名称'); return; }
-    if (remote && !serverId) { toast('请选择认证源（没有的话先去「认证管理」页新增）'); return; }
+    if (remote && !serverIds.length) { toast('请选择认证源（没有的话先去「认证管理」页新增）'); return; }
     /* 通知开着却一个动作都不勾＝永不推送的哑配置，先拦一道（服务端同样会拦） */
     var wxNow = collectWx();
     if (wxNow.enabled && !wxNow.acts.length) {
@@ -10527,7 +10550,7 @@
         toast('至少需要保留一个超级管理员，无法降级'); return;
       }
       var wasRemote = (target.source || 'local') !== 'local';
-      var patch = { name: name, nameCn: nameCn, crmVisible: crmVisible, statVisible: statVisible, role: role, note: note, perm: perm, serverId: serverId, sessionMins: mins,
+      var patch = { name: name, nameCn: nameCn, crmVisible: crmVisible, statVisible: statVisible, role: role, note: note, perm: perm, serverIds: serverIds, sessionMins: mins,
         hideSensitive: document.getElementById('uHideSens').checked,
         multiLedger: document.getElementById('uMultiLedger').checked,
         wx: wxNow };
@@ -10589,7 +10612,7 @@
       };
       if (initData.shareFrom) payload.shareFrom = initData.shareFrom;
       else payload.data = initData;
-      if (remote) payload.serverId = serverId; else payload.password = pwd;
+      if (remote) payload.serverIds = serverIds; else payload.password = pwd;
       return api('/users', { method: 'POST', body: payload }).then(function (r) {
         if (!r.ok) { toast(r.error || '创建失败'); return; }
         closeModal('maskUser');

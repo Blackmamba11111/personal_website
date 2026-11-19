@@ -1257,6 +1257,25 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 会话失效：清空浮层 ================= */
+  {
+    const dom = makeDom({ sessionUser: 'demo', errors });
+    const w = dom.window, d = w.document;
+    await tick(260);
+    const id = x => idOf(d, x);
+    id('maskDetail').classList.add('on');
+    id('maskViewer').classList.add('on');
+    id('maskCust').classList.add('on');
+    w.__authExpired('登录状态已失效，请重新登录。');
+    await tick(40);
+    check('会话失效后关闭登记详情抽屉', !id('maskDetail').classList.contains('on'));
+    check('会话失效后关闭预览与表单浮层',
+      !id('maskViewer').classList.contains('on') && !id('maskCust').classList.contains('on'));
+    check('会话失效后回到登录页', id('authView').classList.contains('on'));
+    check('会话失效后提示已失效', id('authErr').textContent.indexOf('失效') >= 0, id('authErr').textContent);
+    w.close();
+  }
+
   /* ================= 汇总 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));
