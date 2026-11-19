@@ -602,7 +602,11 @@ export function oidcEndpoints(cfg, doc) {
     authorize: (cfg && cfg.authorizeUrl) || d.authorization_endpoint || joinUrl2(issuer, 'authorize'),
     token: (cfg && cfg.tokenUrl) || d.token_endpoint || joinUrl2(issuer, 'token'),
     userinfo: (cfg && cfg.userinfoUrl) || d.userinfo_endpoint || '',
-    jwks: (cfg && cfg.jwksUri) || d.jwks_uri || ''
+    jwks: (cfg && cfg.jwksUri) || d.jwks_uri || '',
+    /* 平台声明的客户端认证方式，供换令牌时协商（缺省时按 Basic 先试） */
+    authMethods: Array.isArray(d.token_endpoint_auth_methods_supported)
+      ? d.token_endpoint_auth_methods_supported.map(function (x) { return String(x); })
+      : []
   };
 }
 
@@ -633,8 +637,28 @@ export function oidcAuthorizeUrl(endpoints, cfg, o) {
   return endpoints.authorize + (endpoints.authorize.indexOf('?') >= 0 ? '&' : '?') + qs;
 }
 
-/* 授权码换令牌。tokenAuth：basic（默认，HTTP Basic 传 client_secret）| post（表单里传） */
-export async function oidcExchange(cfg, endpoints, o) {
+/* 客户端认证方式：平台实现差异很大——有的只认 HTTP Basic，有的（如 Go 系中台）
+   只认表单里的 client_secret（client_secret_post）。这里先按「源配置指定 → 上次
+   成功的方式 → 平台 discovery 声明 → Basic」定首选，被平台判为 invalid_client 时
+   自动换另一种重试一次；成功后记住该平台可用的方式，避免每次登录都先撞一次 401。 */
+const TOKEN_AUTH_MEMO = new Map();
+function tokenAuthKey(cfg) {
+  return String((cfg && cfg.issuer) || '') + '|' + String((cfg && cfg.clientId) || '');
+}
+function tokenAuthFirst(cfg, endpoints, o) {
+  const want = String((cfg && cfg.tokenAuth) || '');
+  if (want === 'post' || want === 'basic') return want;
+  const memo = TOKEN_AUTH_MEMO.get(tokenAuthKey(cfg));
+  if (memo) return memo;
+  const m = (o && Array.isArray(o.authMethods) && o.authMethods.length)
+    ? o.authMethods
+    : ((endpoints && endpoints.authMethods) || []);
+  const hasBasic = m.indexOf('client_secret_basic') >= 0;
+  const hasPost = m.indexOf('client_secret_post') >= 0;
+  if (hasPost && !hasBasic) return 'post';
+  return 'basic';
+}
+function tokenAuthBody(cfg, o, mode) {
   const body = [
     ['grant_type', 'authorization_code'],
     ['code', String(o && o.code || '')],
@@ -642,40 +666,66 @@ export async function oidcExchange(cfg, endpoints, o) {
     ['client_id', String(cfg.clientId || '')]
   ];
   if (o && o.verifier) body.push(['code_verifier', String(o.verifier)]);
+  if (mode === 'post') body.push(['client_secret', String(cfg.clientSecret || '')]);
+  return body.map(function (p) {
+    return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]);
+  }).join('&');
+}
+function tokenAuthHeaders(cfg, mode) {
   const headers = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
-  if (String((cfg && cfg.tokenAuth) || 'basic') === 'post') {
-    body.push(['client_secret', String(cfg.clientSecret || '')]);
-  } else {
+  if (mode === 'basic') {
     const pair = String(cfg.clientId || '') + ':' + String(cfg.clientSecret || '');
     headers.authorization = 'Basic ' + (typeof btoa === 'function'
       ? btoa(unescape(encodeURIComponent(pair)))
       : Buffer.from(pair, 'utf8').toString('base64'));
   }
-  const payload = body.map(function (p) {
-    return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]);
-  }).join('&');
+  return headers;
+}
+/* 授权码换令牌。tokenAuth：basic（HTTP Basic 传密钥）| post（表单里传）| 空（自动协商） */
+export async function oidcExchange(cfg, endpoints, o) {
+  const first = tokenAuthFirst(cfg, endpoints, o);
+  const order = first === 'post' ? ['post', 'basic'] : ['basic', 'post'];
   const timeout = Math.min(15000, Math.max(3000, (parseInt(cfg && cfg.timeout, 10) || 8) * 1000));
-  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
-  const timer = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) {} }, timeout) : null;
-  try {
-    const r = await (o && o.fetch || globalThis.fetch)(endpoints.token, {
-      method: 'POST', headers: headers, body: payload, signal: ctl ? ctl.signal : undefined
-    });
+  let last = null;
+  let triedBoth = false;
+  for (let i = 0; i < order.length; i++) {
+    const mode = order[i];
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) {} }, timeout) : null;
+    let r = null;
+    try {
+      r = await (o && o.fetch || globalThis.fetch)(endpoints.token, {
+        method: 'POST', headers: tokenAuthHeaders(cfg, mode), body: tokenAuthBody(cfg, o, mode),
+        signal: ctl ? ctl.signal : undefined
+      });
+    } catch (e) {
+      if (timer) clearTimeout(timer);
+      return { ok: false, code: 'neterr', message: '换取令牌时连不上平台：' + (e && e.message ? e.message : String(e)) };
+    }
     if (timer) clearTimeout(timer);
     let data = null;
     try { data = await r.json(); } catch (e) {}
-    if (!r.ok || !data) {
-      const m = data && (data.error_description || data.error);
-      return { ok: false, code: 'http' + r.status, message: '换取令牌失败：' + (m || ('HTTP ' + r.status)) };
+    if (r.ok && data) {
+      if (!data.id_token) {
+        return { ok: false, code: 'noidtoken', message: '平台未返回 id_token，无法校验身份（请确认 scope 含 openid）' };
+      }
+      TOKEN_AUTH_MEMO.set(tokenAuthKey(cfg), mode);
+      return {
+        ok: true, idToken: String(data.id_token), accessToken: String(data.access_token || ''),
+        tokenType: String(data.token_type || 'Bearer'), authMode: mode
+      };
     }
-    if (!data.id_token) {
-      return { ok: false, code: 'noidtoken', message: '平台未返回 id_token，无法校验身份（请确认 scope 含 openid）' };
-    }
-    return { ok: true, idToken: String(data.id_token), accessToken: String(data.access_token || ''), tokenType: String(data.token_type || 'Bearer') };
-  } catch (e) {
-    if (timer) clearTimeout(timer);
-    return { ok: false, code: 'neterr', message: '换取令牌时连不上平台：' + (e && e.message ? e.message : String(e)) };
+    const errCode = String((data && data.error) || '');
+    const m = data && (data.error_description || data.error);
+    last = { ok: false, code: 'http' + r.status, message: '换取令牌失败：' + (m || ('HTTP ' + r.status)) };
+    /* 只有「客户端认证方式不被接受」才值得换另一种重试：授权码无效/过期重试无意义，
+       而且失败的那次 401 不会消耗授权码，所以换法重试是安全的。 */
+    const canRetry = errCode === 'invalid_client' || r.status === 401;
+    if (!canRetry || i === order.length - 1) break;
+    triedBoth = true;
   }
+  if (triedBoth && last) last.message += '（已分别用 HTTP Basic 与表单两种方式提交客户端凭据，请核对 Client Secret）';
+  return last || { ok: false, code: 'http', message: '换取令牌失败' };
 }
 
 /* JWKS → JWK。按 kid 精确匹配；平台未发布任何 kid 时才用唯一密钥兜底。

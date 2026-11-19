@@ -1116,6 +1116,7 @@ function ensureSsoInput(body, base, type) {
     text('issuer'); text('clientId'); secret('clientSecret');
     text('scope'); text('redirectUri'); bool('pkce', 1);
     text('jwksUri'); text('authorizeUrl'); text('tokenUrl'); text('userinfoUrl');
+    text('tokenAuth');           /* 空 = 自动协商（默认），可强制 basic / post */
     text('accountClaim'); text('nameClaim'); text('deptClaim');
     if (!cfg.issuer) return { err: 'OIDC 需要填写 Issuer（如 https://sso.zdns.cn）' };
     if (!isHttpUrl(cfg.issuer)) return { err: 'Issuer 需以 http:// 或 https:// 开头' };
@@ -1123,6 +1124,7 @@ function ensureSsoInput(body, base, type) {
     if (!cfg.clientSecret) return { err: 'OIDC 需要填写 Client Secret' };
     if (!cfg.scope) cfg.scope = 'openid profile';
     if (!cfg.accountClaim) cfg.accountClaim = 'preferred_username';
+    if (cfg.tokenAuth !== 'post' && cfg.tokenAuth !== 'basic') cfg.tokenAuth = '';
     [['jwksUri', 'JWKS 地址'], ['authorizeUrl', '授权地址'], ['tokenUrl', '令牌地址'], ['userinfoUrl', '用户信息地址']]
       .forEach(function (p) { if (cfg[p[0]] && !isHttpUrl(cfg[p[0]])) cfg.__err = cfg.__err || (p[1] + '需以 http/https 开头'); });
   } else if (type === 'oauth2') {
@@ -1279,6 +1281,15 @@ async function probeSso(type, cfg) {
       add('端点声明', false, '配置文档缺少 authorization_endpoint / token_endpoint');
     } else {
       add('端点声明', true, '授权与令牌端点齐全' + (doc.userinfo_endpoint ? '，含 userinfo' : ''));
+    /* 客户端认证方式：配错会导致「授权码拿到了却换不到令牌」，提前在自检里暴露 */
+    const methods = Array.isArray(doc.token_endpoint_auth_methods_supported)
+      ? doc.token_endpoint_auth_methods_supported : [];
+    if (methods.length) {
+      const usable = methods.indexOf('client_secret_basic') >= 0 || methods.indexOf('client_secret_post') >= 0;
+      add('令牌端认证方式', usable, usable
+        ? ('平台支持 ' + methods.join(' / ') + '，换令牌时自动协商')
+        : ('平台只声明 ' + methods.join('、') + '，本站仅支持 client_secret_basic / client_secret_post'));
+    }
     }
     const jwks = cfg.jwksUri || doc.jwks_uri || '';
     if (!jwks) {

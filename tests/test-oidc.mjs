@@ -103,6 +103,62 @@ check('缺 id_token 明确报错', !ex3.ok && ex3.code === 'noidtoken', JSON.str
 const ex4 = await P.oidcExchange(cfg, ep, { code: 'c', redirectUri: 'r', fetch: mockFetch({ '/token': { ok: false, status: 400, json: async () => ({ error: 'invalid_grant', error_description: 'code 已使用' }) } }) });
 check('换码失败带平台原因', !ex4.ok && /code 已使用/.test(ex4.message), ex4.message);
 
+/* ---------- 客户端认证方式协商（平台只认表单时自动切换） ---------- */
+/* Go 系中台（如统一身份平台）：HTTP Basic 一律 401 invalid_client，只接受表单里的 secret */
+function postOnlyFetch() {
+  const f = mockFetch({
+    '/token': (init) => {
+      if (init.headers && init.headers.authorization) {
+        return { ok: false, status: 401, json: async () => ({ error: 'invalid_client' }) };
+      }
+      if (String(init.body).indexOf('client_secret=s1') < 0) {
+        return { ok: false, status: 401, json: async () => ({ error: 'invalid_client' }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ id_token: 'a.b.c', access_token: 'at' }) };
+    }
+  });
+  return f;
+}
+const fAuto = postOnlyFetch();
+const cfgRetry = { issuer: 'https://retry.example.com', clientId: 'c1', clientSecret: 's1' };
+const exAuto = await P.oidcExchange(cfgRetry, P.oidcEndpoints(cfgRetry, {}), { code: 'c', redirectUri: 'r', fetch: fAuto });
+check('Basic 被拒后自动改用表单方式重试成功', exAuto.ok && exAuto.authMode === 'post', JSON.stringify(exAuto));
+check('自动重试只发两次请求（先 Basic 后表单）', fAuto.hits.length === 2
+  && !!fAuto.hits[0].init.headers.authorization && !fAuto.hits[1].init.headers.authorization,
+  fAuto.hits.length + ' 次');
+/* 成功方式被记住：同一平台的后续登录直接走表单，不再白撞一次 401 */
+const fMemo = postOnlyFetch();
+const exMemo = await P.oidcExchange(cfgRetry, P.oidcEndpoints(cfgRetry, {}), { code: 'c', redirectUri: 'r', fetch: fMemo });
+check('记住可用方式，下次一次命中', exMemo.ok && fMemo.hits.length === 1 && !fMemo.hits[0].init.headers.authorization,
+  fMemo.hits.length + ' 次');
+
+/* 平台在 discovery 里声明只支持 client_secret_post：首选就直接用表单，不撞 401 */
+const cfgPost = { issuer: 'https://post.example.com', clientId: 'c2', clientSecret: 's1' };
+const epPost = P.oidcEndpoints(cfgPost, {
+  authorization_endpoint: 'https://post.example.com/a',
+  token_endpoint: 'https://post.example.com/token',
+  jwks_uri: 'https://post.example.com/jwks',
+  token_endpoint_auth_methods_supported: ['client_secret_post']
+});
+check('discovery 声明只支持表单时列为候选', epPost.authMethods.join(',') === 'client_secret_post', String(epPost.authMethods));
+const fDecl = postOnlyFetch();
+const exDecl = await P.oidcExchange(cfgPost, epPost, { code: 'c', redirectUri: 'r', fetch: fDecl });
+check('按声明首选表单方式，一次成功', exDecl.ok && fDecl.hits.length === 1
+  && !fDecl.hits[0].init.headers.authorization, fDecl.hits.length + ' 次');
+
+/* 两种方式都被拒：报错要说清已尝试过两种，指向密钥问题 */
+const cfgBoth = { issuer: 'https://both.example.com', clientId: 'c3', clientSecret: 'wrong' };
+const fBoth = mockFetch({ '/token': { ok: false, status: 401, json: async () => ({ error: 'invalid_client', error_description: 'bad secret' }) } });
+const exBoth = await P.oidcExchange(cfgBoth, P.oidcEndpoints(cfgBoth, {}), { code: 'c', redirectUri: 'r', fetch: fBoth });
+check('两种方式都失败时提示核对 Client Secret', !exBoth.ok && /Client Secret/.test(exBoth.message) && fBoth.hits.length === 2,
+  exBoth.message);
+
+/* 授权码无效（invalid_grant）不该重试：重试既无意义也会掩盖真实原因 */
+const cfgGrant = { issuer: 'https://grant.example.com', clientId: 'c4', clientSecret: 's1' };
+const fGrant = mockFetch({ '/token': { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) } });
+const exGrant = await P.oidcExchange(cfgGrant, P.oidcEndpoints(cfgGrant, {}), { code: 'c', redirectUri: 'r', fetch: fGrant });
+check('invalid_grant 不触发换法重试', !exGrant.ok && fGrant.hits.length === 1, fGrant.hits.length + ' 次');
+
 /* ---------- ID Token 验签 ---------- */
 const kp = await WC.subtle.generateKey(
   { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
