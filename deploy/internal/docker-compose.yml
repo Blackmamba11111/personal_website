@@ -25,6 +25,11 @@ services:
       - HTTP_REDIRECT_PORT=8080
       - TLS_CERT=/certs/server.crt
       - TLS_KEY=/certs/server.key
+      # 平台根 CA（/opt/inspection/certs/platform-ca.crt，Common Platform Validation CA）：
+      # 挂进 Node 的信任库后，访问 https://10.1.112.21/portal 才能通过正规校验，
+      # 免认证源不必再开「跳过 TLS 证书校验」。文件缺失时 Node 只告警、不退出。
+      # 注意 certs/ca.crt 是本站内部 CA（签 server.crt），两者不要混用。
+      - NODE_EXTRA_CA_CERTS=/certs/platform-ca.crt
     logging:
       driver: json-file
       options:

@@ -24,7 +24,7 @@
 ├── server.js               # 服务端（静态资源 + /api + TLS 终止）
 ├── Dockerfile              # 构建文件
 ├── docker-compose.yml      # 编排（443→8443 HTTPS，80→8080 跳转）
-├── certs/                  # 内部 CA 与服务端证书（ca.crt / server.key / server-chain.crt）
+├── certs/                  # ca.crt（本站内部 CA）+ server.key/server-chain.crt + platform-ca.crt（平台根 CA）
 ├── inspection-dashboard.html / index.html / 404.html / robots.txt / assets/
 ├── data/                   # 挂载卷：inspection.db（SQLite，WAL）+ photo/hero.jpg（首页照片）+ uploads/（巡检附件）
 ├── backup/                 # 每日备份快照（保留 7 份）
@@ -44,8 +44,21 @@
 分发并安装到各终端的「受信任的根证书颁发机构」（macOS 钥匙串 / Windows certmgr）。
 `ca.crt` 也可直接从服务器拷贝：`/opt/inspection/certs/ca.crt`。
 
+`certs/` 下有两套证书，用途不同，不要混用：
+
+| 文件 | 主体 | 用途 |
+| --- | --- | --- |
+| `ca.crt` | Inspection Internal CA | 签本站 server.crt，分发给终端消除浏览器告警 |
+| `platform-ca.crt` | Common Platform Validation CA | 平台（10.1.112.21）根 CA，供服务端信任 |
+
+`platform-ca.crt` 由 `docker-compose.yml` 的 `NODE_EXTRA_CA_CERTS=/certs/platform-ca.crt`
+注入 Node 信任库，因此免认证源可以直接走证书校验（`insecure` 留空即可）；
+文件缺失时 Node 只告警不影响启动。
+
 **重签证书**：`rm -rf /opt/inspection/certs` 后按 DEPLOY 随附的 gen-certs.sh 流程重签
 （改 SAN 时编辑脚本里的 server.ext），然后 `docker compose restart`。
+重签会删掉 `platform-ca.crt`，需重新放回（否则平台 discovery 会再次报
+`unable to verify the first certificate`）。
 
 ## 3. 初始账号
 
