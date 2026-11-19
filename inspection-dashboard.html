@@ -2232,7 +2232,7 @@
           <option value="remote">远程 / 免认证 — 身份由认证源确认</option>
         </select>
         <div id="bSourceExtra" style="margin-top:8px;display:none;">
-          <select id="bServer" style="display:none;"></select>
+          <div class="src-pick" id="bServerList" style="display:none;"></div>
           <div class="pwd-wrap" id="bSourcePwdWrap" style="display:none;">
             <input type="password" id="bSourcePwd" autocomplete="new-password" placeholder="切回本地的统一初始密码（至少 6 位）">
             <button type="button" class="pwd-eye" data-eye="bSourcePwd" aria-pressed="false" aria-label="显示密码" title="显示密码"><svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg><svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/><path d="m4 20 16-16"/></svg></button>
@@ -9955,18 +9955,13 @@
         (multiOk < targets.length ? '；其余 ' + (targets.length - multiOk) + ' 个（独立账号 / 超级管理员）会被跳过' : '') +
         '。与单个用户弹窗里的「多台账权限」是同一开关。')
       : '所选账号都不在共享关系里，开启会被全部跳过。与单个用户弹窗里的「多台账权限」是同一开关。';
-    /* 账号类型 / 认证服务器下拉（与新建用户弹窗同一套数据源） */
+    /* 账号类型 / 认证源勾选列表（与新建用户弹窗同一套数据源与交互） */
     document.getElementById('bSourceType').value = 'local';
     document.getElementById('bSourcePwd').value = '';
-    var bsel = document.getElementById('bServer');
     var blist = serversList();
-    bsel.innerHTML = blist.length
-      ? blist.map(function (s) {
-          return '<option value="' + esc(s.id) + '">' + esc(s.name) + ' · ' + esc(AUTH_LABELS[s.type] || s.type) +
-            (isSsoServer(s) ? ' · 免认证' : ' · ' + esc(s.host + ':' + s.port)) +
-            (s.enabled ? '' : '（已停用）') + '</option>';
-        }).join('')
-      : '<option value="">（暂无认证源）</option>';
+    /* 默认勾第一个可用源（与旧单选一致），其余由用户按需追加；勾选顺序即登录尝试顺序 */
+    var bPicked = blist.length ? [(blist.filter(function (s) { return s.enabled; })[0] || blist[0]).id] : [];
+    renderServerPick(blist, bPicked, 'bServerList', 'bSrvPri');
     syncBatchSourceFields();
     openModal('maskBatchUser');
   }
@@ -9975,15 +9970,17 @@
     var remote = document.getElementById('bSourceType').value === 'remote';
     var on = document.getElementById('bSourceOn').checked;
     document.getElementById('bSourceExtra').style.display = on ? 'block' : 'none';
-    document.getElementById('bServer').style.display = remote ? 'block' : 'none';
+    document.getElementById('bServerList').style.display = remote ? 'block' : 'none';
     document.getElementById('bSourcePwdWrap').style.display = remote ? 'none' : 'block';
     var hint = document.getElementById('bSourceHint');
     if (remote) {
-      var s = serverById(document.getElementById('bServer').value);
+      var ids = pickedIds('bServerList', 'bSrvPri');
+      var s = serverById(ids[0]);
+      var more = ids.length > 1 ? '，共 ' + ids.length + ' 个源、按顺序尝试' : '';
       hint.textContent = s
         ? (isSsoServer(s)
-            ? ('所选账号将改由「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + '）统一身份登录，原有绑定会被覆盖；已是唯一认证源的账号跳过。')
-            : ('所选远程账号的口令将改由「' + s.name + '」校验，原有绑定会被覆盖；已是唯一认证源的账号跳过。'))
+            ? ('所选账号将改由「' + s.name + '」（' + (AUTH_LABELS[s.type] || s.type) + '）统一身份登录' + more + '，原有绑定会被覆盖；已完全相同绑定的账号跳过。')
+            : ('所选远程账号的口令将改由「' + s.name + '」校验' + more + '，原有绑定会被覆盖；已完全相同绑定的账号跳过。'))
         : '还没有可用的认证源，请先到「认证管理」页新增。';
     } else {
       hint.textContent = '仅对远程账号生效：改回本地需统一初始密码；已是本地账号的跳过。';
@@ -10068,13 +10065,13 @@
     }
     /* 账号类型：远程→选服务器；本地→需统一初始密码（仅对远程账号生效） */
     var srcOn = document.getElementById('bSourceOn').checked;
-    var srcType = '', srcSid = '', srcPwd = '';
+    var srcType = '', srcIds = [], srcPwd = '';
     if (srcOn) {
       srcType = document.getElementById('bSourceType').value;
       if (srcType === 'remote') {
-        srcSid = document.getElementById('bServer').value;
-        if (!srcSid || !serverById(srcSid)) {
-          toast('请选择认证源（没有的话先到「认证管理」页新增）'); return;
+        srcIds = pickedIds('bServerList', 'bSrvPri');
+        if (!srcIds.length) {
+          toast('请至少勾选一个认证源（没有的话先到「认证管理」页新增）'); return;
         }
       } else {
         srcPwd = String(document.getElementById('bSourcePwd').value || '');
@@ -10100,11 +10097,15 @@
       if (srcOn) {
         var wasRemote = (u.source || 'local') !== 'local';
         if (srcType === 'remote') {
-          if (wasRemote && u.serverId === srcSid && (u.serverIds || []).length <= 1) { skip.push(u.name + '（已由该认证服务器校验）'); return; }
-          patch.serverId = srcSid;
+          /* 集合与顺序都一致才算无需改动（顺序即尝试顺序，主源在首位） */
+          var nowIds = u.serverIds || [];
+          var same = nowIds.length === srcIds.length &&
+            srcIds.every(function (x, i) { return nowIds[i] === x; });
+          if (same) { skip.push(u.name + (srcIds.length > 1 ? '（已由这些认证源校验）' : '（已由该认证服务器校验）')); return; }
+          patch.serverIds = srcIds.slice();
         } else {
           if (!wasRemote) { skip.push(u.name + '（已是本地账号）'); return; }
-          patch.serverId = '';
+          patch.serverIds = [];
           patch.password = srcPwd;
         }
       }
@@ -10161,21 +10162,23 @@
 
   /* ---------- 账号来源 / 权限的展示文案 ---------- */
   /* 多选认证源的选中值；部分环境设置 select.value 不落 selected，兜底取 value */
-  /* 认证源多选：返回 serverId 数组，主源排第一，其余按列表顺序（即尝试顺序） */
-  function pickedIds() {
-    var box = document.getElementById('uServerList');
+  /* 认证源多选：返回 serverId 数组，主源排第一，其余按列表顺序（即尝试顺序）。
+     单用户弹窗与批量弹窗共用，boxId / radioName 成对传入（同名 radio 会跨弹窗互相取消）。 */
+  function pickedIds(boxId, radioName) {
+    var box = document.getElementById(boxId || 'uServerList');
     if (!box) return [];
     var sel = Array.prototype.filter.call(box.querySelectorAll('input[data-sid]'), function (c) { return c.checked; })
       .map(function (c) { return c.getAttribute('data-sid'); });
-    var pri = box.querySelector('input[name="uSrvPri"]:checked');
+    var pri = box.querySelector('input[name="' + (radioName || 'uSrvPri') + '"]:checked');
     var pid = pri ? pri.value : '';
     if (pid && sel.indexOf(pid) >= 0) sel = [pid].concat(sel.filter(function (x) { return x !== pid; }));
     return sel;
   }
   /* 渲染认证源勾选列表；picked[0] 为主源 */
-  function renderServerPick(list, picked) {
-    var box = document.getElementById('uServerList');
+  function renderServerPick(list, picked, boxId, radioName) {
+    var box = document.getElementById(boxId || 'uServerList');
     if (!box) return;
+    var rn = radioName || 'uSrvPri';
     picked = picked || [];
     if (!list.length) {
       box.innerHTML = '<div class="src-row is-off"><span class="src-meta">还没有可用的认证源，请先到「认证管理」页新增。</span></div>';
@@ -10189,28 +10192,29 @@
       return '<div class="src-row' + (on ? ' is-on' : '') + (s.enabled ? '' : ' is-off') + '">' +
         '<label class="src-ck"><input type="checkbox" data-sid="' + esc(s.id) + '"' + (on ? ' checked' : '') + '>' +
         '<span><b>' + esc(s.name) + '</b><em>' + esc(meta) + '</em></span></label>' +
-        '<label class="src-pri"><input type="radio" name="uSrvPri" value="' + esc(s.id) + '"' +
+        '<label class="src-pri"><input type="radio" name="' + rn + '" value="' + esc(s.id) + '"' +
         (on ? '' : ' disabled') + '><span>主源</span></label></div>';
     }).join('');
     if (picked.length) {
-      var r = box.querySelector('input[name="uSrvPri"][value="' + picked[0] + '"]');
+      var r = box.querySelector('input[name="' + rn + '"][value="' + picked[0] + '"]');
       if (r) { r.checked = true; r.disabled = false; }
     }
   }
   /* 勾选变化后同步行底色与主源单选可用性 */
-  function syncServerPickRows() {
-    var box = document.getElementById('uServerList');
+  function syncServerPickRows(boxId, radioName) {
+    var box = document.getElementById(boxId || 'uServerList');
     if (!box) return;
+    var rn = radioName || 'uSrvPri';
     Array.prototype.forEach.call(box.querySelectorAll('input[data-sid]'), function (c) {
       var row = c.parentNode && c.parentNode.parentNode;
       if (row && row.classList) row.classList[c.checked ? 'add' : 'remove']('is-on');
-      var r = box.querySelector('input[name="uSrvPri"][value="' + c.getAttribute('data-sid') + '"]');
+      var r = box.querySelector('input[name="' + rn + '"][value="' + c.getAttribute('data-sid') + '"]');
       if (r) { r.disabled = !c.checked; if (!c.checked) r.checked = false; }
     });
-    if (!box.querySelector('input[name="uSrvPri"]:checked')) {
+    if (!box.querySelector('input[name="' + rn + '"]:checked')) {
       var first = box.querySelector('input[data-sid]:checked');
       if (first) {
-        var r2 = box.querySelector('input[name="uSrvPri"][value="' + first.getAttribute('data-sid') + '"]');
+        var r2 = box.querySelector('input[name="' + rn + '"][value="' + first.getAttribute('data-sid') + '"]');
         if (r2) { r2.disabled = false; r2.checked = true; }
       }
     }
@@ -11028,7 +11032,10 @@
     document.getElementById('bWxOn').addEventListener('change', syncBatchWxFields);
     document.getElementById('bWxMode').addEventListener('change', syncBatchWxFields);
     document.getElementById('bWxType').addEventListener('change', syncBatchWxFields);
-    document.getElementById('bServer').addEventListener('change', syncBatchSourceFields);
+    document.getElementById('bServerList').addEventListener('change', function () {
+      syncServerPickRows('bServerList', 'bSrvPri');
+      syncBatchSourceFields();
+    });
 
     /* 认证服务器页 */
     document.getElementById('btnAuthServers').addEventListener('click', openServersPage);

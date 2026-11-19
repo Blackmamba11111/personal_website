@@ -1050,7 +1050,10 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     ] };
     const dom = makeDom({
       fixture: fx, sessionUser: 'admin', data: { admin: mkDB(1, 'A-') }, errors,
-      servers: [{ id: 'srv1', name: '主RADIUS', type: 'radius', host: '10.0.0.2', port: 1812, cfg: { secret: 's3cret' } }]
+      servers: [
+        { id: 'srv1', name: '主RADIUS', type: 'radius', host: '10.0.0.2', port: 1812, cfg: { secret: 's3cret' } },
+        { id: 'srv2', name: '域LDAP', type: 'ldap', host: '10.0.0.9', port: 389, cfg: {} }
+      ]
     });
     const w = dom.window, d = w.document;
     await tick(260);
@@ -1086,7 +1089,7 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     fire(w, id('bSourceOn'), 'change');
     check('应用账号类型后出现附加区', id('bSourceExtra').style.display === 'block');
     check('默认本地类型显示统一初始密码框', id('bSourcePwdWrap').style.display === 'block' &&
-      id('bServer').style.display === 'none');
+      id('bServerList').style.display === 'none');
     click(w, id('btnSaveBatchUsers'));
     check('切回本地密码缺失被拦截', id('toast').textContent.indexOf('初始密码') >= 0 &&
       id('maskBatchUser').classList.contains('on'), id('toast').textContent);
@@ -1105,10 +1108,10 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     id('bSourceOn').checked = true;
     id('bSourceType').value = 'remote';
     fire(w, id('bSourceType'), 'change');
-    check('远程类型显示认证服务器下拉', id('bServer').style.display === 'block' &&
+    check('远程类型显示认证源勾选列表', id('bServerList').style.display === 'block' &&
       id('bSourcePwdWrap').style.display === 'none');
-    check('服务器下拉含夹具服务器', id('bServer').textContent.indexOf('主RADIUS') >= 0,
-      id('bServer').textContent);
+    check('认证源列表含夹具服务器', id('bServerList').textContent.indexOf('主RADIUS') >= 0,
+      id('bServerList').textContent);
     click(w, id('btnSaveBatchUsers'));
     await tick(80);
     const bbR = usersOf(w).filter(u => u.username === 'bb')[0];
@@ -1123,6 +1126,49 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     await tick(80);
     check('已是该认证服务器的账号被跳过', id('toast').textContent.indexOf('已由该认证服务器校验') >= 0 &&
       id('toast').textContent.indexOf('未更新任何账号') >= 0, id('toast').textContent);
+
+    /* 批量里可勾选多个认证源（此前只有单选下拉，只能应用一个） */
+    chk3('bb', true);
+    click(w, id('btnUsersBatchEdit'));
+    id('bSourceOn').checked = true;
+    id('bSourceType').value = 'remote';
+    fire(w, id('bSourceType'), 'change');
+    const boxB = id('bServerList');
+    const ckSrv2 = boxB.querySelector('input[data-sid="srv2"]');
+    ckSrv2.checked = true;
+    fire(w, boxB, 'change');
+    check('批量弹窗可同时勾选多个认证源',
+      boxB.querySelectorAll('input[data-sid]:checked').length === 2,
+      String(boxB.querySelectorAll('input[data-sid]:checked').length));
+    check('批量弹窗主源单选与单个弹窗不同名（避免互相取消）',
+      !!boxB.querySelector('input[name="bSrvPri"]'),
+      boxB.querySelector('input[name="bSrvPri"]') ? 'bSrvPri' : '(missing)');
+    check('勾选两个源后提示按顺序尝试', id('bSourceHint').textContent.indexOf('2 个源') >= 0,
+      id('bSourceHint').textContent);
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const bbMulti = usersOf(w).filter(u => u.username === 'bb')[0];
+    check('批量保存后账号带上两个认证源',
+      (bbMulti.serverIds || []).join(',') === 'srv1,srv2', JSON.stringify(bbMulti.serverIds));
+
+    /* 主源可切换：把第二个源设为主源，保存后它排到第一位 */
+    chk3('bb', true);
+    click(w, id('btnUsersBatchEdit'));
+    id('bSourceOn').checked = true;
+    id('bSourceType').value = 'remote';
+    fire(w, id('bSourceType'), 'change');
+    id('bServerList').querySelector('input[data-sid="srv2"]').checked = true;
+    fire(w, id('bServerList'), 'change');
+    const pri2 = id('bServerList').querySelector('input[name="bSrvPri"][value="srv2"]');
+    pri2.checked = true;
+    fire(w, id('bServerList'), 'change');
+    click(w, id('btnSaveBatchUsers'));
+    await tick(80);
+    const bbPri = usersOf(w).filter(u => u.username === 'bb')[0];
+    check('批量里选的主源排到第一位',
+      (bbPri.serverIds || [])[0] === 'srv2', JSON.stringify(bbPri.serverIds));
+    check('主源变更后账号来源快照同步',
+      bbPri.source === 'ldap', bbPri.source);
     w.close();
   }
 
