@@ -8221,6 +8221,7 @@
         return;
       }
       var d = r.data || {};
+      setLastLogin('local');   /* 用账号密码登录过：这台浏览器不再自动跳统一身份 */
       enterApp(d);
     });
   }
@@ -8231,9 +8232,13 @@
      兑换正式会话后立刻把参数从地址栏抹掉。 */
   var SSO_SOURCES = [];
   var SSO_READY = false, SSO_WANT = false, SSO_TIMER = null;
-  /* 本标签页是否已经自动跳转过：进系统成功则清除（下次打开仍然自动跳），
-     退出登录、会话超时、回调报错则保留，避免「退出去又被自动登回来」。 */
+  /* 本标签页是否自动跳转过：进系统成功则清除（下次打开仍自动跳），
+     退出/超时/回调报错则保留，避免「退出去又被自动登回来」。 */
   var SSO_AUTO_KEY = 'inspect.ssoAuto';
+  /* 上次成功登录的方式：sso / local，决定是否自动跳 */
+  var LAST_LOGIN_KEY = 'inspect.lastLogin';
+  function setLastLogin(v) { try { localStorage.setItem(LAST_LOGIN_KEY, v); } catch (e) {} }
+  function lastLoginWasSso() { try { return localStorage.getItem(LAST_LOGIN_KEY) === 'sso'; } catch (e) { return false; } }
   function ssoAutoUsed() { try { return sessionStorage.getItem(SSO_AUTO_KEY) === '1'; } catch (e) { return false; } }
   function ssoAutoMark() { try { sessionStorage.setItem(SSO_AUTO_KEY, '1'); } catch (e) {} }
   function ssoAutoReset() { try { sessionStorage.removeItem(SSO_AUTO_KEY); } catch (e) {} }
@@ -8246,13 +8251,13 @@
     ssoAutoMark();
     ssoGo(API_BASE + '/auth/oidc/start?server=' + encodeURIComponent(sid));
   }
-  /* 打开即进系统。只在「未登录 + 不是回调 + 本标签页没自动跳过」时触发；
-     留 350ms 让提示先绘制出来，此刻开始输密码或点「改用账号密码登录」即取消。
-     地址后加 ?local=1 可强制停留在口令登录页。 */
+  /* 打开即进系统：前提是这台浏览器上次就用统一身份成功登录（用过一次才自动，
+     避免把中台没有账号的 LDAP 用户挡在门外），且未登录、不是回调、本标签页
+     没退出/超时过。留 350ms 让提示先绘制；输密码或点提示条按钮即取消。 */
   function maybeAutoSso() {
     if (!SSO_READY) { SSO_WANT = true; return; }
     SSO_WANT = false;
-    if (!SSO_SOURCES.length || AUTH.user || readToken() || ssoAutoUsed()) return;
+    if (!SSO_SOURCES.length || AUTH.user || readToken() || ssoAutoUsed() || !lastLoginWasSso()) return;
     try {
       var q = new URLSearchParams(location.search);
       if (q.get('sso') || q.get('sso_err') || q.get('local') === '1') return;
@@ -8316,6 +8321,7 @@
     api('/auth/sso/exchange', { method: 'POST', body: { ticket: ticket } }).then(function (r) {
       if (!r.ok || !r.data) { authError(r.error || '统一身份登录失败，请重试。'); return; }
       authError('');
+      setLastLogin('sso');   /* 记住：这台浏览器走统一身份，下次打开直接跳 */
       enterApp(r.data);
     });
     return true;
