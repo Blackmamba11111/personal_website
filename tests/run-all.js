@@ -23,6 +23,7 @@ const SUITES = [
   ['看板 · 附件服务端接口', 'test-attach.js'],
   ['看板 · 本地/远程用户与只读权限', 'test-remote-auth.js'],
   ['认证 · RADIUS/TACACS+/LDAP 协议', 'test-protocols.mjs'],
+  ['认证 · OIDC 授权码与验签', 'test-oidc.mjs'],
   ['通知 · 企业微信投递模块', 'test-wecom.mjs'],
   ['服务端 · Worker 接口（D1 兼容层）', 'test-worker-api.mjs'],
   ['服务端 · 会话超时（滑动过期）', 'test-session.mjs']

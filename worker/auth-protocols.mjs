@@ -505,3 +505,271 @@ export async function authenticate(transport, server, username, password) {
   if (type === 'ldap') return ldapAuth(transport, cfg, username, password);
   return { ok: false, code: 'badtype', message: '不支持的认证类型：' + (type || '(空)') };
 }
+
+/* ============================================================================
+ * OIDC（OpenID Connect 授权码 + PKCE）
+ *
+ * 与上面三种协议不同，OIDC 全程走 HTTPS，因此直接使用运行时自带的 fetch 与
+ * WebCrypto（Workers 与 Node 18+ 都有），不依赖宿主注入 transport。
+ * 只实现「授权码 + PKCE」这一条最通用的路径；隐式流在新平台已不推荐。
+ *
+ * 返回值同样统一为 { ok, code, message }，code 只给管理员排障用。
+ * ==========================================================================*/
+
+const B64U_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+function b64uToBytes(s) {
+  const str = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+  const pad = str.length % 4;
+  const full = str + (pad ? '='.repeat(4 - pad) : '');
+  let bin = '';
+  try {
+    if (typeof atob === 'function') bin = atob(full);
+    else bin = Buffer.from(full, 'base64').toString('binary');
+  } catch (e) { return new Uint8Array(0); }
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function bytesToB64u(bytes) {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || 0);
+  let bin = '';
+  for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+  let b64 = '';
+  if (typeof btoa === 'function') b64 = btoa(bin);
+  else b64 = Buffer.from(bin, 'binary').toString('base64');
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64uJson(seg) {
+  try {
+    const bytes = b64uToBytes(seg);
+    const text = new TextDecoder().decode(bytes);
+    return JSON.parse(text);
+  } catch (e) { return null; }
+}
+
+/* 随机串：state / nonce / PKCE verifier 都用它。verifier 要求 43~128 字符，
+   32 字节 base64url 正好 43 字符。 */
+function randToken(nBytes) {
+  const b = new Uint8Array(nBytes || 32);
+  globalThis.crypto.getRandomValues(b);
+  return bytesToB64u(b);
+}
+
+export function oidcState() { return randToken(24); }
+export function oidcNonce() { return randToken(24); }
+export function oidcVerifier() { return randToken(32); }
+
+/* S256 challenge = base64url(sha256(verifier)) */
+export async function oidcChallenge(verifier) {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(verifier)));
+  return bytesToB64u(new Uint8Array(digest));
+}
+
+function trimSlash(u) { return String(u || '').replace(/\/+$/, ''); }
+function joinUrl2(base, tail) { return trimSlash(base) + '/' + String(tail || '').replace(/^\/+/, ''); }
+function isAbsHttp(u) { return /^https?:\/\//i.test(String(u || '')); }
+
+/* 取平台配置文档。失败返回 { ok:false }，调用方据此决定是回退到手工端点还是报错。 */
+export async function oidcDiscovery(cfg, opts) {
+  const issuer = trimSlash(cfg && cfg.issuer);
+  if (!isAbsHttp(issuer)) return { ok: false, code: 'badissuer', message: 'Issuer 需以 http:// 或 https:// 开头' };
+  const url = joinUrl2(issuer, '.well-known/openid-configuration');
+  const timeout = Math.min(15000, Math.max(3000, (parseInt(cfg && cfg.timeout, 10) || 8) * 1000));
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) {} }, timeout) : null;
+  try {
+    const r = await (opts && opts.fetch || globalThis.fetch)(url, { headers: { accept: 'application/json' }, signal: ctl ? ctl.signal : undefined });
+    if (timer) clearTimeout(timer);
+    if (!r.ok) return { ok: false, code: 'http' + r.status, message: '取配置文档失败：HTTP ' + r.status };
+    const doc = await r.json();
+    if (!doc || typeof doc !== 'object') return { ok: false, code: 'badjson', message: '配置文档不是合法 JSON' };
+    return { ok: true, doc: doc };
+  } catch (e) {
+    if (timer) clearTimeout(timer);
+    return { ok: false, code: 'neterr', message: '连不上平台：' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/* 端点解析：手工配置优先，其次平台配置文档，最后按 Issuer 约定拼。 */
+export function oidcEndpoints(cfg, doc) {
+  const d = doc || {};
+  const issuer = trimSlash(cfg && cfg.issuer);
+  return {
+    issuer: issuer,
+    authorize: (cfg && cfg.authorizeUrl) || d.authorization_endpoint || joinUrl2(issuer, 'authorize'),
+    token: (cfg && cfg.tokenUrl) || d.token_endpoint || joinUrl2(issuer, 'token'),
+    userinfo: (cfg && cfg.userinfoUrl) || d.userinfo_endpoint || '',
+    jwks: (cfg && cfg.jwksUri) || d.jwks_uri || ''
+  };
+}
+
+/* 生成跳转地址。extraParams 为「k=v&k2=v2」形式的附加参数（如 acr_values）。 */
+export function oidcAuthorizeUrl(endpoints, cfg, o) {
+  const q = [
+    ['response_type', 'code'],
+    ['client_id', String(cfg.clientId || '')],
+    ['redirect_uri', String(o && o.redirectUri || '')],
+    ['scope', String((cfg && cfg.scope) || 'openid profile')],
+    ['state', String(o && o.state || '')],
+    ['nonce', String(o && o.nonce || '')]
+  ];
+  if (o && o.challenge) {
+    q.push(['code_challenge', o.challenge]);
+    q.push(['code_challenge_method', 'S256']);
+  }
+  const extra = String((cfg && cfg.extraParams) || '').trim();
+  if (extra) {
+    extra.split('&').forEach(function (kv) {
+      const i = kv.indexOf('=');
+      if (i > 0) q.push([kv.slice(0, i), kv.slice(i + 1)]);
+    });
+  }
+  const qs = q.map(function (p) {
+    return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]);
+  }).join('&');
+  return endpoints.authorize + (endpoints.authorize.indexOf('?') >= 0 ? '&' : '?') + qs;
+}
+
+/* 授权码换令牌。tokenAuth：basic（默认，HTTP Basic 传 client_secret）| post（表单里传） */
+export async function oidcExchange(cfg, endpoints, o) {
+  const body = [
+    ['grant_type', 'authorization_code'],
+    ['code', String(o && o.code || '')],
+    ['redirect_uri', String(o && o.redirectUri || '')],
+    ['client_id', String(cfg.clientId || '')]
+  ];
+  if (o && o.verifier) body.push(['code_verifier', String(o.verifier)]);
+  const headers = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
+  if (String((cfg && cfg.tokenAuth) || 'basic') === 'post') {
+    body.push(['client_secret', String(cfg.clientSecret || '')]);
+  } else {
+    const pair = String(cfg.clientId || '') + ':' + String(cfg.clientSecret || '');
+    headers.authorization = 'Basic ' + (typeof btoa === 'function'
+      ? btoa(unescape(encodeURIComponent(pair)))
+      : Buffer.from(pair, 'utf8').toString('base64'));
+  }
+  const payload = body.map(function (p) {
+    return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]);
+  }).join('&');
+  const timeout = Math.min(15000, Math.max(3000, (parseInt(cfg && cfg.timeout, 10) || 8) * 1000));
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(function () { try { ctl.abort(); } catch (e) {} }, timeout) : null;
+  try {
+    const r = await (o && o.fetch || globalThis.fetch)(endpoints.token, {
+      method: 'POST', headers: headers, body: payload, signal: ctl ? ctl.signal : undefined
+    });
+    if (timer) clearTimeout(timer);
+    let data = null;
+    try { data = await r.json(); } catch (e) {}
+    if (!r.ok || !data) {
+      const m = data && (data.error_description || data.error);
+      return { ok: false, code: 'http' + r.status, message: '换取令牌失败：' + (m || ('HTTP ' + r.status)) };
+    }
+    if (!data.id_token) {
+      return { ok: false, code: 'noidtoken', message: '平台未返回 id_token，无法校验身份（请确认 scope 含 openid）' };
+    }
+    return { ok: true, idToken: String(data.id_token), accessToken: String(data.access_token || ''), tokenType: String(data.token_type || 'Bearer') };
+  } catch (e) {
+    if (timer) clearTimeout(timer);
+    return { ok: false, code: 'neterr', message: '换取令牌时连不上平台：' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/* JWKS → JWK。按 kid 精确匹配；平台未发布任何 kid 时才用唯一密钥兜底。
+   若平台发布了 kid 但都对不上，必须拒绝：否则密钥轮换后旧令牌会被新密钥「验」出错误结论。 */
+async function pickJwk(jwks, kid) {
+  const keys = (jwks && Array.isArray(jwks.keys)) ? jwks.keys : [];
+  if (!keys.length) return null;
+  const usable = keys.filter(function (k) { return k && k.kty === 'RSA' && k.n && k.e; });
+  if (!usable.length) return null;
+  if (kid) {
+    const hit = usable.filter(function (k) { return k.kid === kid; })[0];
+    if (hit) return hit;
+    if (usable.some(function (k) { return !!k.kid; })) return null;
+  }
+  return usable.length === 1 ? usable[0] : null;
+}
+
+const ALG_PARAMS = {
+  RS256: ['RSASSA-PKCS1-v1_5', 'SHA-256'],
+  RS384: ['RSASSA-PKCS1-v1_5', 'SHA-384'],
+  RS512: ['RSASSA-PKCS1-v1_5', 'SHA-512']
+};
+
+/* 校验 ID Token：签名 + iss + aud + exp + nonce。
+   expect = { issuer, clientId, nonce, now(ms) } */
+export async function oidcVerifyIdToken(cfg, endpoints, idToken, expect) {
+  const parts = String(idToken || '').split('.');
+  if (parts.length !== 3) return { ok: false, code: 'badjwt', message: 'id_token 格式不正确' };
+  const head = b64uJson(parts[0]);
+  const claims = b64uJson(parts[1]);
+  if (!head || !claims) return { ok: false, code: 'badjwt', message: 'id_token 头部或载荷无法解析' };
+  const alg = String(head.alg || '');
+  const params = ALG_PARAMS[alg];
+  if (!params) return { ok: false, code: 'badalg', message: '不支持的签名算法：' + (alg || '(空)') };
+  if (!endpoints.jwks) return { ok: false, code: 'nojwks', message: '缺少 JWKS 地址，无法验签' };
+
+  let jwks = null;
+  try {
+    const r = await (expect && expect.fetch || globalThis.fetch)(endpoints.jwks, { headers: { accept: 'application/json' } });
+    if (!r.ok) return { ok: false, code: 'jwkshttp', message: '取签名公钥失败：HTTP ' + r.status };
+    jwks = await r.json();
+  } catch (e) {
+    return { ok: false, code: 'jwksnet', message: '取签名公钥时连不上平台：' + (e && e.message ? e.message : String(e)) };
+  }
+  const jwk = await pickJwk(jwks, head.kid);
+  if (!jwk) return { ok: false, code: 'nokid', message: '签名公钥里找不到匹配的密钥（kid=' + (head.kid || '无') + '）' };
+
+  let verified = false;
+  try {
+    const key = await globalThis.crypto.subtle.importKey(
+      'jwk',
+      { kty: 'RSA', n: jwk.n, e: jwk.e, alg: alg, ext: true },
+      { name: params[0], hash: params[1] },
+      false,
+      ['verify']
+    );
+    verified = await globalThis.crypto.subtle.verify(
+      { name: params[0] },
+      key,
+      b64uToBytes(parts[2]),
+      new TextEncoder().encode(parts[0] + '.' + parts[1])
+    );
+  } catch (e) {
+    return { ok: false, code: 'verifyerr', message: '验签过程出错：' + (e && e.message ? e.message : String(e)) };
+  }
+  if (!verified) return { ok: false, code: 'badsig', message: 'id_token 签名校验不通过' };
+
+  const now = (expect && expect.now) || Date.now();
+  const skew = 120 * 1000;
+  if (expect && expect.issuer && trimSlash(claims.iss) !== trimSlash(expect.issuer)) {
+    return { ok: false, code: 'badiss', message: '签发方不匹配（iss=' + (claims.iss || '空') + '）' };
+  }
+  const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (expect && expect.clientId && aud.indexOf(expect.clientId) < 0) {
+    return { ok: false, code: 'badaud', message: '受众不匹配（aud=' + (claims.aud || '空') + '）' };
+  }
+  if (!claims.exp || Number(claims.exp) * 1000 + skew < now) {
+    return { ok: false, code: 'expired', message: 'id_token 已过期' };
+  }
+  if (expect && expect.nonce && claims.nonce !== expect.nonce) {
+    return { ok: false, code: 'badnonce', message: 'nonce 不匹配，可能是重放的登录请求' };
+  }
+  return { ok: true, claims: claims };
+}
+
+/* 按 claim 名取值，支持 a.b.c 点路径。 */
+export function claimValue(claims, name) {
+  const path = String(name || '').split('.').filter(Boolean);
+  let cur = claims;
+  for (let i = 0; i < path.length; i++) {
+    if (cur == null) return '';
+    cur = cur[path[i]];
+  }
+  if (cur == null) return '';
+  if (typeof cur === 'object') return '';
+  return String(cur).trim();
+}

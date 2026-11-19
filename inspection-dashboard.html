@@ -590,6 +590,20 @@
     background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:11px;}
   .hint{font-size:10.5px;color:var(--ink-3);margin-top:4px;line-height:1.55;}
+  /* 认证源多选：勾选行 + 主源单选（原生多选下拉要按住 Ctrl，且看不出主源） */
+  .src-pick{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;background:#fff;}
+  .src-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-top:1px solid var(--line-2);}
+  .src-row:first-child{border-top:0;}
+  .src-row.is-on{background:#F2F7FF;box-shadow:inset 2px 0 0 var(--brand);}
+  .field .src-row label{display:flex;align-items:center;gap:6px;margin:0;font-size:12px;font-weight:500;cursor:pointer;}
+  .src-row .src-ck{flex:1 1 auto;min-width:0;}
+  .src-row .src-ck > span{display:flex;flex-direction:column;gap:2px;min-width:0;}
+  .src-row .src-ck b{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .src-row .src-ck em{font-style:normal;font-size:10.5px;color:var(--ink-3);font-family:var(--font-mono);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .src-row .src-pri{flex:0 0 auto;font-size:10.5px;font-weight:400;color:var(--ink-3);}
+  .src-row .src-pri input:disabled + span{opacity:.4;}
+  .src-row.is-off .src-ck b{color:var(--ink-3);}
   .readonly-box{
     background:var(--surface-2);border:1px solid var(--line-2);border-radius:var(--r-md);padding:10px 12px;
     font-size:11.5px;color:var(--ink-2);display:flex;align-items:center;gap:8px;justify-content:space-between;
@@ -846,6 +860,17 @@
   .auth-btn:hover{background:var(--brand-600);box-shadow:0 2px 10px rgba(20,102,232,.28);}
   .auth-btn:active{transform:translateY(.5px);}
   .auth-btn[disabled]{opacity:.6;cursor:not-allowed;box-shadow:none;}
+  /* 统一身份登录：与口令登录并列的次要入口 */
+  .auth-or{display:flex;align-items:center;gap:10px;margin:14px 0 10px;color:var(--ink-4);font-size:10.5px;}
+  .auth-or::before,.auth-or::after{content:'';flex:1;height:1px;background:var(--line);}
+  .auth-btn.ghost{background:#fff;color:var(--brand);border-color:var(--line);box-shadow:none;letter-spacing:.06em;text-indent:0;}
+  .auth-btn.ghost:hover{background:#F5F9FF;border-color:var(--brand);box-shadow:none;}
+  .sso-list{margin-top:8px;display:flex;flex-direction:column;gap:6px;}
+  .sso-pick{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 11px;
+    border:1px solid var(--line);border-radius:var(--r-sm);background:#fff;color:var(--ink);
+    font-size:12px;font-weight:500;cursor:pointer;text-align:left;}
+  .sso-pick:hover{border-color:var(--brand);background:#F5F9FF;}
+  .sso-pick i{font-style:normal;font-size:10px;color:var(--ink-3);font-family:var(--font-mono);}
   .auth-foot{margin-top:16px;font-size:10.5px;color:var(--ink-3);line-height:1.75;font-family:var(--font-mono);}
   .auth-main .field label{font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;
     color:var(--ink-3);text-transform:uppercase;font-weight:500;}
@@ -1190,6 +1215,11 @@
         </div>
         <button type="submit" class="auth-btn" id="btnLogin">登 录</button>
       </form>
+      <div id="ssoWrap" style="display:none;">
+        <div class="auth-or"><span>或</span></div>
+        <button type="button" class="auth-btn ghost" id="btnSso">统一身份登录</button>
+        <div class="sso-list" id="ssoList" style="display:none;"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -2014,9 +2044,9 @@
         </select>
       </div>
       <div class="field" id="uServerField" style="display:none;">
-        <label for="uServer">认证源（可多选，首项为主源） <span class="req">*</span></label>
-        <select id="uServer" multiple size="4"></select>
-        <div class="hint" id="uServerHint">登录时按绑定顺序逐个尝试口令型认证源；免认证源只接受统一身份跳转。本站不保存密码。</div>
+        <label>认证源（可多选，点上「主源」决定优先顺序） <span class="req">*</span></label>
+        <div class="src-pick" id="uServerList"></div>
+        <div class="hint" id="uServerHint">登录时按主源优先依次尝试口令型认证源；免认证源只接受统一身份跳转。本站不保存密码。</div>
       </div>
       <div class="field">
         <label for="uRole">角色</label>
@@ -2475,6 +2505,11 @@
               <input type="text" id="soUserinfo" autocomplete="off" placeholder="https://…/userinfo">
             </div>
             <label class="switch"><input type="checkbox" id="soPkce" checked><span class="track"></span><span>启用 PKCE（推荐；平台不支持授权码 + PKCE 时取消）</span></label>
+            <div class="field">
+              <label>回调地址（需在平台登记）</label>
+              <div class="readonly-box" id="soRedirect" style="font-family:var(--font-mono);font-size:11px;">—</div>
+              <div class="sso-tip">平台里的 Redirect URI 填这一条，一字不差。留空即按当前访问地址自动推导。</div>
+            </div>
           </div>
         </div>
 
@@ -8143,6 +8178,23 @@
   }
   function hideAuth() { document.getElementById('authView').classList.remove('on'); }
 
+  /* 登录成功后的统一入口（口令登录与统一身份登录共用） */
+  function enterApp(d) {
+    d = d || {};
+    writeToken(d.token);
+    applyServerUsers(d.users);
+    applyServerLedgers(d.ledgers);
+    var mig = migrateLocalToServer(d);
+    if (mig.ledgers || mig.users) {
+      setTimeout(function () {
+        toast('已把本地台账迁移到服务端'
+          + (mig.users ? '（含 ' + mig.users + ' 个旧账号）' : ''));
+      }, 700);
+    }
+    document.getElementById('loginPwd').value = '';
+    signIn(d.user, { welcome: true, attachMax: d.attachMax, officePreview: d.officePreview, servers: d.authServers || [], ledger: d.ledger });
+  }
+
   /* 登录改由服务端校验：口令不再在浏览器内比对，账号真相以 D1 为准 */
   function doLogin(e) {
     if (e && e.preventDefault) e.preventDefault();
@@ -8160,19 +8212,61 @@
         return;
       }
       var d = r.data || {};
-      writeToken(d.token);
-      applyServerUsers(d.users);
-      applyServerLedgers(d.ledgers);
-      var mig = migrateLocalToServer(d);
-      if (mig.ledgers || mig.users) {
-        setTimeout(function () {
-          toast('已把本地台账迁移到服务端'
-            + (mig.users ? '（含 ' + mig.users + ' 个旧账号）' : ''));
-        }, 700);
-      }
-      document.getElementById('loginPwd').value = '';
-      signIn(d.user, { welcome: true, attachMax: d.attachMax, officePreview: d.officePreview, servers: d.authServers || [], ledger: d.ledger });
+      enterApp(d);
     });
+  }
+
+  /* ---------- 统一身份登录（OIDC） ----------
+     入口只在有已启用的免认证源时出现；多个源时展开列表让用户选。
+     回调回跳带 ?sso=<一次性票据>，兑换正式会话后立刻把参数从地址栏抹掉。 */
+  var SSO_SOURCES = [];
+  function ssoStart(sid) {
+    location.href = API_BASE + '/auth/oidc/start?server=' + encodeURIComponent(sid);
+  }
+  function loadSsoSources() {
+    fetch(API_BASE + '/auth/sso/sources', { headers: { accept: 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        SSO_SOURCES = (j && j.ok && j.data && j.data.sources) || [];
+        var wrap = document.getElementById('ssoWrap');
+        if (!wrap) return;
+        wrap.style.display = SSO_SOURCES.length ? 'block' : 'none';
+        var btn = document.getElementById('btnSso');
+        if (btn) btn.textContent = '统一身份登录' + (SSO_SOURCES.length > 1 ? '（' + SSO_SOURCES.length + ' 个入口）' : '');
+      })
+      .catch(function () { /* 取不到就当作没有免认证源，不影响口令登录 */ });
+  }
+  function doSso() {
+    if (!SSO_SOURCES.length) return;
+    if (SSO_SOURCES.length === 1) return ssoStart(SSO_SOURCES[0].id);
+    var box = document.getElementById('ssoList');
+    box.innerHTML = SSO_SOURCES.map(function (s) {
+      return '<button type="button" class="sso-pick" data-sid="' + esc(s.id) + '">' +
+        esc(s.name) + '<i>' + esc(s.label || s.type) + '</i></button>';
+    }).join('');
+    box.style.display = 'block';
+  }
+  /* 消费回调参数；返回 true 表示本次启动已在处理统一身份登录 */
+  function consumeSso() {
+    var q;
+    try { q = new URLSearchParams(location.search); } catch (e) { return false; }
+    var ticket = q.get('sso');
+    var err = q.get('sso_err');
+    if (!ticket && !err) return false;
+    try {
+      q.delete('sso'); q.delete('sso_err');
+      var qs = q.toString();
+      history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + (location.hash || ''));
+    } catch (e) {}
+    showAuth();
+    if (err) { authError(err); return true; }
+    authError('正在完成统一身份登录…');
+    api('/auth/sso/exchange', { method: 'POST', body: { ticket: ticket } }).then(function (r) {
+      if (!r.ok || !r.data) { authError(r.error || '统一身份登录失败，请重试。'); return; }
+      authError('');
+      enterApp(r.data);
+    });
+    return true;
   }
 
   function clearMapLayers() {
@@ -9197,6 +9291,10 @@
     setv('soScope', c.scope || 'openid profile'); setv('soJwks', c.jwksUri);
     setv('soAuthorize', c.authorizeUrl); setv('soToken', c.tokenUrl); setv('soUserinfo', c.userinfoUrl);
     setc('soPkce', c.pkce == null ? true : !!c.pkce);
+    /* 回调地址：平台侧必须登记的正是这一条（未手填则按当前站点推导） */
+    var redir = c.redirectUri || (location.origin + '/api/auth/oidc/callback');
+    var redirEl = document.getElementById('soRedirect');
+    if (redirEl) redirEl.textContent = redir;
     setv('saAuthorize', c.authorizeUrl); setv('saToken', c.tokenUrl); setv('saUserinfo', c.userinfoUrl);
     setv('saClientId', c.clientId); setv('saScope', c.scope);
     setv('saTokenAuth', c.tokenAuth || 'basic'); setv('saUserinfoMethod', c.userinfoMethod || 'GET');
@@ -10004,11 +10102,59 @@
 
   /* ---------- 账号来源 / 权限的展示文案 ---------- */
   /* 多选认证源的选中值；部分环境设置 select.value 不落 selected，兜底取 value */
-  function pickedIds(sel) {
-    var out = [];
-    Array.prototype.forEach.call(sel.options, function (o) { if (o.selected && o.value) out.push(o.value); });
-    if (!out.length && sel.value) out.push(sel.value);
-    return out;
+  /* 认证源多选：返回 serverId 数组，主源排第一，其余按列表顺序（即尝试顺序） */
+  function pickedIds() {
+    var box = document.getElementById('uServerList');
+    if (!box) return [];
+    var sel = Array.prototype.filter.call(box.querySelectorAll('input[data-sid]'), function (c) { return c.checked; })
+      .map(function (c) { return c.getAttribute('data-sid'); });
+    var pri = box.querySelector('input[name="uSrvPri"]:checked');
+    var pid = pri ? pri.value : '';
+    if (pid && sel.indexOf(pid) >= 0) sel = [pid].concat(sel.filter(function (x) { return x !== pid; }));
+    return sel;
+  }
+  /* 渲染认证源勾选列表；picked[0] 为主源 */
+  function renderServerPick(list, picked) {
+    var box = document.getElementById('uServerList');
+    if (!box) return;
+    picked = picked || [];
+    if (!list.length) {
+      box.innerHTML = '<div class="src-row is-off"><span class="src-meta">还没有可用的认证源，请先到「认证管理」页新增。</span></div>';
+      return;
+    }
+    box.innerHTML = list.map(function (s) {
+      var on = picked.indexOf(s.id) >= 0;
+      var tag = AUTH_LABELS[s.type] || String(s.type).toUpperCase();
+      var meta = tag + (isSsoServer(s) ? ' · 免认证' : ' · ' + (s.host || '') + ':' + (s.port || '')) +
+        (s.enabled ? '' : ' · 已停用');
+      return '<div class="src-row' + (on ? ' is-on' : '') + (s.enabled ? '' : ' is-off') + '">' +
+        '<label class="src-ck"><input type="checkbox" data-sid="' + esc(s.id) + '"' + (on ? ' checked' : '') + '>' +
+        '<span><b>' + esc(s.name) + '</b><em>' + esc(meta) + '</em></span></label>' +
+        '<label class="src-pri"><input type="radio" name="uSrvPri" value="' + esc(s.id) + '"' +
+        (on ? '' : ' disabled') + '><span>主源</span></label></div>';
+    }).join('');
+    if (picked.length) {
+      var r = box.querySelector('input[name="uSrvPri"][value="' + picked[0] + '"]');
+      if (r) { r.checked = true; r.disabled = false; }
+    }
+  }
+  /* 勾选变化后同步行底色与主源单选可用性 */
+  function syncServerPickRows() {
+    var box = document.getElementById('uServerList');
+    if (!box) return;
+    Array.prototype.forEach.call(box.querySelectorAll('input[data-sid]'), function (c) {
+      var row = c.parentNode && c.parentNode.parentNode;
+      if (row && row.classList) row.classList[c.checked ? 'add' : 'remove']('is-on');
+      var r = box.querySelector('input[name="uSrvPri"][value="' + c.getAttribute('data-sid') + '"]');
+      if (r) { r.disabled = !c.checked; if (!c.checked) r.checked = false; }
+    });
+    if (!box.querySelector('input[name="uSrvPri"]:checked')) {
+      var first = box.querySelector('input[data-sid]:checked');
+      if (first) {
+        var r2 = box.querySelector('input[name="uSrvPri"][value="' + first.getAttribute('data-sid') + '"]');
+        if (r2) { r2.disabled = false; r2.checked = true; }
+      }
+    }
   }
   function sourceText(u) {
     if (!u) return '本地';
@@ -10197,7 +10343,7 @@
     /* 远程账号的口令在认证服务器上，这里只需要说明由谁校验 */
     var hint = document.getElementById('uServerHint');
     if (remote) {
-      var picked = pickedIds(document.getElementById('uServer'));
+      var picked = pickedIds();
       var s = picked.length ? serverById(picked[0]) : null;
       hint.textContent = !s
         ? '还没有可用的认证源，请先到「认证管理」页新增。'
@@ -10419,24 +10565,18 @@
     /* 企业微信通知：编辑时回填（密钥只回掩码 / 已设置标记） */
     fillWxForm(u);
 
-    /* 认证服务器下拉（远程账号必选一个） */
-    var sel = document.getElementById('uServer');
+    /* 认证源勾选列表（远程账号至少勾一个，勾选的第一个默认为主源） */
     var list = serversList();
-    sel.innerHTML = list.length
-      ? list.map(function (s) {
-          return '<option value="' + esc(s.id) + '">' + esc(s.name) + ' · ' + esc(AUTH_LABELS[s.type] || s.type) +
-            (isSsoServer(s) ? ' · 免认证' : ' · ' + esc(s.host + ':' + s.port)) +
-            (s.enabled ? '' : '（已停用）') + '</option>';
-        }).join('')
-      : '<option value="">（暂无认证源）</option>';
     var remote = !!u && (u.source || 'local') !== 'local';
     editingWasRemote = remote;
     document.getElementById('uSourceType').value = remote ? 'remote' : 'local';
-    /* 多认证源：回填已绑定的全部服务器，顺序即主源优先顺序 */
+    /* 多认证源：回填已绑定的全部服务器，首项为主源 */
     var picked = (u && (u.serverIds || (u.serverId ? [u.serverId] : []))) || [];
-    Array.prototype.forEach.call(sel.options, function (o) { o.selected = picked.indexOf(o.value) >= 0; });
-    /* 新建时默认选中第一个源，保持与旧单选一致的开箱行为 */
-    if (!picked.length && sel.options.length && sel.options[0].value) sel.options[0].selected = true;
+    /* 新建时默认勾上第一个可用源，保持与旧单选一致的开箱行为 */
+    if (!picked.length && !u && list.length) {
+      picked = [(list.filter(function (s) { return s.enabled; })[0] || list[0]).id];
+    }
+    renderServerPick(list, picked);
 
     document.getElementById('uSeed').parentNode.style.display = u ? 'none' : 'block';
     document.getElementById('uSeedHint').style.display = u ? 'none' : 'block';
@@ -10461,7 +10601,7 @@
         var cRemote = (cloneFrom.source || 'local') !== 'local';
         document.getElementById('uSourceType').value = cRemote ? 'remote' : 'local';
         var cPick = cloneFrom.serverIds || (cloneFrom.serverId ? [cloneFrom.serverId] : []);
-        Array.prototype.forEach.call(document.getElementById('uServer').options, function (o) { o.selected = cPick.indexOf(o.value) >= 0; });
+        renderServerPick(serversList(), cPick);
         document.getElementById('uSeed').value = 'copy';
         document.getElementById('uSeedCopyWrap').style.display = 'block';
         document.getElementById('uSeedUser').value = seedOwner.username;
@@ -10527,7 +10667,7 @@
     var note = document.getElementById('uNote').value.trim();
     var remote = document.getElementById('uSourceType').value === 'remote';
     /* 多认证源：选中顺序即绑定顺序，第一项为主源 */
-    var serverIds = remote ? pickedIds(document.getElementById('uServer')) : [];
+    var serverIds = remote ? pickedIds() : [];
     var serverId = serverIds[0] || '';
     var minsRaw = document.getElementById('uSessionMins').value.trim();
     var mins = Number(minsRaw);
@@ -10716,6 +10856,12 @@
   function bindAuth() {
     bindPwdEyes(document);
     document.getElementById('loginForm').addEventListener('submit', doLogin);
+    /* 统一身份登录：单入口直接跳，多入口展开选择 */
+    document.getElementById('btnSso').addEventListener('click', doSso);
+    document.getElementById('ssoList').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-sid]') : null;
+      if (b) ssoStart(b.getAttribute('data-sid'));
+    });
     document.getElementById('userChip').addEventListener('click', function (e) {
       e.stopPropagation();
       var m = document.getElementById('userMenu');
@@ -10884,9 +11030,12 @@
       }
     });
 
-    /* 用户弹窗：账号类型 / 认证服务器切换 */
+    /* 用户弹窗：账号类型切换 / 认证源勾选（checkbox 与「主源」radio 都在委托里处理） */
     document.getElementById('uSourceType').addEventListener('change', syncUserModalFields);
-    document.getElementById('uServer').addEventListener('change', syncUserModalFields);
+    document.getElementById('uServerList').addEventListener('change', function () {
+      syncServerPickRows();
+      syncUserModalFields();
+    });
     document.getElementById('uRole').addEventListener('change', syncMultiLedgerField);
     document.getElementById('uSeedUser').addEventListener('change', syncMultiLedgerField);
     document.getElementById('uSeed').addEventListener('change', function () {
@@ -11075,6 +11224,12 @@
 
   function boot() {
     bindAuth();
+    loadSsoSources();
+    /* 省界数据与登录流程互不依赖：登录界面一出现就开始后台拉取。
+       用户输入账号的这几秒正好用来下载，登录后地图通常已能直接绘制完整边界。 */
+    loadProvinces();
+    /* 统一身份回调优先：地址栏带 sso / sso_err 时先兑换票据，不再用旧令牌试探 */
+    if (consumeSso()) return;
     var tk = readToken();
     if (tk) {
       /* 有令牌 → 向服务端确认会话并拉取数据快照 */
@@ -11101,10 +11256,7 @@
        （页面其实已经渲染完，只是网络不空闲）；同步加载更糟，会直接阻塞解析。
        改为：用户真正开始输入账号/密码时才预热 —— 既不阻塞首屏，登录后地图通常也已就绪。
        注意不要挂在 focus 上：showAuth() 会自动聚焦用户名输入框，那样等于立即预热。 */
-    /* 省界数据与登录流程互不依赖：登录界面一出现就开始后台拉取。
-       用户输入账号的这几秒正好用来下载，登录后地图通常已能直接绘制完整边界。
-       不放进下面的 warm()：那是「开始输入才预热」，会白白浪费几秒空转。 */
-    loadProvinces();
+    /* 省界数据已在 boot 开头拉取；这里只做「开始输入才预热地图 SDK」 */
     var warmed = false;
     var warm = function () { if (warmed) return; warmed = true; loadTMap(); };
     ['loginUser', 'loginPwd'].forEach(function (id) {

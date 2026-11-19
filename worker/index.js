@@ -336,6 +336,18 @@ async function ensureSchema(env) {
       'PRIMARY KEY (username, server_id))'
     ).run();
     await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_uas_server ON user_auth_sources (server_id)').run();
+    /* 免认证登录（OIDC 授权码流）的两张一次性凭据表：
+       sso_states  —— 跳转前落盘，回调时校验并立即删除，防重放；
+       sso_tickets —— 回调成功后的短时票据，前端兑换正式会话后立即删除。 */
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS sso_states (state TEXT PRIMARY KEY, server_id TEXT NOT NULL, ' +
+      "nonce TEXT NOT NULL DEFAULT '', verifier TEXT NOT NULL DEFAULT '', redirect_uri TEXT NOT NULL DEFAULT '', " +
+      "return_to TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"
+    ).run();
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS sso_tickets (ticket TEXT PRIMARY KEY, token TEXT NOT NULL, ' +
+      'username TEXT NOT NULL, created_at TEXT NOT NULL)'
+    ).run();
     /* 一次性回填：历史单源账号转成一条主绑定。已存在则跳过，可反复执行。 */
     await env.DB.prepare(
       'INSERT OR IGNORE INTO user_auth_sources (username, server_id, external_id, is_primary, created_at) ' +
@@ -436,6 +448,44 @@ function bindView(b) {
     externalId: b.external_id || '',
     primary: !!b.is_primary
   };
+}
+
+/* ---------------- 免认证登录（OIDC）公共件 ----------------
+   回调失败一律 302 回登录页并带上 sso_err，由前端 toast 呈现：
+   统一身份平台多为「独立窗口/顶部跳转」，直接吐 JSON 或白页体验很差。 */
+function ssoOrigin(request) {
+  const u = new URL(request.url);
+  const proto = String(request.headers.get('x-forwarded-proto') || u.protocol.replace(':', '') || 'https');
+  const host = String(request.headers.get('x-forwarded-host') || request.headers.get('host') || u.host);
+  return proto + '://' + host;
+}
+function ssoFail(origin, msg) {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: origin + '/inspection-dashboard.html?sso_err=' + encodeURIComponent(String(msg || '登录失败')),
+      'cache-control': 'no-store'
+    }
+  });
+}
+/* 一次性凭据过期清理：state 10 分钟、ticket 2 分钟，这里按 1 小时兜底清，
+   避免异常中断（用户关掉页面不再回来）留下垃圾行。 */
+async function ssoPurge(env) {
+  const cut = new Date(Date.now() - 3600 * 1000).toISOString();
+  try { await env.DB.prepare('DELETE FROM sso_states WHERE created_at < ?').bind(cut).run(); } catch (e) {}
+  try { await env.DB.prepare('DELETE FROM sso_tickets WHERE created_at < ?').bind(cut).run(); } catch (e) {}
+}
+/* OIDC 端点：手工配置优先，缺项时取平台配置文档；两者都缺才失败。 */
+async function oidcEndpointsOf(cfg) {
+  let doc = null;
+  let err = '';
+  if (!cfg.authorizeUrl || !cfg.tokenUrl || !cfg.jwksUri) {
+    const d = await AUTH_P.oidcDiscovery(cfg);
+    if (d.ok) doc = d.doc;
+    else err = d.message;
+  }
+  const ep = AUTH_P.oidcEndpoints(cfg, doc);
+  return { ok: !!(ep.authorize && ep.token), ep: ep, err: err };
 }
 /* 单账号视图补齐多源信息（建号 / 改号 / me 用） */
 async function withBindings(env, u) {
@@ -1864,6 +1914,156 @@ async function route(request, env, ctx) {
     return ok(payload);
   }
 
+  /* --- 免认证登录（OIDC 授权码 + PKCE） ---
+     流程：登录页 → /oidc/start（302 到平台）→ 平台 → /oidc/callback（校验并签发一次性票据）
+           → 301 回页面 ?sso=<ticket> → 页面 POST /sso/exchange 换正式会话。 */
+
+  /* 登录页用：已启用的免认证源清单（不暴露地址与密钥） */
+  if (p === '/api/auth/sso/sources' && method === 'GET') {
+    let list = [];
+    try {
+      const r = await env.DB.prepare('SELECT id, name, type FROM auth_servers WHERE enabled = 1 ORDER BY created_at').all();
+      list = (r.results || []).filter(function (s) { return isSsoType(s.type); })
+        .map(function (s) { return { id: s.id, name: s.name, type: s.type, label: AUTH_LABEL[s.type] || s.type }; });
+    } catch (e) { /* 表未建立时按无免认证源处理 */ }
+    return ok({ sources: list });
+  }
+
+  if (p === '/api/auth/oidc/start' && method === 'GET') {
+    const sid = String(new URL(request.url).searchParams.get('server') || '').trim();
+    let srv = null;
+    if (sid) {
+      srv = await env.DB.prepare('SELECT * FROM auth_servers WHERE id = ?').bind(sid).first();
+    } else {
+      const r = await env.DB.prepare("SELECT * FROM auth_servers WHERE enabled = 1 AND type = 'oidc' ORDER BY created_at").all();
+      srv = (r.results || [])[0] || null;
+    }
+    if (!srv) return bad('没有可用的 OIDC 认证源，请联系管理员在「认证管理」页配置', 404);
+    if (srv.type !== 'oidc') return bad('该认证源不是 OIDC 类型，无法发起统一身份登录', 400);
+    if (!srv.enabled) return bad('该认证源已停用', 403);
+
+    const cfg = parseCfg(srv.cfg);
+    const origin = ssoOrigin(request);
+    const redirectUri = cfg.redirectUri || (origin + '/api/auth/oidc/callback');
+    const epv = await oidcEndpointsOf(cfg);
+    if (!epv.ok) return bad('OIDC 端点不可用：' + (epv.err || '缺少授权或令牌地址'), 502);
+
+    await ssoPurge(env);
+    const state = AUTH_P.oidcState();
+    const nonce = AUTH_P.oidcNonce();
+    const usePkce = !(cfg.pkce === 0 || cfg.pkce === '0' || cfg.pkce === false);
+    const verifier = usePkce ? AUTH_P.oidcVerifier() : '';
+    const challenge = verifier ? await AUTH_P.oidcChallenge(verifier) : '';
+    await env.DB.prepare(
+      'INSERT INTO sso_states (state, server_id, nonce, verifier, redirect_uri, return_to, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(state, srv.id, nonce, verifier, redirectUri, origin, nowIso()).run();
+    const target = AUTH_P.oidcAuthorizeUrl(epv.ep, cfg, {
+      redirectUri: redirectUri, state: state, nonce: nonce, challenge: challenge
+    });
+    return new Response(null, { status: 302, headers: { location: target, 'cache-control': 'no-store' } });
+  }
+
+  if (p === '/api/auth/oidc/callback' && method === 'GET') {
+    const sp = new URL(request.url).searchParams;
+    const state = String(sp.get('state') || '');
+    const st = state ? await env.DB.prepare('SELECT * FROM sso_states WHERE state = ?').bind(state).first() : null;
+    /* state 一次性：取到就删，重复回调直接失败 */
+    if (st) { try { await env.DB.prepare('DELETE FROM sso_states WHERE state = ?').bind(state).run(); } catch (e) {} }
+    if (!st) return ssoFail(ssoOrigin(request), '登录请求已失效（state 不匹配或已使用），请重新发起统一身份登录。');
+    const origin = st.return_to || ssoOrigin(request);
+    if (sp.get('error')) {
+      return ssoFail(origin, '平台返回错误：' + String(sp.get('error_description') || sp.get('error')));
+    }
+    if (Date.now() - (Date.parse(st.created_at) || 0) > 10 * 60000) {
+      return ssoFail(origin, '登录请求已超时（超过 10 分钟），请重新发起。');
+    }
+    const code = String(sp.get('code') || '');
+    if (!code) return ssoFail(origin, '平台未返回授权码，请重新发起。');
+
+    const srv = await env.DB.prepare('SELECT * FROM auth_servers WHERE id = ?').bind(st.server_id).first();
+    if (!srv || !srv.enabled) return ssoFail(origin, '该免认证源已停用或被删除，请联系管理员。');
+    const cfg = parseCfg(srv.cfg);
+    const epv = await oidcEndpointsOf(cfg);
+    if (!epv.ok) return ssoFail(origin, 'OIDC 端点不可用：' + (epv.err || '缺少授权或令牌地址'));
+
+    const ex = await AUTH_P.oidcExchange(cfg, epv.ep, {
+      code: code, redirectUri: st.redirect_uri, verifier: st.verifier
+    });
+    if (!ex.ok) return ssoFail(origin, ex.message);
+
+    const vf = await AUTH_P.oidcVerifyIdToken(cfg, epv.ep, ex.idToken, {
+      issuer: epv.ep.issuer, clientId: cfg.clientId, nonce: st.nonce
+    });
+    if (!vf.ok) return ssoFail(origin, '身份令牌校验失败：' + vf.message);
+
+    const claim = cfg.accountClaim || 'preferred_username';
+    const account = AUTH_P.claimValue(vf.claims, claim);
+    if (!account) return ssoFail(origin, '平台未返回账号标识（Claim「' + claim + '」为空），请联系管理员核对配置。');
+
+    /* 自动按登录名匹配：先原样，再兼容「域\账号」与 UPN 两种写法 */
+    const cands = (function (raw) {
+      const out = [];
+      const push = function (v) { const x = normName(v); if (x && out.indexOf(x) < 0) out.push(x); };
+      push(raw);
+      const s = String(raw || '').trim();
+      const bar = s.lastIndexOf('\\');
+      if (bar >= 0) push(s.slice(bar + 1));
+      const at = s.indexOf('@');
+      if (at > 0) push(s.slice(0, at));
+      return out;
+    })(account);
+    let u = null;
+    for (let i = 0; i < cands.length && !u; i++) {
+      u = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(cands[i]).first();
+    }
+    if (!u) return ssoFail(origin, '统一身份账号「' + account + '」在本系统没有对应账号，请联系管理员。');
+    if (u.status !== 'active') return ssoFail(origin, '账号「' + u.username + '」已停用，请联系超级管理员。');
+    /* 必须已绑定该免认证源：绑定表才是权限边界，不能仅凭同名放行 */
+    const bind = await env.DB.prepare(
+      'SELECT server_id FROM user_auth_sources WHERE username = ? AND server_id = ?'
+    ).bind(u.username, srv.id).first();
+    if (!bind) return ssoFail(origin, '账号「' + u.username + '」未开通「' + srv.name + '」统一身份登录，请联系管理员绑定认证源。');
+
+    const token = newToken();
+    const mins = normSessionMins(u.session_mins);
+    const exp = new Date(Date.now() + mins * 60000).toISOString();
+    await env.DB.prepare('INSERT INTO sessions (token, username, created_at, expires_at) VALUES (?, ?, ?, ?)')
+      .bind(token, u.username, nowIso(), exp).run();
+    try { await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(nowIso()).run(); } catch (e) {}
+    const ticket = newToken();
+    await env.DB.prepare('INSERT INTO sso_tickets (ticket, token, username, created_at) VALUES (?, ?, ?, ?)')
+      .bind(ticket, token, u.username, nowIso()).run();
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: origin + '/inspection-dashboard.html?sso=' + encodeURIComponent(ticket),
+        'cache-control': 'no-store'
+      }
+    });
+  }
+
+  if (p === '/api/auth/sso/exchange' && method === 'POST') {
+    const ticket = String(body.ticket || '').trim();
+    if (!ticket) return bad('缺少登录票据');
+    const t = await env.DB.prepare('SELECT * FROM sso_tickets WHERE ticket = ?').bind(ticket).first();
+    if (!t) return bad('登录票据已失效，请重新登录。', 401);
+    /* 一次性：兑换即删，URL 里的 ticket 泄漏也无二次利用价值 */
+    try { await env.DB.prepare('DELETE FROM sso_tickets WHERE ticket = ?').bind(ticket).run(); } catch (e) {}
+    if (Date.now() - (Date.parse(t.created_at) || 0) > 2 * 60000) {
+      return bad('登录票据已过期（超过 2 分钟），请重新登录。', 401);
+    }
+    const u = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(t.username).first();
+    if (!u) return bad('账号不存在', 401);
+    if (u.status !== 'active') return bad('该账号已停用，请联系超级管理员。', 403);
+    const ses = await env.DB.prepare('SELECT token FROM sessions WHERE token = ?').bind(t.token).first();
+    if (!ses) return bad('登录状态已失效，请重新登录。', 401);
+    await env.DB.prepare('UPDATE users SET last_login = ? WHERE username = ?').bind(nowIso(), u.username).run();
+    const payload = await bundleFor(env, u);
+    payload.token = t.token;
+    payload.sso = true;
+    return ok(payload);
+  }
+
   /* --- 附件读取（公开，按不可猜 id） --- */
   const ma = /^\/api\/attach\/([A-Za-z0-9]{8,40})$/.exec(p);
   if (ma && (method === 'GET' || method === 'HEAD')) {
@@ -2558,6 +2758,7 @@ async function route(request, env, ctx) {
           stmts.push(env.DB.prepare('DELETE FROM ledgers WHERE username = ?').bind(target));
         }
       }
+      stmts.push(env.DB.prepare('DELETE FROM user_auth_sources WHERE username = ?').bind(target));
       stmts.push(env.DB.prepare('DELETE FROM users WHERE username = ?').bind(target));
       /* 个人台账（<用户名>::mine）随账号一起清理，避免留下无主数据 */
       stmts.push(env.DB.prepare('DELETE FROM ledgers WHERE username = ?').bind(mineKey(target)));

@@ -999,6 +999,191 @@ try {
   globalThis.fetch = realFetch;
 }
 
+/* ================= 免认证登录（OIDC 授权码 + PKCE） =================
+   用本地 RSA 密钥自签 id_token，stub fetch 模拟平台的 token / jwks 端点，
+   走完 start → callback → exchange 全链路。 */
+async function rawApi(path, opts) {
+  const req = new Request(BASE + '/api' + path, {
+    method: (opts && opts.method) || 'GET',
+    headers: (opts && opts.body)
+      ? { 'content-type': 'application/json', authorization: opts.token ? 'Bearer ' + opts.token : '' }
+      : { authorization: opts && opts.token ? 'Bearer ' + opts.token : '' },
+    body: opts && opts.body ? JSON.stringify(opts.body) : undefined
+  });
+  const res = await worker.fetch(req, env);
+  const j = await res.json().catch(() => null);
+  return { status: res.status, location: res.headers.get('location') || '', body: j };
+}
+
+{
+  const { webcrypto: WC } = await import('node:crypto');
+  const kp = await WC.subtle.generateKey(
+    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+    true, ['sign', 'verify']
+  );
+  const pub = await WC.subtle.exportKey('jwk', kp.publicKey);
+  const b64u = (buf) => {
+    const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    let bin = ''; for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+    return Buffer.from(bin, 'binary').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+  const b64uStr = (s) => b64u(new TextEncoder().encode(s));
+
+  r = await api('/auth-servers', {
+    method: 'POST',
+    body: {
+      name: '集团 OIDC', type: 'oidc', cfg: {
+        issuer: 'https://idp.test', clientId: 'cid1', clientSecret: 'sec1',
+        authorizeUrl: 'https://idp.test/auth', tokenUrl: 'https://idp.test/token', jwksUri: 'https://idp.test/jwks',
+        accountClaim: 'preferred_username'
+      }
+    }
+  }, tk);
+  check('创建 OIDC 认证源', r.ok === true && r.data.server.type === 'oidc', JSON.stringify(r).slice(0, 160));
+  const oidcId = r.ok ? r.data.server.id : '';
+
+  r = await api('/users', {
+    method: 'POST',
+    body: { username: 'oidcuser', name: '统一身份用户', serverIds: [oidcId] }
+  }, tk);
+  check('建号并绑定 OIDC 源', r.ok === true, JSON.stringify(r).slice(0, 160));
+  r = await api('/users', {
+    method: 'POST',
+    body: { username: 'oidcno', name: '未绑定用户', password: 'Oidc@123' }
+  }, tk);
+  check('建一个本地用户作为「未绑定」对照', r.ok === true);
+
+  /* 免认证源清单（公开） */
+  let sv = await rawApi('/auth/sso/sources');
+  check('公开的免认证源清单含新建的 OIDC 源',
+    sv.status === 200 && sv.body.ok && sv.body.data.sources.some((s) => s.id === oidcId),
+    JSON.stringify(sv.body));
+
+  /* 找不到源 / 非 OIDC 源 */
+  sv = await rawApi('/auth/oidc/start?server=nosuch');
+  check('源不存在时 start 返回 404', sv.status === 404, String(sv.status));
+
+  /* start：302 到平台，参数齐全 */
+  sv = await rawApi('/auth/oidc/start?server=' + oidcId);
+  const startLoc = sv.location;
+  const startUrl = new URL(startLoc || 'https://x/');
+  check('start 返回 302 跳转平台',
+    sv.status === 302 && startLoc.indexOf('https://idp.test/auth') === 0, String(sv.status) + ' ' + startLoc);
+  check('跳转带 state / nonce / PKCE',
+    !!startUrl.searchParams.get('state') && !!startUrl.searchParams.get('nonce') &&
+    !!startUrl.searchParams.get('code_challenge') &&
+    startUrl.searchParams.get('code_challenge_method') === 'S256',
+    startLoc);
+  check('回调地址按当前站点推导',
+    startUrl.searchParams.get('redirect_uri') === BASE + '/api/auth/oidc/callback',
+    startUrl.searchParams.get('redirect_uri'));
+  const state = startUrl.searchParams.get('state');
+  const nonce = startUrl.searchParams.get('nonce');
+
+  /* 无 state 的回调 */
+  sv = await rawApi('/auth/oidc/callback?code=abc');
+  check('缺 state 的回调被拒并回到登录页',
+    sv.status === 302 && /sso_err=/.test(sv.location), sv.location);
+
+  /* 平台错误回调 */
+  sv = await rawApi('/auth/oidc/callback?error=access_denied&error_description=' + encodeURIComponent('用户取消') + '&state=' + state);
+  check('平台返回错误时透出原因', sv.status === 302 && /sso_err=/.test(sv.location), sv.location);
+
+  /* state 已被上一次回调消费：重放必须失败 */
+  sv = await rawApi('/auth/oidc/callback?code=abc&state=' + state);
+  check('state 一次性，重放失败', sv.status === 302 && /sso_err=/.test(sv.location), sv.location);
+
+  /* 重新发起，拿一个新 state 做正常流程 */
+  sv = await rawApi('/auth/oidc/start?server=' + oidcId);
+  const state2 = new URL(sv.location).searchParams.get('state');
+  const nonce2 = new URL(sv.location).searchParams.get('nonce');
+
+  const idToken = await (async () => {
+    const head = b64uStr(JSON.stringify({ alg: 'RS256', kid: 'k1', typ: 'JWT' }));
+    const payload = b64uStr(JSON.stringify({
+      iss: 'https://idp.test', aud: 'cid1', sub: 'u-9', preferred_username: 'oidcuser',
+      nonce: nonce2, exp: Math.floor(Date.now() / 1000) + 300
+    }));
+    const sig = await WC.subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, kp.privateKey,
+      new TextEncoder().encode(head + '.' + payload));
+    return head + '.' + payload + '.' + b64u(sig);
+  })();
+
+  const realFetch2 = globalThis.fetch;
+  const hits = [];
+  globalThis.fetch = async (url, init) => {
+    hits.push(String(url));
+    if (String(url).indexOf('https://idp.test/token') === 0) {
+      return { ok: true, status: 200, json: async () => ({ id_token: idToken, access_token: 'at', token_type: 'Bearer' }) };
+    }
+    if (String(url).indexOf('https://idp.test/jwks') === 0) {
+      return { ok: true, status: 200, json: async () => ({ keys: [Object.assign({}, pub, { kid: 'k1', alg: 'RS256' })] }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    sv = await rawApi('/auth/oidc/callback?code=code1&state=' + state2);
+    const cbLoc = sv.location;
+    check('回调成功并跳回页面带一次性票据',
+      sv.status === 302 && /inspection-dashboard\.html\?sso=/.test(cbLoc), cbLoc);
+    const ticket = (cbLoc.match(/[?&]sso=([^&]+)/) || [])[1] || '';
+    check('换码请求打到令牌端点', hits.some((u) => u.indexOf('https://idp.test/token') === 0), JSON.stringify(hits));
+
+    sv = await rawApi('/auth/sso/exchange', { method: 'POST', body: { ticket: decodeURIComponent(ticket) } });
+    check('票据可兑换会话并带 canWrite', sv.status === 200 && sv.body.ok && !!sv.body.data.token,
+      JSON.stringify(sv.body).slice(0, 160));
+    const ssoTk = sv.body.ok ? sv.body.data.token : '';
+    check('兑换结果标记 sso 来源', sv.body.ok && sv.body.data.sso === true);
+    const me = await api('/auth/me', {}, ssoTk);
+    check('免认证会话可直接访问 /auth/me', me.ok === true && me.data.user.username === 'oidcuser',
+      JSON.stringify(me).slice(0, 160));
+
+    sv = await rawApi('/auth/sso/exchange', { method: 'POST', body: { ticket: decodeURIComponent(ticket) } });
+    check('票据一次性，二次兑换被拒', sv.status === 401, String(sv.status));
+  } finally {
+    globalThis.fetch = realFetch2;
+  }
+
+  /* 同名但未绑定该源：不能凭登录名放行 */
+  sv = await rawApi('/auth/oidc/start?server=' + oidcId);
+  const state3 = new URL(sv.location).searchParams.get('state');
+  const nonce3 = new URL(sv.location).searchParams.get('nonce');
+  const tokenForNo = await (async () => {
+    const head = b64uStr(JSON.stringify({ alg: 'RS256', kid: 'k1' }));
+    const payload = b64uStr(JSON.stringify({
+      iss: 'https://idp.test', aud: 'cid1', sub: 'u-10', preferred_username: 'oidcno',
+      nonce: nonce3, exp: Math.floor(Date.now() / 1000) + 300
+    }));
+    const sig = await WC.subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, kp.privateKey,
+      new TextEncoder().encode(head + '.' + payload));
+    return head + '.' + payload + '.' + b64u(sig);
+  })();
+  const realFetch3 = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).indexOf('/token') >= 0) {
+      return { ok: true, status: 200, json: async () => ({ id_token: tokenForNo, access_token: 'at' }) };
+    }
+    if (String(url).indexOf('/jwks') >= 0) {
+      return { ok: true, status: 200, json: async () => ({ keys: [Object.assign({}, pub, { kid: 'k1', alg: 'RS256' })] }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    sv = await rawApi('/auth/oidc/callback?code=code2&state=' + state3);
+    check('未绑定该免认证源的账号被拒',
+      sv.status === 302 && /sso_err=/.test(sv.location) &&
+      decodeURIComponent(sv.location).indexOf('未开通') >= 0, decodeURIComponent(sv.location || ''));
+  } finally {
+    globalThis.fetch = realFetch3;
+  }
+
+  /* 清理 */
+  await api('/users/oidcuser', { method: 'DELETE' }, tk);
+  await api('/users/oidcno', { method: 'DELETE' }, tk);
+  r = await api('/auth-servers/' + oidcId, { method: 'DELETE' }, tk);
+  check('清理 OIDC 源', r.ok === true, JSON.stringify(r).slice(0, 120));
+}
+
 /* 非超管不能操作 */
 r = await api('/users/wxu/wx-test', { method: 'POST', body: {} }, 'bad-token');
 check('非超管不能发测试消息', r.status === 401 || r.status === 403, String(r.status));

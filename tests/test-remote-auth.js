@@ -103,14 +103,33 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     id('uSourceType').value = 'remote';
     fire(w, id('uSourceType'), 'change');
     check('切到远程后隐藏初始密码输入', id('uPwdField').style.display === 'none');
-    check('切到远程后出现认证服务器选择', id('uServerField').style.display === 'block');
-    check('服务器下拉自动带出已配置项',
-      id('uServer').options.length === 2 && id('uServer').textContent.indexOf('总部 LDAP') >= 0);
+    check('切到远程后出现认证源列表', id('uServerField').style.display === 'block');
+    const cks = [...d.querySelectorAll('#uServerList input[data-sid]')];
+    check('认证源以勾选列表展示（不再用多选下拉）',
+      cks.length === 2 && !id('uServer') && id('uServerList').textContent.indexOf('总部 LDAP') >= 0,
+      cks.length + ' 项 / ' + id('uServerList').textContent);
+    check('新建时默认勾选第一个可用源', cks.length === 2 && cks[0].checked === true);
+    check('默认主源落在第一个勾选项上',
+      !!id('uServerList').querySelector('input[name="uSrvPri"]:checked') &&
+      d.querySelector('#uServerList input[name="uSrvPri"]:checked').value === cks[0].getAttribute('data-sid'));
     check('提示文案说明由该服务器校验密码', id('uServerHint').textContent.indexOf('总部 LDAP') >= 0,
       id('uServerHint').textContent);
 
-    id('uServer').value = w.__SRV__.servers[0].id;
-    fire(w, id('uServer'), 'change');
+    /* 多选交互：勾第二个 → 主源仍是第一个；取消主源 → 自动移交另一个 */
+    cks[1].checked = true;
+    fire(w, cks[1], 'change');
+    let pri = d.querySelector('#uServerList input[name="uSrvPri"]:checked');
+    check('勾第二个源不会顶掉主源', pri && pri.value === cks[0].getAttribute('data-sid'), pri && pri.value);
+    check('未勾选行的主源单选被禁用',
+      d.querySelector('#uServerList input[name="uSrvPri"][value="' + cks[1].getAttribute('data-sid') + '"]').disabled === false &&
+      !!cks[1].checked);
+    cks[0].checked = false;
+    fire(w, cks[0], 'change');
+    pri = d.querySelector('#uServerList input[name="uSrvPri"]:checked');
+    check('取消主源后自动移交给另一个已选项', pri && pri.value === cks[1].getAttribute('data-sid'), pri && pri.value);
+    cks[1].checked = false;
+    cks[0].checked = true;
+    fire(w, cks[0], 'change');
     id('uPerm').value = 'ro';
     click(w, id('btnSaveUser'));
     await tick(60);
@@ -329,10 +348,13 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     id('uName').value = '统一身份用户';
     id('uSourceType').value = 'remote';
     fire(w, id('uSourceType'), 'change');
-    const opt = [...id('uServer').options].filter(o => o.textContent.indexOf('集团统一身份') >= 0)[0];
-    check('用户下拉可选中免认证源且标注', !!opt && opt.textContent.indexOf('免认证') >= 0, opt && opt.textContent);
-    id('uServer').value = opt.value;
-    fire(w, id('uServer'), 'change');
+    const ssoCk = [...d.querySelectorAll('#uServerList input[data-sid]')]
+      .filter(c => c.parentNode.textContent.indexOf('集团统一身份') >= 0)[0];
+    check('列表项标注免认证',
+      !!ssoCk && ssoCk.parentNode.parentNode.textContent.indexOf('免认证') >= 0,
+      ssoCk && ssoCk.parentNode.parentNode.textContent);
+    [...d.querySelectorAll('#uServerList input[data-sid]')].forEach(c => { c.checked = (c === ssoCk); });
+    fire(w, ssoCk, 'change');
     check('提示说明走统一身份登录', id('uServerHint').textContent.indexOf('统一身份登录') >= 0,
       id('uServerHint').textContent);
     check('选了免认证源时不显示初始密码', id('uPwdField').style.display === 'none');

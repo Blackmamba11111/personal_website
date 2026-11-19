@@ -341,6 +341,23 @@ function installApiStub(window, opts) {
   };
 
   function route(p, method, body) {
+    /* 免认证登录：登录页拉入口清单 → 回跳票据兑换会话 */
+    if (p === '/auth/sso/sources' && method === 'GET') {
+      return ok({
+        sources: srv.servers.filter(s => STUB_SSO_TYPES.indexOf(s.type) >= 0 && s.enabled !== false)
+          .map(s => ({ id: s.id, name: s.name, type: s.type, label: s.type.toUpperCase() }))
+      });
+    }
+    if (p === '/auth/sso/exchange' && method === 'POST') {
+      /* 桩约定：ticket 就是用户名，便于用例直接指定「谁回调成功」 */
+      const u = findUser(String(body.ticket || ''));
+      if (!u) return bad('登录票据已失效，请重新登录。', 401);
+      me = u.username;
+      window.sessionStorage.setItem(TOKEN_KEY, TOKEN);
+      const b = bundle(u);
+      b.sso = true;
+      return ok(b);
+    }
     if (p === '/auth/login' && method === 'POST') {      const u = findUser(body.username);
       if (!u) return bad('用户名或密码不正确。', 401);
       const src = u.source || 'local';

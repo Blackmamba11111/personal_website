@@ -1276,6 +1276,91 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     w.close();
   }
 
+  /* ================= 统一身份登录入口（OIDC） ================= */
+  {
+    /* 没有任何免认证源：入口整体隐藏，不影响口令登录 */
+    const d0 = makeDom({ sessionUser: null, errors });
+    await tick(120);
+    check('没有免认证源时不显示统一身份入口',
+      d0.window.document.getElementById('ssoWrap').style.display === 'none',
+      d0.window.document.getElementById('ssoWrap').style.display);
+
+    /* 只有一个源：显示按钮，文案不带数量 */
+    const d1 = makeDom({
+      sessionUser: null, errors,
+      servers: [{ id: 'sso1', name: '集团统一身份', type: 'oidc', enabled: true, cfg: {} }]
+    });
+    await tick(160);
+    const w1 = d1.window, n1 = w1.document;
+    check('有免认证源时显示统一身份入口',
+      n1.getElementById('ssoWrap').style.display === 'block');
+    check('单入口时按钮文案不带数量',
+      n1.getElementById('btnSso').textContent === '统一身份登录',
+      n1.getElementById('btnSso').textContent);
+
+    /* 多个源：点击展开可选列表 */
+    const d2 = makeDom({
+      sessionUser: null, errors,
+      servers: [
+        { id: 'sso1', name: '集团统一身份', type: 'oidc', enabled: true, cfg: {} },
+        { id: 'sso2', name: '备用统一身份', type: 'oidc', enabled: true, cfg: {} }
+      ]
+    });
+    await tick(160);
+    const w2 = d2.window, n2 = w2.document;
+    check('多入口时按钮标出数量',
+      n2.getElementById('btnSso').textContent.indexOf('2 个入口') >= 0,
+      n2.getElementById('btnSso').textContent);
+    click(w2, n2.getElementById('btnSso'));
+    const picks = [...n2.querySelectorAll('#ssoList [data-sid]')];
+    check('点击后展开入口列表', n2.getElementById('ssoList').style.display === 'block' && picks.length === 2,
+      picks.length + ' 项');
+    check('列表项带认证源名称与类型',
+      picks[0].textContent.indexOf('集团统一身份') >= 0 && picks[0].textContent.indexOf('OIDC') >= 0,
+      picks[0].textContent);
+
+    /* 回调回跳带票据：兑换成功即进入系统，并把参数从地址栏抹掉 */
+    const d3 = makeDom({
+      sessionUser: null, errors,
+      servers: [{ id: 'sso1', name: '集团统一身份', type: 'oidc', enabled: true, cfg: {} }],
+      url: 'http://127.0.0.1:8899/inspection-dashboard.html?sso=demo'
+    });
+    await tick(240);
+    const w3 = d3.window, n3 = w3.document;
+    check('统一身份票据兑换后直接进入系统',
+      !n3.getElementById('authView').classList.contains('on'));
+    check('兑换后地址栏不再带 sso 参数',
+      w3.location.search.indexOf('sso=') < 0, w3.location.search);
+    check('免认证登录同样写入会话令牌',
+      !!w3.sessionStorage.getItem('inspection_board_token_v1'));
+
+    /* 无效票据：留在登录页并给出原因 */
+    const d4 = makeDom({
+      sessionUser: null, errors,
+      servers: [{ id: 'sso1', name: '集团统一身份', type: 'oidc', enabled: true, cfg: {} }],
+      url: 'http://127.0.0.1:8899/inspection-dashboard.html?sso=nosuchuser'
+    });
+    await tick(240);
+    const n4 = d4.window.document;
+    check('无效票据留在登录页并提示原因',
+      n4.getElementById('authView').classList.contains('on') &&
+      n4.getElementById('authErr').textContent.indexOf('失效') >= 0,
+      n4.getElementById('authErr').textContent);
+
+    /* 平台回调报错：原样呈现给用户 */
+    const d5 = makeDom({
+      sessionUser: null, errors,
+      servers: [{ id: 'sso1', name: '集团统一身份', type: 'oidc', enabled: true, cfg: {} }],
+      url: 'http://127.0.0.1:8899/inspection-dashboard.html?sso_err=' + encodeURIComponent('平台返回错误：access_denied')
+    });
+    await tick(240);
+    const w5 = d5.window, n5 = w5.document;
+    check('平台错误提示原样展示',
+      n5.getElementById('authErr').textContent.indexOf('access_denied') >= 0,
+      n5.getElementById('authErr').textContent);
+    check('错误参数也从地址栏清掉', w5.location.search.indexOf('sso_err') < 0, w5.location.search);
+  }
+
   /* ================= 汇总 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));
