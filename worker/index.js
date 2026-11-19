@@ -1963,7 +1963,9 @@ async function route(request, env, ctx) {
     return new Response(null, { status: 302, headers: { location: target, 'cache-control': 'no-store' } });
   }
 
-  if (p === '/api/auth/oidc/callback' && method === 'GET') {
+  /* 回调地址：正式路径是 /api/auth/oidc/callback；早期界面生成过
+     /api/auth/sso/callback 的占位地址并可能已登记到平台，两个都接受。 */
+  if ((p === '/api/auth/oidc/callback' || p === '/api/auth/sso/callback') && method === 'GET') {
     const sp = new URL(request.url).searchParams;
     const state = String(sp.get('state') || '');
     const st = state ? await env.DB.prepare('SELECT * FROM sso_states WHERE state = ?').bind(state).first() : null;

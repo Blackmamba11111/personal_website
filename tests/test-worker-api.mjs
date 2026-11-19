@@ -1085,6 +1085,11 @@ async function rawApi(path, opts) {
   check('缺 state 的回调被拒并回到登录页',
     sv.status === 302 && /sso_err=/.test(sv.location), sv.location);
 
+  /* 旧占位路径同样落到回调处理（历史界面生成过 /api/auth/sso/callback） */
+  sv = await rawApi('/auth/sso/callback?code=abc');
+  check('旧回调路径 /api/auth/sso/callback 也接受',
+    sv.status === 302 && /sso_err=/.test(sv.location), String(sv.status) + ' ' + sv.location);
+
   /* 平台错误回调 */
   sv = await rawApi('/auth/oidc/callback?error=access_denied&error_description=' + encodeURIComponent('用户取消') + '&state=' + state);
   check('平台返回错误时透出原因', sv.status === 302 && /sso_err=/.test(sv.location), sv.location);

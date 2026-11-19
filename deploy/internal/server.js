@@ -1852,7 +1852,7 @@ function ssoPurge() {
   try { db.prepare('DELETE FROM sso_tickets WHERE created_at < ?').run(cut); } catch (e) {}
 }
 /* OIDC 端点：手工配置优先，缺项时取平台配置文档 */
-async function oidcEndpointsOf(cfg) {
+async function oidcEndpointsOf(cfg, F) {
   let P = null;
   try { P = await loadProtocols(); } catch (e) {
     return { ok: false, ep: {}, err: '认证模块未加载：' + (e && e.message ? e.message : String(e)), P: null };
@@ -1860,13 +1860,50 @@ async function oidcEndpointsOf(cfg) {
   let doc = null;
   let err = '';
   if (!cfg.authorizeUrl || !cfg.tokenUrl || !cfg.jwksUri) {
-    const d = await P.oidcDiscovery(cfg);
+    const d = await P.oidcDiscovery(cfg, { fetch: F });
     if (d.ok) doc = d.doc;
     else err = d.message;
   }
   const ep = P.oidcEndpoints(cfg, doc);
   return { ok: !!(ep.authorize && ep.token), ep: ep, err: err, P: P };
 }
+/* 内网统一身份平台多用私有 CA 签发的证书，Node 内置 fetch 会报
+   UNABLE_TO_VERIFY_LEAF_SIGNATURE。认证源勾了「跳过证书校验」时改用
+   https.request 的最小替身（仅关闭链校验，仍走 TLS 加密）。 */
+function insecureFetch(url, init) {
+  init = init || {};
+  return new Promise(function (resolve, reject) {
+    let u = null;
+    try { u = new URL(String(url)); } catch (e) { return reject(e); }
+    if (u.protocol !== 'https:') {
+      if (!globalThis.fetch) return reject(new Error('fetch 不可用'));
+      return globalThis.fetch(url, init).then(resolve, reject);
+    }
+    const req = https.request(u, {
+      method: init.method || 'GET',
+      headers: init.headers || {},
+      rejectUnauthorized: false,
+      timeout: 10000
+    }, function (r) {
+      const chunks = [];
+      r.on('data', function (c) { chunks.push(c); });
+      r.on('end', function () {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          ok: r.statusCode >= 200 && r.statusCode < 300,
+          status: r.statusCode,
+          text: async function () { return text; },
+          json: async function () { return JSON.parse(text); }
+        });
+      });
+    });
+    req.on('timeout', function () { req.destroy(new Error('连接超时')); });
+    req.on('error', reject);
+    if (init.body) req.write(init.body);
+    req.end();
+  });
+}
+function oidcFetchOf(cfg) { return (cfg && cfg.insecure) ? insecureFetch : undefined; }
 
 function readBody(req) {
   return new Promise(function (resolve, reject) {
@@ -2311,7 +2348,8 @@ async function handleApi(req, res, url) {
     const cfg = parseCfg(srv.cfg);
     const origin = ssoOrigin(req);
     const redirectUri = cfg.redirectUri || (origin + '/api/auth/oidc/callback');
-    const epv = await oidcEndpointsOf(cfg);
+    const F = oidcFetchOf(cfg);
+    const epv = await oidcEndpointsOf(cfg, F);
     if (!epv.ok) return bad(res, 'OIDC 端点不可用：' + (epv.err || '缺少授权或令牌地址'), 502);
 
     ssoPurge();
@@ -2328,7 +2366,9 @@ async function handleApi(req, res, url) {
     return redirectTo(res, target);
   }
 
-  if (p === '/api/auth/oidc/callback' && method === 'GET') {
+  /* 回调地址：正式路径是 /api/auth/oidc/callback；早期界面生成过
+     /api/auth/sso/callback 的占位地址并可能已登记到平台，两个都接受。 */
+  if ((p === '/api/auth/oidc/callback' || p === '/api/auth/sso/callback') && method === 'GET') {
     const state = String(url.searchParams.get('state') || '');
     const st = state ? db.prepare('SELECT * FROM sso_states WHERE state = ?').get(state) : null;
     /* state 一次性：取到就删，重复回调直接失败 */
@@ -2348,16 +2388,17 @@ async function handleApi(req, res, url) {
     const srv = db.prepare('SELECT * FROM auth_servers WHERE id = ?').get(st.server_id);
     if (!srv || !srv.enabled) return ssoFail(res, origin, '该免认证源已停用或被删除，请联系管理员。');
     const cfg = parseCfg(srv.cfg);
-    const epv = await oidcEndpointsOf(cfg);
+    const F = oidcFetchOf(cfg);
+    const epv = await oidcEndpointsOf(cfg, F);
     if (!epv.ok) return ssoFail(res, origin, 'OIDC 端点不可用：' + (epv.err || '缺少授权或令牌地址'));
 
     const ex = await epv.P.oidcExchange(cfg, epv.ep, {
-      code: code, redirectUri: st.redirect_uri, verifier: st.verifier
+      code: code, redirectUri: st.redirect_uri, verifier: st.verifier, fetch: F
     });
     if (!ex.ok) return ssoFail(res, origin, ex.message);
 
     const vf = await epv.P.oidcVerifyIdToken(cfg, epv.ep, ex.idToken, {
-      issuer: epv.ep.issuer, clientId: cfg.clientId, nonce: st.nonce
+      issuer: epv.ep.issuer, clientId: cfg.clientId, nonce: st.nonce, fetch: F
     });
     if (!vf.ok) return ssoFail(res, origin, '身份令牌校验失败：' + vf.message);
 
