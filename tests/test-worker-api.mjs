@@ -916,12 +916,13 @@ try {
   check('@ 文本带 mentioned_mobile_list',
     sent.length === 2 && JSON.stringify(sent[1].body.text.mentioned_mobile_list) === '["13900139000"]',
     sent.length === 2 ? JSON.stringify(sent[1].body.text.mentioned_mobile_list) : '未发送');
-  check('@ 文本与卡片正文同一模板（正文一致、多一行链接）', (function () {
+  check('@ 文本与卡片正文同一模板（标题 + 正文 + 链接）', (function () {
     if (sent.length !== 2) return false;
     const d = String(sent[0].body.template_card.sub_title_text || '');
     const t = String(sent[1].body.text.content || '');
-    return d.indexOf('衡水银行') > 0 && t.indexOf(d) === 0
-      && /inspection-dashboard\.html\?cust=wc1/.test(t) && /【巡检台账已更新】/.test(t);
+    return d.indexOf('衡水银行') === 0 && t.indexOf(d) > 0
+      && t.indexOf('衡水银行 · 巡检台账已更新') === 0
+      && /inspection-dashboard\.html\?cust=wc1/.test(t);
   })(), sent.length === 2 ? sent[1].body.text.content : '未发送');
 
   await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, atOwner: 0 } } }, tk);
@@ -933,8 +934,25 @@ try {
   ]));
   check('关掉「@ 归属人」后不再补发', sent.length === 1, sent.length + ' 条');
 
+  /* 卡片结构由模板决定（2026-11-19）：模板里只写「巡检结果」→ 卡片就只显示这一行 */
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, tpl: '{title}\n{summary}\n巡检结果：{result}' } } }, tk);
+  sent = [];
+  await putVisits(kept.concat([
+    { id: 'wv30', customerId: 'wc1', date: '2026-11-26', by: '张三', note: '' },
+    { id: 'wv31', customerId: 'wc1', date: '2026-11-27', by: '张三', note: '' },
+    { id: 'wv32', customerId: 'wc1', date: '2026-11-28', by: '张三', note: '' },
+    { id: 'wv33', customerId: 'wc1', date: '2026-11-29', by: '张三', result: 'issue', note: '' }
+  ]));
+  const rows3 = sent.length ? ((sent[0].body.template_card || {}).horizontal_content_list || []) : [];
+  check('模板里只留一行明细 → 卡片就只显示一行',
+    sent.length === 1 && rows3.length === 1 && rows3[0].keyname === '巡检结果' && rows3[0].value === '异常',
+    JSON.stringify(rows3));
+  check('模板首行 {title} → 卡片主标题',
+    sent.length === 1 && sent[0].body.template_card.main_title.title === '衡水银行 · 巡检台账已更新',
+    sent.length ? sent[0].body.template_card.main_title.title : '未发送');
+
   /* 复位：手机号清空、开关恢复；下家删除，避免影响后续用例 */
-  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, phone: '', atOwner: 1 } } }, tk);
+  await api('/users/wxu', { method: 'PATCH', body: { wx: { enabled: 1, phone: '', atOwner: 1, tpl: '' } } }, tk);
   await api('/users/wxdown', { method: 'DELETE' }, tk);
 } finally {
   globalThis.fetch = realFetch;

@@ -13,26 +13,36 @@
  * ==========================================================================*/
 
 /* 默认消息模板：纯文本，markdown / text 两种 msgtype 下都能正常换行显示。
-   用户可在用户管理里自定义，变量见 TPL_VARS。 */
+   用户可在用户管理里自定义，变量见 TPL_VARS。
+   这份模板同时决定卡片的「结构」：含 {title} 的行做主标题，以「巡检人 / 巡检时间 /
+   巡检结果 / 备注 / 附件」开头的行摘成明细行（见 buildCard），其余行是卡片正文。 */
 export const WX_DEFAULT_TPL = [
-  '【巡检台账已更新】',
+  '{title}',
   '{summary}',
   '操作人：{actor}',
   '时间：{time}',
+  '巡检人：{inspector}',
+  '巡检时间：{vtime}',
+  '巡检结果：{result}',
+  '备注：{note}',
+  '附件：{files}',
   '{link}'
 ].join('\n');
 
-/* 可用变量：{summary} {customer} {changes} {actor} {time} {date} {link} {count}
+/* 可用变量：{title} {summary} {customer} {changes} {actor} {time} {date} {link} {count}
    {result} {files} {inspector} {vtime} {mode} {note}
+   {title}     卡片主标题（「客户 · 巡检台账已更新」；多客户为「巡检台账已更新 · N 个客户」）
+   {summary}   变更摘要（「客户：新增 N 条」）
    {result}    巡检结果（「正常 / 异常 / 其他」，多个去重后用「、」连）
    {files}     本次变更涉及的附件名（最多列 3 个，其余显示「等 N 个」）
    {inspector} 巡检人（多人用「/」连）
    {vtime}     巡检时间（多条取最新那条的日期）
    {mode}      巡检方式（现场 / 远程，多个去重后用「/」连）
    {note}      巡检备注（多条取最长的一条，超过 30 字截断）
-   默认模板不含后四项（群机器人卡片另在明细行里展示），需要写进正文时自行添加。 */
+   明细行键名固定为「巡检人 / 巡检时间 / 巡检结果 / 备注 / 附件」，这两字不能改；
+   删掉某行，卡片就不显示该明细行。 */
 export const TPL_VARS = [
-  'summary', 'customer', 'changes', 'actor', 'time', 'date', 'link', 'count',
+  'title', 'summary', 'customer', 'changes', 'actor', 'time', 'date', 'link', 'count',
   'result', 'files', 'inspector', 'vtime', 'mode', 'note'
 ];
 
@@ -186,6 +196,38 @@ export function fillTpl(tpl, vars) {
   return src.replace(/\{([A-Za-z_]+)\}/g, function (m, k) {
     return vars && vars[k] != null ? String(vars[k]) : m;
   });
+}
+
+/* 卡片的明细行键名：固定这 5 个（模板里这两字不能改，值由变量决定） */
+export const CARD_ROW_KEYS = ['巡检时间', '巡检结果', '巡检人', '备注', '附件'];
+
+/* 模板 → 卡片三段结构。逐行处理：
+     含 {title} 的行  → 主标题（只取第一处；整行去掉前后空白）
+     以 5 个明细键开头的行 → horizontal_content_list 的一行（从正文摘走，避免重复）
+     其余行           → 二级标题（正文）
+   模板里既没有 {title} 也没有明细行的老配置不会报错：标题用 defTitle 兜底、
+   rows 为空由调用方回退到默认五行，行为与改造前一致。 */
+export function buildCard(tpl, vars, defTitle) {
+  const src = String(tpl == null || tpl === '' ? WX_DEFAULT_TPL : tpl);
+  const v = vars || {};
+  const rowRe = /^\s*(巡检时间|巡检结果|巡检人|备注|附件)\s*[:：]\s*(.*)$/;
+  let title = '';
+  const desc = [], rows = [];
+  src.split(/\r?\n/).forEach(function (raw) {
+    const isTitle = raw.indexOf('{title}') >= 0;
+    const line = raw.replace(/\{([A-Za-z_]+)\}/g, function (m, k) {
+      return v[k] != null ? String(v[k]) : m;
+    });
+    if (isTitle && !title) { title = line.trim(); return; }
+    const m = rowRe.exec(line);
+    if (m) { rows.push({ key: m[1], val: m[2].trim() || '—' }); return; }
+    desc.push(line);
+  });
+  return {
+    title: title || String(defTitle || '巡检台账已更新'),
+    desc: desc.join('\n').replace(/\n{2,}/g, '\n').trim(),
+    rows: rows.slice(0, 6)
+  };
 }
 
 /* 变更条目 → 摘要文本。items = [{ customer, add, upd, del }] */

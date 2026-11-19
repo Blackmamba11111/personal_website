@@ -1473,19 +1473,21 @@ async function notifyVisitChange(env, ownerName, actor, logs, origin) {
       mode: WX_P.modeText(allModes),
       note: noteTxt
     };
+    const cardTitle = items.length === 1
+      ? (items[0].customer + ' · 巡检台账已更新')
+      : ('巡检台账已更新 · ' + items.length + ' 个客户');
+    vars.title = cardTitle;
     const content = WX_P.fillTpl(cfg.tpl, vars);
-    /* 卡片正文复用同一模板，但去掉 {link} 那一行 —— 链接已经挂在按钮上 */
-    const cardDesc = WX_P.fillTpl(cfg.tpl, Object.assign({}, vars, { link: '' }))
-      .replace(/\n{2,}/g, '\n').trim();
+    /* 卡片结构也来自同一模板：含 {title} 的行做标题、五个明细键的行摘成
+       horizontal_content_list、其余行是正文；{link} 置空（链接挂在卡片跳转上）。 */
+    const cd = WX_P.buildCard(cfg.tpl, Object.assign({}, vars, { link: '' }), cardTitle);
     const card = {
-      title: items.length === 1
-        ? (items[0].customer + ' · 巡检台账已更新')
-        : ('巡检台账已更新 · ' + items.length + ' 个客户'),
-      desc: cardDesc,
+      title: cd.title,
+      desc: cd.desc,
       url: link,
-      /* 明细行只放巡检本身的信息：谁巡检的、什么时候、怎么巡检、结果、备注、附件。
-         操作人、变更条数已由正文体现，不再占位（企业微信明细行上限 6 项，留余量）。 */
-      rows: [
+      /* 模板里没写明细行（改造前的老配置）→ 回退标准五行，行为不变。
+         明细只放巡检本身的信息：谁巡检的、什么时候、结果、备注、附件（上限 6 行）。 */
+      rows: cd.rows.length ? cd.rows : [
         { key: '巡检人', val: byModeTxt },
         { key: '巡检时间', val: vtimeTxt },
         { key: '巡检结果', val: resultTxt },
@@ -2327,6 +2329,7 @@ async function route(request, env, ctx) {
     if (v.err) return bad(v.err);
     const now = nowIso();
     const content = WX_P.fillTpl(v.cfg.tpl, {
+      title: '测试客户 · 巡检台账已更新',
       summary: '这是一条测试消息，说明通知链路已打通。',
       customer: '（测试）',
       changes: '（测试）',

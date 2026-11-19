@@ -16,6 +16,27 @@ check('未知变量原样保留', filled.indexOf('{nope}') >= 0);
 check('空模板回落到默认模板', WX.fillTpl('', { summary: 'S' }).indexOf('S') >= 0);
 check('变量为空串时不回退为占位符', WX.fillTpl('{summary}', { summary: '' }) === '', WX.fillTpl('{summary}', { summary: '' }));
 
+/* ---------- 模板 → 卡片结构 ---------- */
+const CV = {
+  title: '衡水银行 · 巡检台账已更新', summary: '衡水银行：新增 1 条', actor: '张三',
+  time: '2026-11-19 09:12', date: '2026-11-19', count: '1', result: '正常',
+  files: '巡检报告.pdf、现场照片.jpg', inspector: '李四', vtime: '2026-11-19',
+  mode: '现场', note: '补录设备台账', link: ''
+};
+const bc = WX.buildCard('', CV, '衡水银行 · 巡检台账已更新');
+check('默认模板第一处 {title} 做卡片主标题', bc.title === '衡水银行 · 巡检台账已更新', bc.title);
+check('默认模板摘出五行明细', bc.rows.length === 5 && bc.rows[0].key === '巡检人'
+  && bc.rows[4].key === '附件' && bc.rows[4].val === '巡检报告.pdf、现场照片.jpg', JSON.stringify(bc.rows));
+check('明细行不进正文、正文保留操作人与时间',
+  bc.desc.indexOf('巡检人：') < 0 && bc.desc.indexOf('操作人：张三') >= 0, bc.desc);
+check('卡片正文不含链接', bc.desc.indexOf('http') < 0, bc.desc);
+const bc2 = WX.buildCard('{summary}', CV, '兜底标题');
+check('模板无 {title} → 标题回退、无明细行', bc2.title === '兜底标题' && bc2.rows.length === 0, JSON.stringify(bc2));
+const bc3 = WX.buildCard('{title}\n巡检人：{inspector}', CV, 'x');
+check('删掉的行不再生成明细', bc3.rows.length === 1 && bc3.rows[0].key === '巡检人', JSON.stringify(bc3.rows));
+check('明细键兼容全角冒号', WX.buildCard('备注：{note}', CV, 'x').rows[0].val === '补录设备台账');
+check('摘要行不会被误判成明细行', WX.buildCard('{summary}', CV, 'x').rows.length === 0);
+
 /* ---------- 摘要 ---------- */
 const one = WX.summaryOf([{ customer: '衡水银行', add: 2, upd: 0, del: 0 }]);
 check('单客户摘要', one === '衡水银行：新增 2 条', one);

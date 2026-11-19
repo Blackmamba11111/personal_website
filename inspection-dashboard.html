@@ -2140,8 +2140,8 @@
             <div class="field">
                 <label for="uWxTpl">消息内容（可自定义）</label>
               <textarea id="uWxTpl" rows="6" placeholder="留空使用默认模板"></textarea>
-              <div class="hint">卡片正文与 @ 归属人的文本共用这一份模板（@ 的文本是多一行链接的纯文本）。可用变量：{summary} {customer} {changes} {actor} {time} {date} {result} {files} {inspector} {vtime} {mode} {note} {link} {count}
-                <br>{inspector}＝巡检人，{vtime}＝巡检时间，{mode}＝巡检方式，{note}＝备注（群机器人卡片已在明细行展示，正文可不用）
+              <div class="hint">卡片与 @ 归属人的文本共用这一份模板：含 {title} 的行做卡片标题，以「巡检人 / 巡检时间 / 巡检结果 / 备注 / 附件」开头的行做明细行，其余为正文。删掉某行，卡片就不显示它。可用变量：{title} {summary} {customer} {changes} {actor} {time} {date} {result} {files} {inspector} {vtime} {mode} {note} {link} {count}
+                <br>{title}＝客户 · 巡检台账已更新，{inspector}＝巡检人，{vtime}＝巡检时间，{mode}＝巡检方式，{note}＝备注
                 <button type="button" class="wx-tpl-link" id="btnWxTplReset">恢复默认</button>
               </div>
             </div>
@@ -10259,7 +10259,9 @@
   /* ---------- 企业微信通知（用户级） ----------
      与服务端 worker/wecom-notify.mjs 的变量集合保持一致；
      密钥类字段（webhook 的 key / corpsecret）服务端只回掩码或「已设置」，编辑时留空 = 不修改。 */
-  var WX_DEFAULT_TPL = ['【巡检台账已更新】', '{summary}', '操作人：{actor}', '时间：{time}', '{link}'].join('\n');
+  var WX_DEFAULT_TPL = ['{title}', '{summary}', '操作人：{actor}', '时间：{time}',
+    '巡检人：{inspector}', '巡检时间：{vtime}', '巡检结果：{result}', '备注：{note}',
+    '附件：{files}', '{link}'].join('\n');
   /* 触发动作：新增 / 修改 / 删除。默认三个全勾（与旧行为一致）；全不勾由保存接口拦截报错。
      用户弹窗与批量弹窗共用这套读写，避免两边规则走偏。 */
   var WX_ACT_DEF = [['add', '新增'], ['update', '修改'], ['delete', '删除']];

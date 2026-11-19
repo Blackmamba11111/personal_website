@@ -353,7 +353,7 @@ const userOf = (w, n) => w.__SRV__.users.filter(u => u.username === n)[0];
     check('默认接入方式为群机器人', id('uWxRobotWrap').style.display === 'block' && id('uWxAppWrap').style.display === 'none');
     check('消息形式默认卡片', id('uWxFmt').value === 'card', id('uWxFmt').value);
     check('@ 归属人默认勾选', id('uWxAt').checked === true, String(id('uWxAt').checked));
-    check('消息内容默认显示默认模板', id('uWxTpl').value.indexOf('【巡检台账已更新】') === 0, id('uWxTpl').value);
+    check('消息内容默认显示默认模板', id('uWxTpl').value.indexOf('{title}') === 0, id('uWxTpl').value);
     check('触发动作默认三个全勾',
       id('uWxActAdd').checked && id('uWxActUpd').checked && id('uWxActDel').checked,
       [id('uWxActAdd').checked, id('uWxActUpd').checked, id('uWxActDel').checked].join(','));
