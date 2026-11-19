@@ -853,6 +853,9 @@ function makeDom(opts) {
   opts = Object.assign({}, opts);
   const prev = opts.installGlobals;
   opts.installGlobals = function (w) {
+    /* 免认证自动跳转在测试里默认不导航（jsdom 无法真正跳转）；
+       用例需要断言跳转地址时，用 installGlobals 覆盖 __ssoGoHook 记录即可 */
+    w.__ssoGoHook = function () {};
     installApiStub(w, opts);
     if (typeof prev === 'function') prev(w);
   };

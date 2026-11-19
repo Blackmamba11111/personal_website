@@ -849,6 +849,11 @@
   .auth-err{display:none;margin-bottom:14px;padding:9px 11px;border-radius:var(--r-sm);background:var(--danger-soft);
     border:1px solid var(--danger-line);color:var(--danger-ink);font-size:11.5px;line-height:1.6;}
   .auth-err.on{display:block;}
+  #ssoAutoTip{display:none;margin-bottom:14px;padding:9px 11px;border-radius:var(--r-sm);background:var(--brand-soft);
+    border:1px solid var(--brand-line);color:var(--brand-ink);font-size:11.5px;line-height:1.6;}
+  #ssoAutoTip.on{display:block;}
+  #ssoAutoTip button{margin-left:8px;padding:0;border:0;background:none;color:var(--brand);
+    font:inherit;font-weight:600;cursor:pointer;text-decoration:underline;}
   .auth-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 0 18px;font-size:11.5px;color:var(--ink-2);}
   .auth-rem{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
   .auth-rem input{width:14px;height:14px;margin:0;accent-color:var(--brand);}
@@ -1200,6 +1205,7 @@
     <div class="auth-main">
       <h2>账号登录</h2>
       <div class="sub">请输入分配给你的用户名与密码</div>
+      <div id="ssoAutoTip"><span>正在跳转统一身份平台…</span><button type="button" id="btnSsoLocal">改用账号密码登录</button></div>
       <div class="auth-err" id="authErr"></div>
       <form id="loginForm" autocomplete="off">
         <div class="field">
@@ -7616,6 +7622,7 @@
     DB = { regions: [], customers: [], visits: [] };
     closeAllOverlays();
     renderAll();
+    ssoAutoMark();           /* 空闲超时后停在登录页，避免又被自动登回 */
     showAuth();
     authError(msg || '登录状态已失效，请重新登录。');
   }
@@ -8181,6 +8188,7 @@
   /* 登录成功后的统一入口（口令登录与统一身份登录共用） */
   function enterApp(d) {
     d = d || {};
+    ssoAutoReset();          /* 登录成功：下次打开页面仍自动走统一身份 */
     writeToken(d.token);
     applyServerUsers(d.users);
     applyServerLedgers(d.ledgers);
@@ -8198,6 +8206,7 @@
   /* 登录改由服务端校验：口令不再在浏览器内比对，账号真相以 D1 为准 */
   function doLogin(e) {
     if (e && e.preventDefault) e.preventDefault();
+    if (SSO_TIMER) cancelAutoSso();   /* 用户选择口令登录，取消待执行的自动跳转 */
     authError('');
     var uname = document.getElementById('loginUser').value.trim();
     var pwd   = document.getElementById('loginPwd').value;
@@ -8217,22 +8226,65 @@
   }
 
   /* ---------- 统一身份登录（OIDC） ----------
-     入口只在有已启用的免认证源时出现；多个源时展开列表让用户选。
-     回调回跳带 ?sso=<一次性票据>，兑换正式会话后立刻把参数从地址栏抹掉。 */
+     有已启用的免认证源时，打开页面即自动跳转（不再要求点按钮）；多个源时
+     取第一个，其余仍可在按钮里手动选择。回调回跳带 ?sso=<一次性票据>，
+     兑换正式会话后立刻把参数从地址栏抹掉。 */
   var SSO_SOURCES = [];
+  var SSO_READY = false, SSO_WANT = false, SSO_TIMER = null;
+  /* 本标签页是否已经自动跳转过：进系统成功则清除（下次打开仍然自动跳），
+     退出登录、会话超时、回调报错则保留，避免「退出去又被自动登回来」。 */
+  var SSO_AUTO_KEY = 'inspect.ssoAuto';
+  function ssoAutoUsed() { try { return sessionStorage.getItem(SSO_AUTO_KEY) === '1'; } catch (e) { return false; } }
+  function ssoAutoMark() { try { sessionStorage.setItem(SSO_AUTO_KEY, '1'); } catch (e) {} }
+  function ssoAutoReset() { try { sessionStorage.removeItem(SSO_AUTO_KEY); } catch (e) {} }
+  /* 跳转出口单独一层：自动化测试可替换，避免 jsdom 真的导航 */
+  function ssoGo(url) {
+    if (typeof window.__ssoGoHook === 'function') { window.__ssoGoHook(url); return; }
+    location.href = url;
+  }
   function ssoStart(sid) {
-    location.href = API_BASE + '/auth/oidc/start?server=' + encodeURIComponent(sid);
+    ssoAutoMark();
+    ssoGo(API_BASE + '/auth/oidc/start?server=' + encodeURIComponent(sid));
+  }
+  /* 打开即进系统。只在「未登录 + 不是回调 + 本标签页没自动跳过」时触发；
+     留 350ms 让提示先绘制出来，此刻开始输密码或点「改用账号密码登录」即取消。
+     地址后加 ?local=1 可强制停留在口令登录页。 */
+  function maybeAutoSso() {
+    if (!SSO_READY) { SSO_WANT = true; return; }
+    SSO_WANT = false;
+    if (!SSO_SOURCES.length || AUTH.user || readToken() || ssoAutoUsed()) return;
+    try {
+      var q = new URLSearchParams(location.search);
+      if (q.get('sso') || q.get('sso_err') || q.get('local') === '1') return;
+    } catch (e) {}
+    ssoAutoMark();
+    var tip = document.getElementById('ssoAutoTip');
+    if (tip) tip.classList.add('on');
+    if (SSO_TIMER) clearTimeout(SSO_TIMER);
+    SSO_TIMER = setTimeout(function () {
+      SSO_TIMER = null;
+      ssoGo(API_BASE + '/auth/oidc/start?server=' + encodeURIComponent(SSO_SOURCES[0].id));
+    }, 350);
+  }
+  function cancelAutoSso() {
+    if (SSO_TIMER) { clearTimeout(SSO_TIMER); SSO_TIMER = null; }
+    var tip = document.getElementById('ssoAutoTip');
+    if (tip) tip.classList.remove('on');
+    ssoAutoMark();
   }
   function loadSsoSources() {
     fetch(API_BASE + '/auth/sso/sources', { headers: { accept: 'application/json' } })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         SSO_SOURCES = (j && j.ok && j.data && j.data.sources) || [];
+        SSO_READY = true;
         var wrap = document.getElementById('ssoWrap');
-        if (!wrap) return;
-        wrap.style.display = SSO_SOURCES.length ? 'block' : 'none';
-        var btn = document.getElementById('btnSso');
-        if (btn) btn.textContent = '统一身份登录' + (SSO_SOURCES.length > 1 ? '（' + SSO_SOURCES.length + ' 个入口）' : '');
+        if (wrap) {
+          wrap.style.display = SSO_SOURCES.length ? 'block' : 'none';
+          var btn = document.getElementById('btnSso');
+          if (btn) btn.textContent = '统一身份登录' + (SSO_SOURCES.length > 1 ? '（' + SSO_SOURCES.length + ' 个入口）' : '');
+        }
+        if (SSO_WANT) maybeAutoSso();
       })
       .catch(function () { /* 取不到就当作没有免认证源，不影响口令登录 */ });
   }
@@ -8259,7 +8311,7 @@
       history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + (location.hash || ''));
     } catch (e) {}
     showAuth();
-    if (err) { authError(err); return true; }
+    if (err) { ssoAutoMark(); authError(err); return true; }
     authError('正在完成统一身份登录…');
     api('/auth/sso/exchange', { method: 'POST', body: { ticket: ticket } }).then(function (r) {
       if (!r.ok || !r.data) { authError(r.error || '统一身份登录失败，请重试。'); return; }
@@ -8302,6 +8354,7 @@
     buildRegionLayers();
     document.getElementById('roBanner').classList.remove('on');
     document.getElementById('loginPwd').value = '';
+    ssoAutoMark();           /* 主动退出后不要自动登回去 */
     showAuth();
     toast('已退出登录');
   }
@@ -10858,6 +10911,11 @@
     document.getElementById('loginForm').addEventListener('submit', doLogin);
     /* 统一身份登录：单入口直接跳，多入口展开选择 */
     document.getElementById('btnSso').addEventListener('click', doSso);
+    /* 自动跳转留了 350ms 缓冲：用户一旦自己动手输账号，或点「改用账号密码登录」，立即取消 */
+    document.getElementById('btnSsoLocal').addEventListener('click', cancelAutoSso);
+    ['loginUser', 'loginPwd'].forEach(function (id) {
+      document.getElementById(id).addEventListener('input', function () { if (SSO_TIMER) cancelAutoSso(); });
+    });
     document.getElementById('ssoList').addEventListener('click', function (e) {
       var b = e.target.closest ? e.target.closest('[data-sid]') : null;
       if (b) ssoStart(b.getAttribute('data-sid'));
@@ -11244,12 +11302,14 @@
           AUTH.scope = '';
           showAuth();
           if (r.offline) authError('无法连接服务器，请检查网络后重试。');
+          else maybeAutoSso();   /* 旧会话已失效：等同重新进场，可直接走统一身份 */
         }
       });
     } else {
       AUTH.user = null;
       AUTH.scope = '';
       showAuth();
+      maybeAutoSso();
     }
     /* 登录界面已渲染 → 不主动预热地图 SDK。
        原因：只要地图域名响应慢/不可达，任何自动发起的请求都会让浏览器「一直转圈」

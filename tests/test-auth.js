@@ -1361,6 +1361,78 @@ const usersOf = w => JSON.parse(w.localStorage.getItem('inspection_board_users_v
     check('错误参数也从地址栏清掉', w5.location.search.indexOf('sso_err') < 0, w5.location.search);
   }
 
+  /* ================= 打开即进系统：自动统一身份登录 ================= */
+  {
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const SSO_SRV = [{ id: 'sso1', name: '集团统一身份', type: 'oidc', enabled: true, cfg: {} }];
+    const track = jumps => function (w) { w.__ssoGoHook = u => jumps.push(u); };
+
+    /* 有启用的免认证源且未登录：无需点按钮，自动跳到统一身份入口 */
+    const j1 = [];
+    const a1 = makeDom({ sessionUser: null, errors, servers: SSO_SRV, installGlobals: track(j1) });
+    await wait(460);
+    const na = a1.window.document;
+    check('打开页面即自动跳转统一身份登录',
+      j1.length === 1 && /\/auth\/oidc\/start\?server=sso1$/.test(j1[0]), j1.join(' , '));
+    check('自动跳转期间给出提示', na.getElementById('ssoAutoTip').classList.contains('on'));
+    a1.window.close();
+
+    /* 没有免认证源：绝不自动跳转，正常显示口令登录 */
+    const j2 = [];
+    const a2 = makeDom({ sessionUser: null, errors, installGlobals: track(j2) });
+    await wait(460);
+    check('没有免认证源时不自动跳转', j2.length === 0, j2.join(' , '));
+    a2.window.close();
+
+    /* ?local=1 强制停留口令登录（超管等本地账号用） */
+    const j3 = [];
+    const a3 = makeDom({
+      sessionUser: null, errors, servers: SSO_SRV, installGlobals: track(j3),
+      url: 'http://127.0.0.1:8899/inspection-dashboard.html?local=1'
+    });
+    await wait(460);
+    check('?local=1 时停在口令登录页',
+      j3.length === 0 && a3.window.document.getElementById('authView').classList.contains('on'), j3.join(' , '));
+    a3.window.close();
+
+    /* 上一次退出登录 / 会话超时留下的标记：本标签页不再自动跳 */
+    const j4 = [];
+    const a4 = makeDom({
+      sessionUser: null, errors, servers: SSO_SRV,
+      installGlobals: function (w) { w.__ssoGoHook = u => j4.push(u); w.sessionStorage.setItem('inspect.ssoAuto', '1'); }
+    });
+    await wait(460);
+    check('退出/超时后不会被自动登回去', j4.length === 0, j4.join(' , '));
+    a4.window.close();
+
+    /* 提示条上的「改用账号密码登录」可取消自动跳转 */
+    const j5 = [];
+    const a5 = makeDom({ sessionUser: null, errors, servers: SSO_SRV, installGlobals: track(j5) });
+    await wait(120);
+    const n5b = a5.window.document;
+    click(a5.window, n5b.getElementById('btnSsoLocal'));
+    await wait(420);
+    check('点「改用账号密码登录」取消自动跳转',
+      j5.length === 0 && !n5b.getElementById('ssoAutoTip').classList.contains('on'), j5.join(' , '));
+    check('取消后仍可手动点按钮发起统一身份登录',
+      n5b.getElementById('ssoWrap').style.display === 'block');
+    click(a5.window, n5b.getElementById('btnSso'));
+    check('手动点击仍然跳转', j5.length === 1 && /start\?server=sso1$/.test(j5[0]), j5.join(' , '));
+    a5.window.close();
+
+    /* 平台回调报错：不自动再跳一次，避免来回打转 */
+    const j6 = [];
+    const a6 = makeDom({
+      sessionUser: null, errors, servers: SSO_SRV, installGlobals: track(j6),
+      url: 'http://127.0.0.1:8899/inspection-dashboard.html?sso_err=' + encodeURIComponent('平台返回错误：access_denied')
+    });
+    await wait(460);
+    check('回调报错后不再自动跳转',
+      j6.length === 0 && a6.window.document.getElementById('authErr').textContent.indexOf('access_denied') >= 0,
+      j6.join(' , '));
+    a6.window.close();
+  }
+
   /* ================= 汇总 ================= */
   const pass = results.filter(r => r[0] === 'PASS').length;
   results.forEach(r => console.log(r[0].padEnd(5) + ' ' + r[1] + (r[2] && r[0] === 'FAIL' ? '   => ' + r[2] : '')));
