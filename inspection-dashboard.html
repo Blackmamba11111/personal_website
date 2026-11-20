@@ -11340,10 +11340,22 @@
     });
   }
 
+  /* 运营中心技术档案（assets/op-tech.js）只读这几项，扩展脚本不反向改内部状态 */
+  window.__opBridge = {
+    api: api, esc: esc, toast: toast, fmtTs: fmtTs, isAdmin: isAdmin,
+    users: function () { return (readUsers() || {}).users || []; },
+    vendor: function () { return loadVendor(ATT_VENDOR.xlsx, function () { return !!window.XLSX; }); },
+    current: function () {
+      for (var i = 0; i < DB.customers.length; i++) if (DB.customers[i].id === state.selectedId) return DB.customers[i];
+      return null;
+    }
+  };
+
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
 </script>
+<script src="assets/op-tech.js?v=1" defer></script>
 
 </body>
 </html>

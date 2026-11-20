@@ -1193,5 +1193,35 @@ async function rawApi(path, opts) {
 r = await api('/users/wxu/wx-test', { method: 'POST', body: {} }, 'bad-token');
 check('非超管不能发测试消息', r.status === 401 || r.status === 403, String(r.status));
 
+/* 运营中心项目技术信息（仅超管；令牌解析与配置存取） */
+r = await api('/op/config', {}, tk);
+check('超管可读运营中心配置', r.ok === true && r.data.configured === false, JSON.stringify(r).slice(0, 120));
+
+r = await api('/op/config', {}, 'bad-token');
+check('未登录不能访问运营中心', r.status === 401, String(r.status));
+
+r = await api('/op/config', { method: 'PUT', body: { token: 'not-a-jwt' } }, tk);
+check('非法令牌被拒', r.ok === false && /格式不正确/.test(r.error), JSON.stringify(r));
+
+const fakeJwt = 'eyJhbGciOiJIUzI1NiJ9.' +
+  Buffer.from(JSON.stringify({ username: '潘超', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url') + '.sig';
+r = await api('/op/config', { method: 'PUT', body: { token: fakeJwt, intervalHours: 6, auto: true, owner: 'admin' } }, tk);
+check('保存令牌与定时配置', r.ok === true && r.data.configured === true, JSON.stringify(r));
+
+r = await api('/op/config', {}, tk);
+check('回读配置带剩余时间与账号',
+  r.data.configured === true && r.data.username === '潘超' && r.data.leftSec > 3000 && r.data.auto === true,
+  JSON.stringify(r.data).slice(0, 160));
+
+r = await api('/op/rows?owner=admin', {}, tk);
+check('无数据时返回空表', r.ok === true && r.data.customers.length === 0 && r.data.total === 0, JSON.stringify(r).slice(0, 120));
+
+r = await api('/op/status?owner=admin', {}, tk);
+check('状态接口回上次同步与定时配置', r.ok === true && r.data.owner === 'admin' && r.data.auto === true, JSON.stringify(r).slice(0, 140));
+
+/* 清掉 auto，避免影响其它断言 */
+r = await api('/op/config', { method: 'PUT', body: { auto: false } }, tk);
+check('可关闭定时拉取', r.ok === true && r.data.auto === false, JSON.stringify(r));
+
 console.log('<<通过 ' + pass + ' / 共 ' + (pass + fail) + '>>');
 process.exit(fail ? 1 : 0);

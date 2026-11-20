@@ -13,6 +13,7 @@
 
 import * as AUTH_P from './auth-protocols.mjs';
 import * as CRM_P from './crm-client.mjs';
+import * as OP_P from './op-client.mjs';
 import * as WX_P from './wecom-notify.mjs';
 
 const HASH_ROUNDS = 400;
@@ -357,6 +358,14 @@ async function ensureSchema(env) {
   try {
     await env.DB.prepare(
       "CREATE TABLE IF NOT EXISTS crm_config (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
+    ).run();
+    /* 运营中心（op.zdns.cn）客户技术信息：配置一行（访问令牌），抓取结果按本地客户名缓存 */
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS op_config (k TEXT PRIMARY KEY, v TEXT NOT NULL)'
+    ).run();
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS op_sync (owner TEXT PRIMARY KEY, updated_at TEXT NOT NULL, ' +
+      "data TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '')"
     ).run();
     await env.DB.prepare(
       'CREATE TABLE IF NOT EXISTS crm_matches (customer_name TEXT PRIMARY KEY, status TEXT NOT NULL, ' +
@@ -1042,6 +1051,93 @@ async function readLedger(env, username, mine) {
 /* ---------------- CRM（询盘云/销售易）台账关联 ----------------
  * 协议实现在 ./crm-client.mjs（与内部部署版共用同一份）。
  * 公网按用户约定「代码与内网一致」：配置齐全则定时检索可用，未配置则闲置。 */
+/* ---------------- 运营中心（op.zdns.cn）客户技术信息 ----------------
+ * 协议在 ./op-client.mjs（与内部部署版共用）。认证用平台统一身份的 AccessToken，
+ * 由超管粘贴，有效期 8 小时；过期后接口直接报错，不做自动续期。 */
+const OP_BATCH = 6;
+const OP_DEFAULT_INTERVAL = 12;
+async function readOpConfig(env) {
+  const row = await env.DB.prepare("SELECT v FROM op_config WHERE k = 'main'").first();
+  const d = { token: '', updatedAt: '', intervalHours: OP_DEFAULT_INTERVAL, auto: false, owner: '', lastSyncAt: '', lastResult: null, progress: null };
+  if (!row) return d;
+  try {
+    const v = JSON.parse(row.v) || {};
+    return Object.assign(d, {
+      token: String(v.token || ''), updatedAt: String(v.updatedAt || ''),
+      intervalHours: Number(v.intervalHours) > 0 ? Number(v.intervalHours) : OP_DEFAULT_INTERVAL,
+      auto: !!v.auto, owner: String(v.owner || ''),
+      lastSyncAt: String(v.lastSyncAt || ''), lastResult: v.lastResult || null,
+      progress: v.progress || null
+    });
+  } catch (e) { return d; }
+}
+async function saveOpConfig(env, cfg) {
+  await env.DB.prepare("INSERT INTO op_config (k, v) VALUES ('main', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+    .bind(JSON.stringify(cfg)).run();
+}
+async function opResolve(cfg, name) {
+  for (const kw of OP_P.opKeywords(name)) {
+    const r = await OP_P.opListAccount(cfg, kw, { fetch: fetch });
+    if (!r.ok) return r;
+    const pick = OP_P.opPickMatch(name, r.list);
+    if (pick) {
+      return {
+        ok: true, accountId: String(pick.item.accountId),
+        accountName: String(pick.item.accountName || ''), level: pick.level, multi: pick.multi || 1
+      };
+    }
+  }
+  return { ok: false, code: 'nomatch', message: '运营中心没有匹配到该客户' };
+}
+/* 分批拉取：Workers 单请求有子请求与时长上限，每批 6 家，前端循环调用直到 done */
+async function runOpBatch(env, owner, reset) {
+  const c = await readOpConfig(env);
+  if (!c.token) return { ok: false, message: '运营中心访问令牌尚未配置' };
+  const info = OP_P.opTokenInfo(c.token);
+  if (info.exp && info.leftSec <= 30) return { ok: false, message: '访问令牌已过期，请更新后重试' };
+  const u = await env.DB.prepare('SELECT username, name, name_cn, role FROM users WHERE username = ?').bind(owner).first();
+  if (!u) return { ok: false, message: '基准用户不存在' };
+  const led = await readLedger(env, owner, false);
+  const names = ((led && led.customers) || []).map(function (x) { return x && x.name; }).filter(Boolean);
+
+  let prog = c.progress;
+  if (!prog || reset || prog.owner !== owner || prog.done) {
+    prog = { owner: owner, total: names.length, idx: 0, done: false, startedAt: nowIso(), rows: [], failed: [] };
+  }
+  const cfg = { token: c.token };
+  const end = Math.min(names.length, prog.idx + OP_BATCH);
+  for (let i = prog.idx; i < end; i++) {
+    const nm = names[i];
+    const hit = await opResolve(cfg, nm);
+    if (!hit.ok) { prog.failed.push({ name: nm, message: hit.message }); continue; }
+    const pj = await OP_P.opProject(cfg, hit.accountId, { fetch: fetch });
+    if (!pj.ok) { prog.failed.push({ name: nm, message: pj.message }); continue; }
+    prog.rows.push({
+      name: nm, accountId: hit.accountId, accountName: pj.accountName || hit.accountName,
+      owner: pj.owner, mainA: pj.mainA, department: pj.department,
+      rows: pj.rows, total: pj.total, level: hit.level
+    });
+  }
+  prog.idx = end;
+  prog.done = prog.idx >= names.length;
+  if (prog.done) {
+    const data = { owner: owner, customers: prog.rows, failed: prog.failed, generatedAt: nowIso() };
+    await env.DB.prepare('INSERT INTO op_sync (owner, updated_at, data, error) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(owner) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data, error = excluded.error')
+      .bind(owner, nowIso(), JSON.stringify(data), prog.failed.length ? (prog.failed.length + ' 个客户未匹配或抓取失败') : '').run();
+    c.lastSyncAt = nowIso();
+    c.lastResult = { owner: owner, customers: prog.rows.length, failed: prog.failed.length, total: prog.rows.reduce(function (s, r) { return s + (r.rows || []).length; }, 0) };
+    c.progress = null;
+  } else {
+    c.progress = prog;
+  }
+  await saveOpConfig(env, c);
+  return {
+    ok: true, done: prog.done, processed: prog.idx, total: names.length,
+    customers: prog.rows.length, failed: prog.failed.length
+  };
+}
+
 const CRM_DEFAULT_INTERVAL = 12;
 async function readCrmConfig(env) {
   const row = await env.DB.prepare("SELECT v FROM crm_config WHERE k = 'main'").first();
@@ -2370,6 +2466,102 @@ async function route(request, env, ctx) {
     return bad('不支持的请求方法', 405);
   }
 
+  /* --- 运营中心（项目技术信息，仅超管；与内部部署版同一套逻辑） --- */
+  if (p === '/api/op/config' && method === 'GET') {
+    if (!isAdmin) return bad('仅超级管理员可使用该功能', 403);
+    const c = await readOpConfig(env);
+    const info = OP_P.opTokenInfo(c.token);
+    return ok({
+      configured: !!c.token, username: info.username,
+      expAt: info.exp ? new Date(info.exp * 1000).toISOString() : '', leftSec: info.leftSec,
+      updatedAt: c.updatedAt, intervalHours: c.intervalHours, auto: c.auto, owner: c.owner,
+      lastSyncAt: c.lastSyncAt, lastResult: c.lastResult, progress: c.progress
+    });
+  }
+  if (p === '/api/op/config' && method === 'PUT') {
+    if (!isAdmin) return bad('仅超级管理员可使用该功能', 403);
+    const c = await readOpConfig(env);
+    if (body.token !== undefined) {
+      const token = String(body.token || '').trim();
+      const info = OP_P.opTokenInfo(token);
+      if (token && !info.ok) return bad('令牌格式不正确：应粘贴运营中心登录后 localStorage 里的 AccessToken（JWT）');
+      c.token = token; c.updatedAt = nowIso();
+    }
+    if (body.intervalHours !== undefined) c.intervalHours = Math.max(1, Math.min(720, parseInt(body.intervalHours, 10) || c.intervalHours));
+    if (body.auto !== undefined) c.auto = !!body.auto;
+    if (body.owner !== undefined) c.owner = String(body.owner || '').trim();
+    await saveOpConfig(env, c);
+    return ok({ configured: !!c.token, intervalHours: c.intervalHours, auto: c.auto, owner: c.owner });
+  }
+  if (p === '/api/op/test' && method === 'POST') {
+    if (!isAdmin) return bad('仅超级管理员可使用该功能', 403);
+    const c = await readOpConfig(env);
+    const token = body.token !== undefined ? String(body.token || '').trim() : c.token;
+    if (!token) return bad('请先粘贴运营中心访问令牌');
+    const r = await OP_P.opListAccount({ token: token }, String(body.keyword || '中国银行'), { fetch: fetch });
+    if (!r.ok) return ok({ ok: false, code: r.code, message: r.message });
+    return ok({
+      ok: true, total: r.total,
+      sample: (r.list || []).slice(0, 3).map(function (x) { return x.accountName; }),
+      message: '连通正常：检索到 ' + r.total + ' 个客户'
+    });
+  }
+  if (p === '/api/op/run' && method === 'POST') {
+    if (!isAdmin) return bad('仅超级管理员可使用该功能', 403);
+    const c = await readOpConfig(env);
+    const owner = String(body.owner || c.owner || '').trim();
+    if (!owner) return bad('请先选择基准用户');
+    const r = await runOpBatch(env, owner, !!body.reset);
+    return ok(r);
+  }
+  if (p === '/api/op/status' && method === 'GET') {
+    if (!isAdmin) return bad('仅超级管理员可使用该功能', 403);
+    const c = await readOpConfig(env);
+    const owner = String(url.searchParams.get('owner') || c.owner || '').trim();
+    const row = owner ? await env.DB.prepare('SELECT * FROM op_sync WHERE owner = ?').bind(owner).first() : null;
+    let data = null;
+    if (row) { try { data = JSON.parse(row.data || '{}'); } catch (e) { data = null; } }
+    return ok({
+      owner: owner, updatedAt: row ? row.updated_at : '', error: row ? row.error : '',
+      lastSyncAt: c.lastSyncAt, lastResult: c.lastResult, progress: c.progress,
+      auto: c.auto, intervalHours: c.intervalHours,
+      customers: data ? (data.customers || []).length : 0,
+      failed: data ? (data.failed || []) : []
+    });
+  }
+  if (p === '/api/op/rows' && method === 'GET') {
+    if (!isAdmin) return bad('仅超级管理员可使用该功能', 403);
+    const c = await readOpConfig(env);
+    const owner = String(url.searchParams.get('owner') || c.owner || '').trim();
+    if (!owner) return bad('请先选择基准用户');
+    const row = await env.DB.prepare('SELECT * FROM op_sync WHERE owner = ?').bind(owner).first();
+    if (!row) return ok({ owner: owner, updatedAt: '', customers: [], failed: [], total: 0 });
+    let data = {};
+    try { data = JSON.parse(row.data || '{}') || {}; } catch (e) {}
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const field = String(url.searchParams.get('field') || '').trim();
+    const KEYS = ['name', 'env', 'product', 'version', 'os', 'module', 'ha', 'note'];
+    const hitRow = function (r, name) {
+      if (!q) return true;
+      if (!field || field === 'all') {
+        return KEYS.some(function (k) { return String(k === 'name' ? name : r[k] || '').toLowerCase().indexOf(q) >= 0; });
+      }
+      if (field === 'name') return String(name).toLowerCase().indexOf(q) >= 0;
+      return String(r[field] || '').toLowerCase().indexOf(q) >= 0;
+    };
+    const customers = (data.customers || []).map(function (cus) {
+      const rows = (cus.rows || []).filter(function (r) { return hitRow(r, cus.name); });
+      if (!rows.length) return null;
+      return { name: cus.name, accountName: cus.accountName, rows: rows,
+        total: rows.reduce(function (s, r) { return s + (Number(r.count) || 0); }, 0) };
+    }).filter(Boolean);
+    return ok({
+      owner: owner, updatedAt: row.updated_at,
+      customers: customers, failed: data.failed || [],
+      total: customers.reduce(function (s, x) { return s + (x.rows || []).length; }, 0)
+    });
+  }
+
   /* --- CRM 台账关联（询盘云/销售易，与内部部署版同一套逻辑） --- */
   if (p === '/api/crm/config' && method === 'GET') {
     if (!isAdmin) return bad('仅超级管理员可查看 CRM 配置', 403);
@@ -2938,6 +3130,20 @@ export default {
       if (!(cfg.loginName && cfg.password)) return;
       const due = cfg.lastSyncAt ? Date.parse(cfg.lastSyncAt) + cfg.intervalHours * 3600 * 1000 : 0;
       if (Date.now() >= due) await doCrmSync(env, 'scheduled');
+    } catch (e) { /* 定时任务失败不影响请求面 */ }
+    /* 运营中心：按配置间隔分批跑完整轮（Cron 每小时一次，到点才动） */
+    try {
+      const op = await readOpConfig(env);
+      if (op.auto && op.owner && op.token && !op.progress) {
+        const due2 = !op.lastSyncAt || Date.now() >= Date.parse(op.lastSyncAt) + op.intervalHours * 3600 * 1000;
+        if (due2) {
+          let guard = 0;
+          while (guard++ < 8) {
+            const r = await runOpBatch(env, op.owner, guard === 1);
+            if (!r.ok || r.done) break;
+          }
+        }
+      }
     } catch (e) { /* 定时任务失败不影响请求面 */ }
   }
 };

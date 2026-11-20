@@ -188,6 +188,18 @@ CREATE TABLE IF NOT EXISTS sso_tickets (
   username   TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+/* 运营中心（op.zdns.cn）项目技术信息：配置一行（令牌 / 间隔 / 上次结果），
+   拉取结果按「基准用户」整体存一份，供 admin 页面展示与导出。 */
+CREATE TABLE IF NOT EXISTS op_config (
+  k          TEXT PRIMARY KEY,               -- 固定 'main'
+  v          TEXT NOT NULL                   -- JSON：token/intervalHours/lastSyncAt/lastResult/progress/owner
+);
+CREATE TABLE IF NOT EXISTS op_sync (
+  owner      TEXT PRIMARY KEY,               -- 基准用户（以其台账客户名为检索条件）
+  updated_at TEXT NOT NULL,
+  data       TEXT NOT NULL DEFAULT '{}',     -- { customers:[{name,accountId,rows[],total}], summary }
+  error      TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS crm_config (
   k          TEXT PRIMARY KEY,               -- 固定 'main'（单行配置）
   v          TEXT NOT NULL                   -- JSON：loginName / password / intervalHours / lastSyncAt / lastResult / session
@@ -675,6 +687,107 @@ function loadCrm() {
   return crmMod;
 }
 
+/* ---------------- 运营中心（op.zdns.cn）客户技术信息 ----------------
+ * 协议在 worker/op-client.mjs（公网 Worker 与这里共用同一份）。
+ * 认证用平台统一身份签发的 AccessToken：浏览器 localStorage 里那份，有效期 8 小时，
+ * 由超管在界面上粘贴；过期后接口直接返回「令牌已过期」，不做自动续期。 */
+let opMod = null;
+function loadOp() {
+  if (!opMod) {
+    opMod = import('./op-client.mjs').catch(function () {
+      return import('../../worker/op-client.mjs');
+    });
+    opMod.catch(function () { opMod = null; });
+  }
+  return opMod;
+}
+const OP_BATCH = 6;                /* 单次请求最多回源几个客户（29 家一轮约 5 批） */
+const OP_DEFAULT_INTERVAL = 12;    /* 定时拉取默认间隔：12 小时 */
+function readOpConfig() {
+  const row = db.prepare("SELECT v FROM op_config WHERE k = 'main'").get();
+  const d = { token: '', updatedAt: '', intervalHours: OP_DEFAULT_INTERVAL, auto: false, owner: '', lastSyncAt: '', lastResult: null, progress: null };
+  if (!row) return d;
+  try {
+    const v = JSON.parse(row.v) || {};
+    return Object.assign(d, {
+      token: String(v.token || ''), updatedAt: String(v.updatedAt || ''),
+      intervalHours: Number(v.intervalHours) > 0 ? Number(v.intervalHours) : OP_DEFAULT_INTERVAL,
+      auto: !!v.auto, owner: String(v.owner || ''),
+      lastSyncAt: String(v.lastSyncAt || ''), lastResult: v.lastResult || null,
+      progress: v.progress || null
+    });
+  } catch (e) { return d; }
+}
+function saveOpConfig(cfg) {
+  db.prepare("INSERT INTO op_config (k, v) VALUES ('main', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+    .run(JSON.stringify(cfg));
+}
+/* 本地客户名 → 运营中心 accountId：按关键词逐个放宽，命中即止 */
+async function opResolve(cfg, name) {
+  const O = await loadOp();
+  for (const kw of O.opKeywords(name)) {
+    const r = await O.opListAccount(cfg, kw, { fetch: fetch });
+    if (!r.ok) return r;
+    const pick = O.opPickMatch(name, r.list);
+    if (pick) {
+      return {
+        ok: true, accountId: String(pick.item.accountId),
+        accountName: String(pick.item.accountName || ''), level: pick.level, multi: pick.multi || 1
+      };
+    }
+  }
+  return { ok: false, code: 'nomatch', message: '运营中心没有匹配到该客户' };
+}
+/* 按基准用户台账里的客户名逐个拉取网络信息；分批执行，进度写进配置供前端轮询 */
+async function runOpBatch(owner, reset) {
+  const c = readOpConfig();
+  if (!c.token) return { ok: false, message: '运营中心访问令牌尚未配置' };
+  const O = await loadOp();
+  const info = O.opTokenInfo(c.token);
+  if (info.exp && info.leftSec <= 30) return { ok: false, message: '访问令牌已过期，请更新后重试' };
+  const u = db.prepare('SELECT username, name, name_cn, role FROM users WHERE username = ?').get(owner);
+  if (!u) return { ok: false, message: '基准用户不存在' };
+  const led = readLedger(owner, false);
+  const names = ((led && led.customers) || []).map(function (x) { return x && x.name; }).filter(Boolean);
+
+  let prog = c.progress;
+  if (!prog || reset || prog.owner !== owner || prog.done) {
+    prog = { owner: owner, total: names.length, idx: 0, done: false, startedAt: nowIso(), rows: [], failed: [] };
+  }
+  const cfg = { token: c.token };
+  const end = Math.min(names.length, prog.idx + OP_BATCH);
+  for (let i = prog.idx; i < end; i++) {
+    const nm = names[i];
+    const hit = await opResolve(cfg, nm);
+    if (!hit.ok) { prog.failed.push({ name: nm, message: hit.message }); continue; }
+    const pj = await O.opProject(cfg, hit.accountId, { fetch: fetch });
+    if (!pj.ok) { prog.failed.push({ name: nm, message: pj.message }); continue; }
+    prog.rows.push({
+      name: nm, accountId: hit.accountId, accountName: pj.accountName || hit.accountName,
+      owner: pj.owner, mainA: pj.mainA, department: pj.department,
+      rows: pj.rows, total: pj.total, level: hit.level
+    });
+  }
+  prog.idx = end;
+  prog.done = prog.idx >= names.length;
+  if (prog.done) {
+    const data = { owner: owner, customers: prog.rows, failed: prog.failed, generatedAt: nowIso() };
+    db.prepare('INSERT INTO op_sync (owner, updated_at, data, error) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(owner) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data, error = excluded.error')
+      .run(owner, nowIso(), JSON.stringify(data), prog.failed.length ? (prog.failed.length + ' 个客户未匹配或抓取失败') : '');
+    c.lastSyncAt = nowIso();
+    c.lastResult = { owner: owner, customers: prog.rows.length, failed: prog.failed.length, total: prog.rows.reduce(function (s, r) { return s + (r.rows || []).length; }, 0) };
+    c.progress = null;
+  } else {
+    c.progress = prog;
+  }
+  saveOpConfig(c);
+  return {
+    ok: true, done: prog.done, processed: prog.idx, total: names.length,
+    customers: prog.rows.length, failed: prog.failed.length
+  };
+}
+
 const CRM_DEFAULT_INTERVAL = 12;   /* 小时 */
 function readCrmConfig() {
   const row = db.prepare("SELECT v FROM crm_config WHERE k = 'main'").get();
@@ -956,6 +1069,30 @@ setInterval(function () {
     if (Date.now() >= due) doCrmSync('scheduled');
   } catch (e) { console.error('[crm] 调度异常：' + (e && e.message)); }
 }, 60 * 1000).unref();
+
+/* 运营中心定时拉取：每 5 分钟检查一次是否到点；到点则按批跑完整轮（配置了 auto + owner 才跑） */
+let opRunning = false;
+setInterval(async function () {
+  try {
+    if (opRunning) return;
+    const c = readOpConfig();
+    if (!c.auto || !c.owner || !c.token) return;
+    if (c.progress) return;                       /* 上一轮还没跑完 */
+    const due = !c.lastSyncAt || Date.now() >= Date.parse(c.lastSyncAt) + c.intervalHours * 3600 * 1000;
+    if (!due) return;
+    opRunning = true;
+    let guard = 0;
+    while (guard++ < 40) {
+      const r = await runOpBatch(c.owner, guard === 1);
+      if (!r.ok || r.done) break;
+    }
+    console.log('[op] 定时拉取结束');
+  } catch (e) {
+    console.error('[op] 调度异常：' + (e && e.message));
+  } finally {
+    opRunning = false;
+  }
+}, 5 * 60 * 1000).unref();
 
 /* 一次 UDP 交互（RADIUS）：发一包、等一包、超时即报错 */
 function sendUdp(host, port, bytes, timeoutMs) {
@@ -2772,6 +2909,105 @@ async function handleApi(req, res, url) {
       return ok(res, null);
     }
     return bad(res, '不支持的请求方法', 405);
+  }
+
+  /* ---------------- 运营中心（项目技术信息，仅超管） ---------------- */
+  if (p === '/api/op/config' && method === 'GET') {
+    if (!isAdmin) return bad(res, '仅超级管理员可使用该功能', 403);
+    const c = readOpConfig();
+    const O = await loadOp();
+    const info = O.opTokenInfo(c.token);
+    return ok(res, {
+      configured: !!c.token, username: info.username,
+      expAt: info.exp ? new Date(info.exp * 1000).toISOString() : '', leftSec: info.leftSec,
+      updatedAt: c.updatedAt, intervalHours: c.intervalHours, auto: c.auto, owner: c.owner,
+      lastSyncAt: c.lastSyncAt, lastResult: c.lastResult, progress: c.progress
+    });
+  }
+  if (p === '/api/op/config' && method === 'PUT') {
+    if (!isAdmin) return bad(res, '仅超级管理员可使用该功能', 403);
+    const c = readOpConfig();
+    if (body.token !== undefined) {
+      const token = String(body.token || '').trim();
+      const O = await loadOp();
+      const info = O.opTokenInfo(token);
+      if (token && !info.ok) return bad(res, '令牌格式不正确：应粘贴运营中心登录后 localStorage 里的 AccessToken（JWT）');
+      c.token = token; c.updatedAt = nowIso();
+    }
+    if (body.intervalHours !== undefined) c.intervalHours = Math.max(1, Math.min(720, parseInt(body.intervalHours, 10) || c.intervalHours));
+    if (body.auto !== undefined) c.auto = !!body.auto;
+    if (body.owner !== undefined) c.owner = String(body.owner || '').trim();
+    saveOpConfig(c);
+    return ok(res, { configured: !!c.token, intervalHours: c.intervalHours, auto: c.auto, owner: c.owner });
+  }
+  if (p === '/api/op/test' && method === 'POST') {
+    if (!isAdmin) return bad(res, '仅超级管理员可使用该功能', 403);
+    const c = readOpConfig();
+    const token = body.token !== undefined ? String(body.token || '').trim() : c.token;
+    if (!token) return bad(res, '请先粘贴运营中心访问令牌');
+    const O = await loadOp();
+    const r = await O.opListAccount({ token: token }, String(body.keyword || '中国银行'), { fetch: fetch });
+    if (!r.ok) return ok(res, { ok: false, code: r.code, message: r.message });
+    return ok(res, {
+      ok: true, total: r.total,
+      sample: (r.list || []).slice(0, 3).map(function (x) { return x.accountName; }),
+      message: '连通正常：检索到 ' + r.total + ' 个客户'
+    });
+  }
+  if (p === '/api/op/run' && method === 'POST') {
+    if (!isAdmin) return bad(res, '仅超级管理员可使用该功能', 403);
+    const c = readOpConfig();
+    const owner = String(body.owner || c.owner || '').trim();
+    if (!owner) return bad(res, '请先选择基准用户');
+    const r = await runOpBatch(owner, !!body.reset);
+    return ok(res, r);
+  }
+  if (p === '/api/op/status' && method === 'GET') {
+    if (!isAdmin) return bad(res, '仅超级管理员可使用该功能', 403);
+    const c = readOpConfig();
+    const owner = String(url.searchParams.get('owner') || c.owner || '').trim();
+    const row = owner ? db.prepare('SELECT * FROM op_sync WHERE owner = ?').get(owner) : null;
+    let data = null;
+    if (row) { try { data = JSON.parse(row.data || '{}'); } catch (e) { data = null; } }
+    return ok(res, {
+      owner: owner, updatedAt: row ? row.updated_at : '', error: row ? row.error : '',
+      lastSyncAt: c.lastSyncAt, lastResult: c.lastResult, progress: c.progress,
+      auto: c.auto, intervalHours: c.intervalHours,
+      customers: data ? (data.customers || []).length : 0,
+      failed: data ? (data.failed || []) : []
+    });
+  }
+  if (p === '/api/op/rows' && method === 'GET') {
+    if (!isAdmin) return bad(res, '仅超级管理员可使用该功能', 403);
+    const c = readOpConfig();
+    const owner = String(url.searchParams.get('owner') || c.owner || '').trim();
+    if (!owner) return bad(res, '请先选择基准用户');
+    const row = db.prepare('SELECT * FROM op_sync WHERE owner = ?').get(owner);
+    if (!row) return ok(res, { owner: owner, updatedAt: '', customers: [], failed: [], total: 0 });
+    let data = {};
+    try { data = JSON.parse(row.data || '{}') || {}; } catch (e) {}
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const field = String(url.searchParams.get('field') || '').trim();
+    const KEYS = ['name', 'env', 'product', 'version', 'os', 'module', 'ha', 'note'];
+    const hitRow = function (r, name) {
+      if (!q) return true;
+      if (!field || field === 'all') {
+        return KEYS.some(function (k) { return String(k === 'name' ? name : r[k] || '').toLowerCase().indexOf(q) >= 0; });
+      }
+      if (field === 'name') return String(name).toLowerCase().indexOf(q) >= 0;
+      return String(r[field] || '').toLowerCase().indexOf(q) >= 0;
+    };
+    const customers = (data.customers || []).map(function (cus) {
+      const rows = (cus.rows || []).filter(function (r) { return hitRow(r, cus.name); });
+      if (!rows.length) return null;
+      return { name: cus.name, accountName: cus.accountName, rows: rows,
+        total: rows.reduce(function (s, r) { return s + (Number(r.count) || 0); }, 0) };
+    }).filter(Boolean);
+    return ok(res, {
+      owner: owner, updatedAt: row.updated_at,
+      customers: customers, failed: data.failed || [],
+      total: customers.reduce(function (s, x) { return s + (x.rows || []).length; }, 0)
+    });
   }
 
   /* --- 用户管理（仅超管） --- */

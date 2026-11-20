@@ -22,9 +22,9 @@ TS=$(date +%Y%m%d-%H%M)
 #   这两者决定「容器健康状态是否可信」和「端口/环境变量」：
 #   曾经 compose 只在服务器上手工改成 1.2.0（443/8443 + TLS），仓库还停在 1.1.0（18080），
 #   健康检查按 18080 明文探测，容器连续 unhealthy 35 小时却无人发现。
-SRC_FILES=(deploy/internal/server.js index.html inspection-dashboard.html worker/auth-protocols.mjs worker/crm-client.mjs worker/wecom-notify.mjs deploy/internal/Dockerfile deploy/internal/office-cjk.conf deploy/internal/healthcheck.js deploy/internal/docker-compose.yml)
-DST_FILES=(server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs wecom-notify.mjs Dockerfile office-cjk.conf healthcheck.js docker-compose.yml)
-REMOTE_LIST="server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs wecom-notify.mjs Dockerfile office-cjk.conf healthcheck.js docker-compose.yml"
+SRC_FILES=(deploy/internal/server.js index.html inspection-dashboard.html worker/auth-protocols.mjs worker/crm-client.mjs worker/op-client.mjs worker/wecom-notify.mjs deploy/internal/Dockerfile deploy/internal/office-cjk.conf deploy/internal/healthcheck.js deploy/internal/docker-compose.yml)
+DST_FILES=(server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs op-client.mjs wecom-notify.mjs Dockerfile office-cjk.conf healthcheck.js docker-compose.yml)
+REMOTE_LIST="server.js index.html inspection-dashboard.html auth-protocols.mjs crm-client.mjs op-client.mjs wecom-notify.mjs Dockerfile office-cjk.conf healthcheck.js docker-compose.yml"
 
 # --verify：只做 git ↔ 内网一致性校验，不上传、不重建
 VERIFY_ONLY=false
