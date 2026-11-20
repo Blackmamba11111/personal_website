@@ -335,7 +335,7 @@
 
   /* ---------- 导出 xlsx（严格复刻《副本ZDNS项目信息v2》样式） ---------- */
 
-  var XJS_SRC = 'assets/vendor/xlsx-js-style.min.js';
+  var XJS_SRC = 'assets/vendor/xlsx-js-style.min.js?v=1';
   var xjsP = null;
 
   /* 加载可写样式的表格库；加载完成后还原 window.XLSX，
