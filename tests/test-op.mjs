@@ -173,7 +173,7 @@ function mkToken(payload) {
   const fetchImpl = async (url) => {
     const u = String(url);
     if (u.indexOf('getCrmAccount') >= 0) {
-      return json({ code: '20000', data: { accountName: '中银富登村镇银行', accountOwner: '潘明月', maintainerAName: '邓弘达', department: '金融二部' } });
+      return json({ code: '20000', data: { accountName: '中银富登村镇银行', accountOwner: '潘明月', maintainerAName: '邓弘达', maintainerBName: '马安辉', department: '金融二部' } });
     }
     return json({
       code: '20000', data: [
@@ -184,7 +184,7 @@ function mkToken(payload) {
   };
   const pj = await opProject({ token: 'tk' }, '1', { fetch: fetchImpl });
   check('项目信息取数成功', pj.ok === true, JSON.stringify(pj).slice(0, 100));
-  check('项目名与维护人带出', pj.accountName === '中银富登村镇银行' && pj.mainA === '邓弘达', pj.accountName + '/' + pj.mainA);
+  check('项目名与维护人 A、B 带出', pj.accountName === '中银富登村镇银行' && pj.mainA === '邓弘达' && pj.mainB === '马安辉', pj.accountName + '/' + pj.mainA + '/' + pj.mainB);
   check('按行整形为 10 列口径', pj.rows.length === 2 && pj.rows[0].env === '测试网-内网' &&
     pj.rows[0].product === '硬件-S8100H' && pj.rows[0].module === 'DNS' && pj.rows[0].note === '需要进行版本升级',
     JSON.stringify(pj.rows[0]));

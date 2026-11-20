@@ -13,17 +13,20 @@
   var DATA = { owner: '', customers: [], failed: [], updatedAt: '', total: 0 };
   var RUNNING = false;
 
+  /* 列宽取自附件《副本ZDNS项目信息v2-20261118.xlsx》（Excel 字符宽） */
   var COLS = [
-    { k: 'idx', t: '序号', w: 8 },
-    { k: 'name', t: '项目名称', w: 34 },
-    { k: 'env', t: '网络环境', w: 30 },
-    { k: 'product', t: '产品类型', w: 22 },
-    { k: 'count', t: '数量', w: 8 },
-    { k: 'version', t: '软件版本', w: 42 },
-    { k: 'os', t: '操作系统', w: 36 },
-    { k: 'module', t: '功能模块', w: 16 },
-    { k: 'ha', t: '组网架构', w: 44 },
-    { k: 'note', t: '备注', w: 24 }
+    { k: 'idx', t: '序号', w: 9.62 },
+    { k: 'name', t: '项目名称', w: 37.86 },
+    { k: 'mainA', t: '维护人A', w: 14.5 },
+    { k: 'mainB', t: '维护人B', w: 14.5 },
+    { k: 'env', t: '网络环境', w: 35.89 },
+    { k: 'product', t: '产品类型', w: 25.63 },
+    { k: 'count', t: '数量', w: 7.85 },
+    { k: 'version', t: '软件版本', w: 49.9 },
+    { k: 'os', t: '操作系统', w: 44.39 },
+    { k: 'module', t: '功能模块', w: 17.22 },
+    { k: 'ha', t: '组网架构', w: 55.09 },
+    { k: 'note', t: '备注', w: 26.56 }
   ];
 
   function style() {
@@ -89,6 +92,7 @@
       '<div class="spacer" style="flex:1 1 auto;"></div>' +
       '<select id="opField" style="width:150px;">' +
       '<option value="all">全部字段</option><option value="name">项目名称</option>' +
+      '<option value="mainA">维护人A</option><option value="mainB">维护人B</option>' +
       '<option value="env">网络环境</option><option value="product">产品类型</option>' +
       '<option value="version">软件版本</option><option value="os">操作系统</option>' +
       '<option value="module">功能模块</option><option value="ha">组网架构</option>' +
@@ -263,23 +267,27 @@
 
   /* ---------- 渲染（前端字段检索，与后端同一套键） ---------- */
 
+  /* 客户级字段（项目名 / 维护人A / 维护人B）不属于设备行，需单独取值 */
+  var CUST_KEYS = ['name', 'mainA', 'mainB'];
+  var ROW_KEYS = ['env', 'product', 'version', 'os', 'module', 'ha', 'note'];
+
   function filtered() {
     var q = (document.getElementById('opQ').value || '').trim().toLowerCase();
     var field = document.getElementById('opField').value || 'all';
     if (!q) return DATA.customers;
-    var hit = function (r, name) {
-      if (field === 'name') return String(name).toLowerCase().indexOf(q) >= 0;
+    var hit = function (r, c) {
+      var pick = function (k) {
+        return CUST_KEYS.indexOf(k) >= 0 ? String(c[k] || '') : String(r[k] || '');
+      };
       if (field === 'all') {
-        return ['name', 'env', 'product', 'version', 'os', 'module', 'ha', 'note'].some(function (k) {
-          return String(k === 'name' ? name : r[k] || '').toLowerCase().indexOf(q) >= 0;
-        });
+        return CUST_KEYS.concat(ROW_KEYS).some(function (k) { return pick(k).toLowerCase().indexOf(q) >= 0; });
       }
-      return String(r[field] || '').toLowerCase().indexOf(q) >= 0;
+      return pick(field).toLowerCase().indexOf(q) >= 0;
     };
     return DATA.customers.map(function (c) {
-      var rows = (c.rows || []).filter(function (r) { return hit(r, c.name); });
+      var rows = (c.rows || []).filter(function (r) { return hit(r, c); });
       if (!rows.length) return null;
-      return { name: c.name, accountName: c.accountName, rows: rows,
+      return { name: c.name, accountName: c.accountName, mainA: c.mainA, mainB: c.mainB, rows: rows,
         total: rows.reduce(function (s, r) { return s + (Number(r.count) || 0); }, 0) };
     }).filter(Boolean);
   }
@@ -296,19 +304,21 @@
         rowN++;
         html.push('<tr>' +
           (ri === 0 ? '<td rowspan="' + rows.length + '" class="mono">' + (ci + 1) + '</td>' +
-            '<td rowspan="' + rows.length + '"><b>' + esc(c.name) + '</b></td>' : '') +
+            '<td rowspan="' + rows.length + '"><b>' + esc(c.name) + '</b></td>' +
+            '<td rowspan="' + rows.length + '">' + esc(c.mainA || '—') + '</td>' +
+            '<td rowspan="' + rows.length + '">' + esc(c.mainB || '—') + '</td>' : '') +
           '<td>' + esc(r.env || '—') + '</td><td>' + esc(r.product || '—') +
           '</td><td class="mono">' + esc(r.count == null ? '—' : r.count) + '</td>' +
           '<td class="mono">' + esc(r.version || '—') + '</td><td>' + esc(r.os || '—') +
           '</td><td>' + esc(r.module || '—') + '</td><td>' + esc(r.ha || '—') +
           '</td><td>' + esc(r.note || '') + '</td></tr>');
       });
-      html.push('<tr class="sum-row"><td colspan="2" style="text-align:center;">小计</td>' +
-        '<td colspan="2"></td><td class="mono"><b>' + c.total + '</b></td>' +
+      html.push('<tr class="sum-row"><td colspan="4" style="text-align:center;">小计</td>' +
+        '<td></td><td></td><td class="mono"><b>' + c.total + '</b></td>' +
         '<td colspan="5"></td></tr>');
     });
     if (!rowN) {
-      html.push('<tr><td colspan="10" style="text-align:center;color:var(--ink-3);padding:18px 0;">' +
+      html.push('<tr><td colspan="12" style="text-align:center;color:var(--ink-3);padding:18px 0;">' +
         '还没有数据：配置令牌后点「立即拉取」</td></tr>');
     }
     tbody.innerHTML = html.join('');
@@ -323,42 +333,162 @@
     } else { f.textContent = ''; f.style.color = ''; }
   }
 
-  /* ---------- 导出 xlsx（附件同款格式：合并项目列 + 小计行） ---------- */
+  /* ---------- 导出 xlsx（严格复刻《副本ZDNS项目信息v2》样式） ---------- */
+
+  var XJS_SRC = 'assets/vendor/xlsx-js-style.min.js';
+  var xjsP = null;
+
+  /* 加载可写样式的表格库；加载完成后还原 window.XLSX，
+     避免覆盖主看板附件预览正在用的 SheetJS。 */
+  function loadXjs() {
+    if (xjsP) return xjsP;
+    /* 测试钩子：直接注入库，跳过脚本加载 */
+    if (window.__opXjsLib) {
+      xjsP = window.__opXjsLib.utils
+        ? Promise.resolve(window.__opXjsLib)
+        : Promise.reject(new Error('导出组件不可用'));
+      return xjsP;
+    }
+    xjsP = new Promise(function (resolve, reject) {
+      var prev = window.XLSX;
+      var s = document.createElement('script');
+      s.src = XJS_SRC;
+      s.async = true;
+      s.onload = function () {
+        var lib = window.XLSX;
+        try { if (prev) window.XLSX = prev; else delete window.XLSX; } catch (e) {}
+        if (lib && lib.utils) resolve(lib); else reject(new Error('表格组件不可用'));
+      };
+      s.onerror = function () {
+        try { if (prev) window.XLSX = prev; } catch (e) {}
+        reject(new Error('表格组件加载失败'));
+      };
+      document.head.appendChild(s);
+    });
+    return xjsP;
+  }
+
+  var FONT = '微软雅黑';
+  var HEAD_FILL = 'FF4472C4', HEAD_FONT = 'FFFFFFFF';
+  var KEY_FILL = 'FFC9D9F0', KEY_FONT = 'FF1F3864';   /* 序号/项目名/维护人 A、B 列 */
+  var ROW_FILL = 'FFE9F0FB', ROW_FONT = 'FF1A1A1A';   /* 其余设备列 */
+  var LINE_RGB = 'FFB4B4B4';
+  /* 附件中每个项目的小计行按 蓝→绿→橙→紫 轮换 */
+  var SUM_FILLS = [
+    { font: 'FF1F3864', fill: 'FFB4C7E7' },
+    { font: 'FF375623', fill: 'FFC6E0B4' },
+    { font: 'FF833C00', fill: 'FFF4C79A' },
+    { font: 'FF3F3151', fill: 'FFCFC2E6' }
+  ];
+
+  function borderAll() {
+    var b = { style: 'thin', color: { rgb: LINE_RGB } };
+    return { top: b, bottom: b, left: b, right: b };
+  }
+
+  /* 按附件口径构造工作表（纯函数，便于回归测试） */
+  function buildSheet(X, list) {
+    var aoa = [COLS.map(function (c) { return c.t; })];
+    var merges = [];
+    var sumRows = [];
+    list.forEach(function (c, ci) {
+      var rows = c.rows || [];
+      var start = aoa.length;            /* 0 基首行下标 */
+      rows.forEach(function (r, ri) {
+        aoa.push([
+          ri === 0 ? (ci + 1) : '',
+          ri === 0 ? c.name : '',
+          ri === 0 ? (c.mainA || '') : '',
+          ri === 0 ? (c.mainB || '') : '',
+          r.env || '', r.product || '', Number(r.count) || 0,
+          r.version || '', r.os || '', r.module || '', r.ha || '', r.note || ''
+        ]);
+      });
+      /* 客户级四列纵向合并：序号 / 项目名称 / 维护人A / 维护人B */
+      if (rows.length > 1) {
+        for (var col = 0; col < 4; col++) {
+          merges.push({ s: { r: start, c: col }, e: { r: start + rows.length - 1, c: col } });
+        }
+      }
+      aoa.push(['小计', '', '', '', '', '', c.total, '', '', '', '', '']);
+      var sr = aoa.length - 1;
+      merges.push({ s: { r: sr, c: 0 }, e: { r: sr, c: 3 } });
+      sumRows.push({ r: sr, from: start, to: start + rows.length - 1, ci: ci });
+    });
+
+    var ws = X.utils.aoa_to_sheet(aoa);
+    ws['!merges'] = merges;
+    /* 附件列宽是 Excel 字符宽；SheetJS 的 wch 口径比之多 0.83 */
+    ws['!cols'] = COLS.map(function (c) { return { wch: Math.max(6, c.w - 0.83) }; });
+    ws['!rows'] = aoa.map(function (_, i) { return { hpt: i === 0 ? 34 : 16.8 }; });
+
+    /* 表头：微软雅黑 11 加粗白字 / 4472C4 底 / 居中换行 / 细边框 */
+    COLS.forEach(function (_, ci) {
+      var cell = ws[X.utils.encode_cell({ r: 0, c: ci })];
+      if (!cell) return;
+      cell.s = {
+        font: { name: FONT, sz: 11, bold: true, color: { rgb: HEAD_FONT } },
+        fill: { patternType: 'solid', fgColor: { rgb: HEAD_FILL } },
+        alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+        border: borderAll()
+      };
+    });
+
+    var sumAt = {};
+    sumRows.forEach(function (x) { sumAt[x.r] = x; });
+
+    for (var i = 1; i < aoa.length; i++) {
+      var sum = sumAt[i];
+      var sc = SUM_FILLS[(sum ? sum.ci : 0) % SUM_FILLS.length];
+      for (var j = 0; j < COLS.length; j++) {
+        var ad = X.utils.encode_cell({ r: i, c: j });
+        var cell = ws[ad] || (ws[ad] = { t: 's', v: '' });
+        if (sum) {
+          cell.s = {
+            font: { name: FONT, sz: 11, bold: true, color: { rgb: sc.font } },
+            fill: { patternType: 'solid', fgColor: { rgb: sc.fill } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+            border: borderAll()
+          };
+          continue;
+        }
+        var isKey = j <= 3;
+        var isNote = j === 11;          /* 备注列：附件中为宋体、无底色、不设字色 */
+        var fnt = { name: isNote ? '宋体' : FONT, sz: 11, bold: isKey && j === 1 };
+        if (!isNote) fnt.color = { rgb: isKey ? KEY_FONT : ROW_FONT };
+        var st = {
+          font: fnt,
+          alignment: { horizontal: (isKey || isNote || j === 6) ? 'center' : 'left',
+            vertical: 'center', wrapText: !isNote && j !== 6 },
+          border: borderAll()
+        };
+        if (!isNote) st.fill = { patternType: 'solid', fgColor: { rgb: isKey ? KEY_FILL : ROW_FILL } };
+        cell.s = st;
+        if (j === 6) cell.z = '0';
+      }
+    }
+
+    /* 小计数量写成公式，与附件一致：=SUM(该组数量列) */
+    sumRows.forEach(function (x) {
+      var ad = X.utils.encode_cell({ r: x.r, c: 6 });
+      var old = ws[ad];
+      ws[ad] = { t: 'n', v: x.total, f: 'SUM(G' + (x.from + 1) + ':G' + (x.to + 1) + ')', s: old ? old.s : undefined };
+    });
+
+    return ws;
+  }
 
   function exportXlsx() {
-    var b = bridge();
     var list = filtered();
     if (!list.length) { toast('没有可导出的数据'); return; }
     var btn = document.getElementById('btnOpExport');
     btn.disabled = true;
-    (b ? b.vendor() : Promise.reject(new Error('导出组件不可用'))).then(function () {
-      var XLSX = window.XLSX;
-      var aoa = [COLS.map(function (c) { return c.t; })];
-      var merges = [];
-      list.forEach(function (c, ci) {
-        var rows = c.rows || [];
-        var start = aoa.length;
-        rows.forEach(function (r, ri) {
-          aoa.push([
-            ri === 0 ? (ci + 1) : '', ri === 0 ? c.name : '',
-            r.env || '', r.product || '', Number(r.count) || 0,
-            r.version || '', r.os || '', r.module || '', r.ha || '', r.note || ''
-          ]);
-        });
-        if (rows.length > 1) {
-          merges.push({ s: { r: start, c: 0 }, e: { r: start + rows.length - 1, c: 0 } });
-          merges.push({ s: { r: start, c: 1 }, e: { r: start + rows.length - 1, c: 1 } });
-        }
-        aoa.push(['小计', '', '', '', c.total, '', '', '', '', '']);
-        merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: 1 } });
-      });
-      var ws = XLSX.utils.aoa_to_sheet(aoa);
-      ws['!merges'] = merges;
-      ws['!cols'] = COLS.map(function (c) { return { wch: c.w }; });
-      var wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '项目信息梳理');
+    loadXjs().then(function (X) {
+      var ws = buildSheet(X, list);
+      var wb = X.utils.book_new();
+      X.utils.book_append_sheet(wb, ws, '项目信息梳理');
       var name = '项目信息-' + (DATA.owner || 'export') + '-' + stamp() + '.xlsx';
-      XLSX.writeFile(wb, name);
+      X.writeFile(wb, name);
       toast('已导出 ' + name);
       btn.disabled = false;
     }, function (e) {
@@ -401,6 +531,8 @@
   }
 
   function tick() { ensureEntry(); }
+  /* 导出构造器暴露给回归测试（纯函数，无副作用） */
+  window.__opBuildSheet = buildSheet;
   function boot() {
     var n = 0;
     var iv = setInterval(function () { tick(); if (++n > 3600) clearInterval(iv); }, 500);

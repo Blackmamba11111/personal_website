@@ -764,7 +764,7 @@ async function runOpBatch(owner, reset) {
     if (!pj.ok) { prog.failed.push({ name: nm, message: pj.message }); continue; }
     prog.rows.push({
       name: nm, accountId: hit.accountId, accountName: pj.accountName || hit.accountName,
-      owner: pj.owner, mainA: pj.mainA, department: pj.department,
+      owner: pj.owner, mainA: pj.mainA, mainB: pj.mainB, department: pj.department,
       rows: pj.rows, total: pj.total, level: hit.level
     });
   }
@@ -2988,20 +2988,32 @@ async function handleApi(req, res, url) {
     try { data = JSON.parse(row.data || '{}') || {}; } catch (e) {}
     const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
     const field = String(url.searchParams.get('field') || '').trim();
-    const KEYS = ['name', 'env', 'product', 'version', 'os', 'module', 'ha', 'note'];
-    const hitRow = function (r, name) {
+    /* 客户级字段（项目名 / 维护人A / 维护人B）与设备行字段分开取值 */
+    const ALL = ['name', 'maintainerA', 'maintainerB', 'env', 'product', 'version', 'os', 'module', 'ha', 'note'];
+    const custVal = function (cus, k) {
+      if (k === 'name') return cus.name;
+      if (k === 'maintainerA') return cus.mainA;
+      if (k === 'maintainerB') return cus.mainB;
+      if (k === 'accountName') return cus.accountName;
+      return '';
+    };
+    const rowVal = function (r, k) { return r[k]; };
+    const hitRow = function (r, cus) {
       if (!q) return true;
+      const pick = function (k) {
+        const cv = custVal(cus, k);
+        return cv !== '' && cv != null ? cv : rowVal(r, k);
+      };
       if (!field || field === 'all') {
-        return KEYS.some(function (k) { return String(k === 'name' ? name : r[k] || '').toLowerCase().indexOf(q) >= 0; });
+        return ALL.some(function (k) { return String(pick(k) || '').toLowerCase().indexOf(q) >= 0; });
       }
-      if (field === 'name') return String(name).toLowerCase().indexOf(q) >= 0;
-      return String(r[field] || '').toLowerCase().indexOf(q) >= 0;
+      return String(pick(field) || '').toLowerCase().indexOf(q) >= 0;
     };
     const customers = (data.customers || []).map(function (cus) {
-      const rows = (cus.rows || []).filter(function (r) { return hitRow(r, cus.name); });
+      const rows = (cus.rows || []).filter(function (r) { return hitRow(r, cus); });
       if (!rows.length) return null;
-      return { name: cus.name, accountName: cus.accountName, rows: rows,
-        total: rows.reduce(function (s, r) { return s + (Number(r.count) || 0); }, 0) };
+      return { name: cus.name, accountName: cus.accountName, mainA: cus.mainA, mainB: cus.mainB,
+        rows: rows, total: rows.reduce(function (s, r) { return s + (Number(r.count) || 0); }, 0) };
     }).filter(Boolean);
     return ok(res, {
       owner: owner, updatedAt: row.updated_at,

@@ -261,6 +261,7 @@ export async function opProject(cfg, accountId, opt) {
     accountName: profile.ok ? strings(profile.data && profile.data.accountName) : '',
     owner: profile.ok ? strings(profile.data && profile.data.accountOwner) : '',
     mainA: profile.ok ? strings(profile.data && profile.data.maintainerAName) : '',
+    mainB: profile.ok ? strings(profile.data && profile.data.maintainerBName) : '',
     department: profile.ok ? strings(profile.data && profile.data.department) : '',
     rows: rows,
     total: rows.reduce(function (s, r) { return s + (r.count || 0); }, 0)
