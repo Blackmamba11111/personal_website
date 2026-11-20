@@ -18,6 +18,7 @@ const SUITES = [
   ['看板 · CRM 台账关联', 'test-crm.js'],
   ['CRM · 询盘云协议模块', 'test-crm-client.mjs'],
   ['运营中心 · 技术信息协议', 'test-op.mjs'],
+  ['运营中心 · 技术信息页面', 'test-op-ui.js'],
   ['首页 · 结构与部署产物', 'test-home.js'],
   ['首页 · 照片服务端接口', 'test-photo-api.js'],
   ['看板 · 巡检登记增强', 'test-visits.js'],

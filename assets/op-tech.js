@@ -375,19 +375,29 @@
 
   /* ---------- 装配 ---------- */
 
+  /* 入口：账号菜单（admin 区）里「CRM 台账关联」之后。
+     按钮动态插入而不是写进主页面 HTML —— 主页身体积贴着 614400B 守卫上限，
+     且本文件只在需要时才被浏览器加载。 */
   function ensureEntry() {
     var b = bridge();
-    if (!b || !b.isAdmin()) return;
-    var ref = document.getElementById('btnCrmStatPage');
-    if (!ref || !ref.parentNode) return;
-    if (document.getElementById('btnOpPage')) return;
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn';
-    btn.id = 'btnOpPage';
-    btn.textContent = '项目技术信息';
-    btn.addEventListener('click', open);
-    ref.parentNode.insertBefore(btn, ref.nextSibling);
+    var menu = document.getElementById('userMenu');
+    if (!menu) return;
+    var btn = document.getElementById('umOp');
+    if (!btn) {
+      var ref = document.getElementById('umCrm');
+      if (!ref || !ref.parentNode) return;
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.id = 'umOp';
+      btn.textContent = '项目技术信息';
+      btn.addEventListener('click', function () {
+        menu.classList.remove('on');
+        open();
+      });
+      ref.parentNode.insertBefore(btn, ref.nextSibling);
+    }
+    /* 每个 tick 同步显隐：菜单每次渲染只会重置 umCrm 的 display，不会管这一项 */
+    btn.style.display = (b && b.isAdmin()) ? 'block' : 'none';
   }
 
   function tick() { ensureEntry(); }
