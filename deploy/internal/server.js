@@ -1576,7 +1576,8 @@ function multiFlagOf(u) {
 }
 /* 该账号是否已经把台账共享给别人（有下家 share_from 指向它） */
 function hasSharedTo(username) {
-  return !!db.prepare('SELECT 1 AS x FROM users WHERE share_from = ? LIMIT 1').get(username);
+  /* 已删除的账号不算「下家」：它不能登录，也不该继续撑起别人的多台账 */
+  return !!db.prepare("SELECT 1 AS x FROM users WHERE share_from = ? AND status <> 'deleted' LIMIT 1").get(username);
 }
 function hasMultiLedger(u) {
   if (!u || u.role === 'admin') return false;
@@ -1600,7 +1601,7 @@ function ledgerKeyOf(username, mine) {
   return dataOwner(username);
 }
 function shareMembers(owner) {
-  return db.prepare('SELECT username, name, created_at FROM users WHERE share_from = ? ORDER BY created_at').all(owner);
+  return db.prepare("SELECT username, name, created_at FROM users WHERE share_from = ? AND status <> 'deleted' ORDER BY created_at").all(owner);
 }
 
 function readLedger(username, mine) {
@@ -2902,9 +2903,11 @@ async function handleApi(req, res, url) {
     }
 
     if (method === 'DELETE') {
-      /* 按绑定表计数：主源与附加源都要拦，否则删掉后附加绑定会变成悬空记录 */
-      const n = db.prepare('SELECT COUNT(*) AS n FROM user_auth_sources WHERE server_id = ?').get(srow.id).n;
+      /* 按绑定表计数：主源与附加源都要拦，否则删掉后附加绑定会变成悬空记录。
+         已删除的账号（status=deleted）不再拦截——它不能登录，绑定额随源一起清掉。 */
+      const n = db.prepare("SELECT COUNT(*) AS n FROM user_auth_sources s JOIN users u ON u.username = s.username WHERE s.server_id = ? AND u.status <> 'deleted'").get(srow.id).n;
       if (n > 0) return bad(res, '仍有 ' + n + ' 个账号使用该认证服务器，请先改绑或删除这些账号');
+      db.prepare('DELETE FROM user_auth_sources WHERE server_id = ?').run(srow.id);
       db.prepare('DELETE FROM auth_servers WHERE id = ?').run(srow.id);
       return ok(res, null);
     }
@@ -3198,7 +3201,10 @@ async function handleApi(req, res, url) {
     const role = body.role === 'admin' ? 'admin' : 'user';
     if (!validUsername(username)) return bad(res, '用户名需为 3–32 位字母、数字、下划线、点或连字符');
     if (!name) return bad(res, '请填写显示名称');
-    if (db.prepare('SELECT 1 AS x FROM users WHERE username = ?').get(username)) {
+    /* 同名账号若是「已删除」状态，按恢复处理（复用原行、沿用创建时间）；
+       台账 / 附件 / 日志本就没删，账号一恢复数据即回来。 */
+    const prev = db.prepare('SELECT created_at, status FROM users WHERE username = ?').get(username);
+    if (prev && prev.status !== 'deleted') {
       return bad(res, '用户名「' + username + '」已存在');
     }
     /* 权限：只读 ro 不能改台账；超管恒为读写 */
@@ -3252,10 +3258,11 @@ async function handleApi(req, res, url) {
     /* 企业微信通知：新建时一并写入（可先存半成品，enabled 时才校验完整性） */
     const wxIn = ensureWxInput(body.wx, null);
     if (wxIn.err) return bad(res, wxIn.err);
+    if (prev) db.prepare('DELETE FROM users WHERE username = ?').run(username);
     db.prepare(
       'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger, wx_enabled, wx_cfg) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0, multiLedger, wxIn.enabled, JSON.stringify(wxIn.cfg));
+    ).run(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, (prev && prev.created_at) || nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0, multiLedger, wxIn.enabled, JSON.stringify(wxIn.cfg));
     setBindings(username, rs.servers);
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) writeLedger(username, sanitizeLedger(body.data), me.username);
@@ -3394,18 +3401,13 @@ async function handleApi(req, res, url) {
       }
       db.exec('BEGIN IMMEDIATE');
       try {
-        /* 一并清理该账号的附件文件与记录，避免磁盘残留 */
-        const atts = db.prepare('SELECT id, name, mime, ext FROM attachments WHERE owner = ?').all(target);
-        atts.forEach(function (a) {
-          const fp = findAttachFile(a);
-          if (fp) { try { fs.unlinkSync(fp); } catch (e) {} }
-          dropPreview(a.id);
-        });
-        db.prepare('DELETE FROM attachments WHERE owner = ?').run(target);
-        db.prepare('DELETE FROM sessions WHERE username = ?').run(target);
-        /* 共享数据集处理：删的是数据归属者且有成员 → 台账与日志转给最早的成员；
-           删的是成员 → 数据不动；无成员的普通账号 → 连台账一起删 */
+        /* 2026-11-25「数据以客户为基准」：删号不再删任何业务数据。
+           台账 / 巡检记录 / 附件记录与实体文件 / 变更日志 / 个人台账一律保留，
+           只把账号本身标记为已删除（status=deleted，登录与鉴权都要求 active，立即失效）。
+           超管可再次「启用」恢复该账号，或用同名账号重新创建（POST 会复用原行）。 */
         if (!(row.share_from || '').length) {
+          /* 共享数据集仍按旧规则把归属转给最早成员：数据继续可编辑，
+             也让成员的权限语义保持清晰（仅移动归属，不删数据） */
           const members = shareMembers(target);
           if (members.length) {
             const heir = members[0].username;
@@ -3414,15 +3416,10 @@ async function handleApi(req, res, url) {
             db.prepare('UPDATE users SET share_from = ? WHERE share_from = ?').run(heir, target);
             /* 归属者本人不再指向别人 */
             db.prepare("UPDATE users SET share_from = '' WHERE username = ?").run(heir);
-          } else {
-            db.prepare('DELETE FROM ledgers WHERE username = ?').run(target);
           }
         }
-        db.prepare('DELETE FROM user_auth_sources WHERE username = ?').run(target);
-        db.prepare('DELETE FROM users WHERE username = ?').run(target);
-        /* 个人台账（<用户名>::mine）随账号一起清理，避免留下无主数据 */
-        db.prepare('DELETE FROM ledgers WHERE username = ?').run(mineKey(target));
-        db.prepare('DELETE FROM ledger_logs WHERE username = ?').run(mineKey(target));
+        db.prepare("UPDATE users SET status = 'deleted' WHERE username = ?").run(target);
+        db.prepare('DELETE FROM sessions WHERE username = ?').run(target);
         db.exec('COMMIT');
       } catch (e) {
         db.exec('ROLLBACK');

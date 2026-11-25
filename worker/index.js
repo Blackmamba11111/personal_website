@@ -1008,7 +1008,8 @@ function multiFlagOf(u) {
 }
 /* 该账号是否已经把台账共享给别人（有下家 share_from 指向它） */
 async function hasSharedTo(env, username) {
-  const r = await env.DB.prepare('SELECT 1 AS x FROM users WHERE share_from = ? LIMIT 1').bind(username).first();
+  /* 已删除的账号不算「下家」：它不能登录，也不该继续撑起别人的多台账 */
+  const r = await env.DB.prepare("SELECT 1 AS x FROM users WHERE share_from = ? AND status <> 'deleted' LIMIT 1").bind(username).first();
   return !!r;
 }
 /* 该用户是否真的拥有第二份台账：开关 + 非超管 + 共享关系（借入 / 借出，任一即可）。
@@ -1038,7 +1039,7 @@ async function ledgerKeyOf(env, username, mine) {
   return dataOwner(env, username);
 }
 async function shareMembers(env, owner) {
-  const r = await env.DB.prepare('SELECT username FROM users WHERE share_from = ? ORDER BY created_at').bind(owner).all();
+  const r = await env.DB.prepare("SELECT username FROM users WHERE share_from = ? AND status <> 'deleted' ORDER BY created_at").bind(owner).all();
   return (r.results || []).map(function (x) { return x.username; });
 }
 async function readLedger(env, username, mine) {
@@ -2456,10 +2457,12 @@ async function route(request, env, ctx) {
     }
 
     if (method === 'DELETE') {
-      /* 按绑定表计数：主源与附加源都要拦，否则删掉后附加绑定会变成悬空记录 */
-      const cnt = await env.DB.prepare('SELECT COUNT(*) AS n FROM user_auth_sources WHERE server_id = ?').bind(srow.id).first();
+      /* 按绑定表计数：主源与附加源都要拦，否则删掉后附加绑定会变成悬空记录。
+         已删除的账号（status=deleted）不再拦截——它不能登录，绑定额随源一起清掉。 */
+      const cnt = await env.DB.prepare("SELECT COUNT(*) AS n FROM user_auth_sources s JOIN users u ON u.username = s.username WHERE s.server_id = ? AND u.status <> 'deleted'").bind(srow.id).first();
       const n = cnt ? cnt.n : 0;
       if (n > 0) return bad('仍有 ' + n + ' 个账号使用该认证服务器，请先改绑或删除这些账号');
+      await env.DB.prepare('DELETE FROM user_auth_sources WHERE server_id = ?').bind(srow.id).run();
       await env.DB.prepare('DELETE FROM auth_servers WHERE id = ?').bind(srow.id).run();
       return ok(null);
     }
@@ -2767,8 +2770,9 @@ async function route(request, env, ctx) {
     const role = body.role === 'admin' ? 'admin' : 'user';
     if (!validUsername(username)) return bad('用户名需为 3–32 位字母、数字、下划线、点或连字符');
     if (!name) return bad('请填写显示名称');
-    const dup = await env.DB.prepare('SELECT 1 AS x FROM users WHERE username = ?').bind(username).first();
-    if (dup) return bad('用户名「' + username + '」已存在');
+    /* 同名账号若是「已删除」状态，按恢复处理（复用原行、沿用创建时间） */
+    const prev = await env.DB.prepare('SELECT created_at, status FROM users WHERE username = ?').bind(username).first();
+    if (prev && prev.status !== 'deleted') return bad('用户名「' + username + '」已存在');
     /* 权限：只读 ro 不能改台账；超管恒为读写 */
     const perm = role === 'admin' ? 'rw' : (body.perm === 'ro' ? 'ro' : 'rw');
     /* 认证源：serverIds 数组，第一条为主源；类型取服务器自身的 type（不信任前端传值） */
@@ -2818,10 +2822,11 @@ async function route(request, env, ctx) {
     /* 企业微信通知：新建时一并写入（可先存半成品，enabled 时才校验完整性） */
     const wxIn = ensureWxInput(body.wx, null);
     if (wxIn.err) return bad(wxIn.err);
+    if (prev) await env.DB.prepare('DELETE FROM users WHERE username = ?').bind(username).run();
     await env.DB.prepare(
       'INSERT INTO users (username, name, role, status, note, salt, hash, must_change, created_at, source, perm, server_id, share_from, session_mins, hide_sensitive, name_cn, crm_visible, stat_visible, multi_ledger, wx_enabled, wx_cfg) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0, multiLedger, wxIn.enabled, JSON.stringify(wxIn.cfg)).run();
+    ).bind(username, name, role, 'active', String(body.note || ''), salt, hash, mustChange, (prev && prev.created_at) || nowIso(), source, perm, serverId, shareFrom, normSessionMins(body.sessionMins), body.hideSensitive ? 1 : 0, String(body.nameCn || '').trim(), body.crmVisible ? 1 : 0, body.statVisible ? 1 : 0, multiLedger, wxIn.enabled, JSON.stringify(wxIn.cfg)).run();
     await setBindings(env, username, rs.servers);
     /* 共享成员不写数据（用的是 owner 的台账）；普通初始化才落 body.data */
     if (!shareFrom && body.data) await writeLedger(env, username, sanitizeLedger(body.data), me.username);
@@ -2958,7 +2963,9 @@ async function route(request, env, ctx) {
       if (row.role === 'admin' && row.status === 'active' && await activeAdminCount(env, target) === 0) {
         return bad('至少保留一个启用的超级管理员，无法删除');
       }
-      /* 共享数据集：删 owner 且有成员 → 台账转给最早成员；删成员 → 数据不动 */
+      /* 2026-11-25「数据以客户为基准」：删号不再删业务数据（台账 / 巡检记录 / 附件 / 日志）。
+         只把账号标记为 deleted，登录与鉴权都要求 active，立即失效；
+         超管可再次启用，或用同名账号重新创建（POST 复用原行）恢复全部数据。 */
       const stmts = [env.DB.prepare('DELETE FROM sessions WHERE username = ?').bind(target)];
       if (!(row.share_from || '').length) {
         const members = await shareMembers(env, target);
@@ -2969,18 +2976,10 @@ async function route(request, env, ctx) {
           stmts.push(env.DB.prepare('UPDATE users SET share_from = ? WHERE share_from = ?').bind(heir, target));
           /* 归属者本人不再指向别人 */
           stmts.push(env.DB.prepare("UPDATE users SET share_from = '' WHERE username = ?").bind(heir));
-        } else {
-          stmts.push(env.DB.prepare('DELETE FROM ledgers WHERE username = ?').bind(target));
         }
       }
-      stmts.push(env.DB.prepare('DELETE FROM user_auth_sources WHERE username = ?').bind(target));
-      stmts.push(env.DB.prepare('DELETE FROM users WHERE username = ?').bind(target));
-      /* 个人台账（<用户名>::mine）随账号一起清理，避免留下无主数据 */
-      stmts.push(env.DB.prepare('DELETE FROM ledgers WHERE username = ?').bind(mineKey(target)));
-      stmts.push(env.DB.prepare('DELETE FROM ledger_logs WHERE username = ?').bind(mineKey(target)));
+      stmts.push(env.DB.prepare("UPDATE users SET status = 'deleted' WHERE username = ?").bind(target));
       await env.DB.batch(stmts);
-      /* 附件表可能尚未创建（从未上传过附件），失败不影响删号 */
-      try { await env.DB.prepare('DELETE FROM attachments WHERE owner = ?').bind(target).run(); } catch (e) {}
       return ok(null);
     }
     return bad('不支持的请求方法', 405);

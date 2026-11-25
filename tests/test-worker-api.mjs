@@ -476,12 +476,35 @@ check('重新开启后个人台账数据仍在（关掉期间不丢）',
 r = await api('/users/nosha', { method: 'PATCH', body: { multiLedger: true } }, tk);
 check('无共享来源的账号 PATCH 也开不了多台账', r.ok && r.data.user.multiLedger === false, JSON.stringify(r.data && r.data.user));
 
-/* 删号：个人台账一并清理 */
+/* 删号（2026-11-25 改为软删除）：账号失效，但台账 / 巡检记录 / 附件一律保留 */
 r = await api('/users/multi1', { method: 'DELETE' }, tk);
-check('删除多台账账号成功', r.ok === true, JSON.stringify(r));
+check('删除多台账账号成功（软删除）', r.ok === true, JSON.stringify(r));
+r = await api('/users', { method: 'GET' }, tk);
+const delMulti = (r.data.users || []).filter(u => u.username === 'multi1')[0];
+check('删号后账号标记为 deleted（数据不动）', !!delMulti && delMulti.status === 'deleted', JSON.stringify(delMulti && delMulti.status));
+r = await api('/auth/login', { method: 'POST', body: { username: 'multi1', password: 'Multi@123' } });
+check('已删除账号无法登录', r.ok === false && /停用|删除/.test(r.error), JSON.stringify(r));
 r = await api('/ledger', { method: 'GET' }, tk);
-check('删号后个人台账不留残余', !Object.prototype.hasOwnProperty.call(r.data.ledgers, 'multi1::mine'),
+check('删号后个人台账保留（数据以客户为基准）',
+  !!r.data.ledgers['multi1::mine'] && r.data.ledgers['multi1::mine'].customers[0].name === '承德银行',
   Object.keys(r.data.ledgers).join(','));
+
+/* 同名重建 = 恢复：账号删了数据仍在，重新创建同名账号即原样接回 */
+r = await api('/users', { method: 'POST', body: { username: 'retain1', name: '保留户', password: 'Retain@123' } }, tk);
+check('创建待删账号', r.ok === true, JSON.stringify(r));
+r = await api('/ledger', { method: 'PUT', body: { scope: 'retain1', data: { regions: [], customers: [{ id: 'r1', name: '保留客户' }], visits: [{ id: 'v1', customerId: 'r1', date: '2026-11-20', by: '保留户', result: '正常', atts: [] }] } } }, tk);
+check('写入保留客户与巡检记录', r.ok === true, JSON.stringify(r));
+r = await api('/users/retain1', { method: 'DELETE' }, tk);
+check('删号请求成功', r.ok === true, JSON.stringify(r));
+r = await api('/ledger', { method: 'GET' }, tk);
+check('删号不清台账（客户与巡检记录都还在）',
+  !!r.data.ledgers.retain1 && r.data.ledgers.retain1.visits[0].id === 'v1', Object.keys(r.data.ledgers).join(','));
+r = await api('/users', { method: 'POST', body: { username: 'retain1', name: '保留户2', password: 'Retain@123' } }, tk);
+check('同名重建即恢复（状态回 active）', r.ok === true && r.data.user.status === 'active' && r.data.user.name === '保留户2',
+  JSON.stringify(r.data && r.data.user));
+r = await api('/auth/login', { method: 'POST', body: { username: 'retain1', password: 'Retain@123' } });
+check('恢复后可登录且台账原样', r.ok === true && !!r.data.ledgers.retain1 && r.data.ledgers.retain1.customers[0].name === '保留客户',
+  JSON.stringify(Object.keys((r.data && r.data.ledgers) || {})));
 
 /* ============ 台账被共享出去的 owner 也能有第二份台账（2026-11-09 追加） ============
    提供方（member1，member2 共享它的台账）与借入方一样可以开多台账：

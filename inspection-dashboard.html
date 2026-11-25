@@ -3585,6 +3585,13 @@
     if (orphan.length) drawGroup('未归类', '#94A3B8', orphan);
 
     box.innerHTML = html;
+    /* 双击卡片打开详情抽屉（委托，重建不丢监听） */
+    box.ondblclick = function (e) {
+      var el = e.target.closest ? e.target.closest('.card-cust') : null;
+      if (!el) return;
+      e.preventDefault();
+      openDetail(el.getAttribute('data-id'));
+    };
     Array.prototype.forEach.call(box.querySelectorAll('.card-cust'), function (el) {
       el.onclick = function () {
         var id = el.getAttribute('data-id');
@@ -8005,7 +8012,7 @@
       if (u.username === AUTH.user.username) {
         opts.push({ v: u.username, t: (hasMultiLedger() ? '公共台账 · ' : '我的台账 · ') + u.name });
       } else if (isAdmin()) {
-        opts.push({ v: u.username, t: u.name + ' · ' + u.username + (u.status === 'disabled' ? '（已停用）' : '') });
+        opts.push({ v: u.username, t: u.name + ' · ' + u.username + (u.status === 'disabled' ? '（已停用）' : (u.status === 'deleted' ? '（账号已删除）' : '')) });
       }
     });
     return opts;
@@ -10349,7 +10356,7 @@
           wxTag(u) + '</td>' +
         '<td><span class="tag ' + (u.role === 'admin' ? 'admin' : 'user') + '">' + roleText(u) + '</span></td>' +
         '<td><span class="tag ' + (u.status === 'active' ? 'active' : 'disabled') + '">' +
-          (u.status === 'active' ? '启用中' : '已停用') + '</span></td>' +
+          (u.status === 'active' ? '启用中' : (u.status === 'deleted' ? '已删除' : '已停用')) + '</span></td>' +
         '<td>' + s.customers + ' 家' +
           (pm ? '<div class="sub2">个人 ' + pm.customers + ' 家</div>' : '') + '</td>' +
         '<td>' + s.visits + ' 条' +
@@ -10896,13 +10903,13 @@
     var s = userDataCount(u.username);
     askConfirm('删除用户',
       '确认删除用户「<b>' + esc(u.name) + '</b>（' + esc(u.username) + '）」？<br>' +
-      '该账号在服务端的 <b>' + s.customers + ' 家客户</b>与 <b>' + s.visits + ' 条巡检记录</b>将被<b>永久删除</b>，操作不可恢复。',
+      '账号立即失效、无法登录；名下 <b>' + s.customers + ' 家客户</b>、<b>' + s.visits + ' 条巡检记录</b>、附件与日志<b>全部保留</b>。<br>' +
+      '可用「启用」或同名重建恢复。',
       function () {
         api('/users/' + encodeURIComponent(u.username), { method: 'DELETE' }).then(function (r) {
           if (!r.ok) { toast(r.error || '删除失败'); return; }
-          try { localStorage.removeItem(dataKeyOf(u.username)); } catch (e) {}
           refreshUsersThen(true).then(function () {
-            toast('用户「' + u.name + '」及其台账已删除');
+            toast('用户「' + u.name + '」已删除，数据保留');
           });
         });
       }, '确认删除');

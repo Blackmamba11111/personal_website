@@ -439,6 +439,10 @@ async function main() {
        2026-11-16 晚 用户管理新增企业微信通知配置（弹窗区块 + 批量编辑 + 列表标记），上限放宽到 600 KB。 */
     check('看板体积已降到 600 KB 以内', Buffer.byteLength(dash, 'utf8') < 600 * 1024,
       Math.round(Buffer.byteLength(dash, 'utf8') / 1024) + ' KB');
+
+    /* ---------- 删除账号不删数据（2026-11-25 软删除）与卡片双击 ---------- */
+    check('客户卡片双击打开详情抽屉', /ondblclick = function[\s\S]{0,220}openDetail/.test(dash));
+    check('删号确认文案说明数据保留', /附件与日志<b>全部保留<\/b>/.test(dash));
   });
 
   const pass = results.filter(r => r[0] === 'PASS').length;
