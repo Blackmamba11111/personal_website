@@ -32,6 +32,8 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
+/* 备份/恢复核心库（打包、解包、调度计算、scp/sftp/tftp 推送、凭据加解密） */
+const BK = require('./backup-lib.js');
 
 const PORT = parseInt(process.env.PORT || '8443', 10);
 const APP_DIR = path.resolve(process.env.APP_DIR || '/app');
@@ -75,10 +77,16 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const PREVIEW_DIR = path.join(DATA_DIR, 'preview');
 fs.mkdirSync(PREVIEW_DIR, { recursive: true });
 const DB_FILE = path.join(DATA_DIR, 'inspection.db');
-const db = new DatabaseSync(DB_FILE);
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA synchronous = NORMAL');
-db.exec('PRAGMA busy_timeout = 5000');
+/* db 用 let 而非 const：数据恢复需要 close → 替换文件 → 重新打开。
+   node:sqlite 是同步 API，这几步在同一个 tick 内完成，不会有请求夹在中间。 */
+let db;
+function openDb() {
+  db = new DatabaseSync(DB_FILE);
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA synchronous = NORMAL');
+  db.exec('PRAGMA busy_timeout = 5000');
+}
+openDb();
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   username    TEXT PRIMARY KEY,
@@ -159,6 +167,54 @@ CREATE TABLE IF NOT EXISTS ledger_logs (
   at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_logs_owner ON ledger_logs(username, at);
+/* 备份与恢复（2026-11-25）
+   backup_targets —— 异地目标服务器，可配多台；密码/私钥以 AES-256-GCM 加密后存 secret。
+   backup_tasks   —— 定时任务，每条自定义「内容档位 + 周期 + 保留份数 + 下发目标」。
+   backup_runs    —— 每次备份/恢复/下发的执行记录，用于界面展示与排障。 */
+CREATE TABLE IF NOT EXISTS backup_targets (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL DEFAULT '',
+  proto       TEXT NOT NULL DEFAULT 'scp',
+  host        TEXT NOT NULL DEFAULT '',
+  port        INTEGER NOT NULL DEFAULT 22,
+  user        TEXT NOT NULL DEFAULT '',
+  auth        TEXT NOT NULL DEFAULT 'password',
+  secret      TEXT NOT NULL DEFAULT '',
+  remote_dir  TEXT NOT NULL DEFAULT '',
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL,
+  last_at     TEXT NOT NULL DEFAULT '',
+  last_ok     INTEGER,
+  last_msg    TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS backup_tasks (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL DEFAULT '',
+  include_db   INTEGER NOT NULL DEFAULT 1,
+  include_files INTEGER NOT NULL DEFAULT 0,
+  freq         TEXT NOT NULL DEFAULT 'daily',
+  weekday      INTEGER NOT NULL DEFAULT 0,
+  at_time      TEXT NOT NULL DEFAULT '02:30',
+  keep         INTEGER NOT NULL DEFAULT 7,
+  target_ids   TEXT NOT NULL DEFAULT '',
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT NOT NULL,
+  last_run_at  TEXT NOT NULL DEFAULT '',
+  last_result  TEXT NOT NULL DEFAULT '',
+  next_at      TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS backup_runs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  at         TEXT NOT NULL,
+  kind       TEXT NOT NULL DEFAULT 'manual',
+  scope      TEXT NOT NULL DEFAULT '',
+  file       TEXT NOT NULL DEFAULT '',
+  size       INTEGER NOT NULL DEFAULT 0,
+  ok         INTEGER NOT NULL DEFAULT 1,
+  actor      TEXT NOT NULL DEFAULT '',
+  detail     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_backup_runs_at ON backup_runs(at);
 /* 多认证源绑定（2026-11-19）：一个账号可同时挂多个认证源，登录以本表为准；
    users.source / server_id 降级为「主绑定」快照，供旧界面与旧接口读取。 */
 CREATE TABLE IF NOT EXISTS user_auth_sources (
@@ -2407,9 +2463,263 @@ function servePreview(req, res, row) {
 }
 
 /* ---------------- API 路由 ---------------- */
+/* ================= 备份与恢复（2026-11-25） =================
+ *
+ * 关键约束：
+ *   1. 同一时刻只允许一个备份任务（tar 压 190MB，两个并发会打满磁盘 IO）。
+ *   2. 恢复时置 RESTORING，除备份接口外全部 API 返回 503；db 需要 close → 换文件 → 重开，
+ *      这三步必须在一个 tick 内完成（node:sqlite 是同步 API）。
+ *   3. 附件不复制直接打包：tar 用多个 -C 从 /data 取 uploads。
+ *   4. 凭据加密密钥落在 /data/.backup-key，随容器挂载保留。
+ */
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+fs.mkdirSync(BACKUP_DIR, { recursive: true });
+const BACKUP_KEY_FILE = path.join(DATA_DIR, '.backup-key');
+const MAX_RESTORE = 2 * 1024 * 1024 * 1024;   /* 备份包上传上限 2GB */
+
+let RESTORING = false;
+let BK_BUSY = false;
+let BK_PROGRESS = { running: false, phase: '', started: 0, message: '' };
+let BK_KEY = null;
+function bkKey() { if (!BK_KEY) BK_KEY = BK.loadKey(BACKUP_KEY_FILE); return BK_KEY; }
+
+function logBackup(kind, scope, file, size, ok, actor, detail) {
+  try {
+    db.prepare('INSERT INTO backup_runs (at, kind, scope, file, size, ok, actor, detail) VALUES (?,?,?,?,?,?,?,?)')
+      .run(nowIso(), kind, scope || '', file || '', size || 0, ok ? 1 : 0, actor || '', String(detail || '').slice(0, 500));
+    db.prepare('DELETE FROM backup_runs WHERE id <= (SELECT id FROM backup_runs ORDER BY id DESC LIMIT 1 OFFSET 500)').run();
+  } catch (e) { /* 日志失败不影响主流程 */ }
+}
+function mapTarget(r) {
+  return {
+    id: r.id, name: r.name, proto: r.proto, host: r.host, port: r.port, user: r.user,
+    auth: r.auth, hasSecret: !!r.secret, remoteDir: r.remote_dir, enabled: !!r.enabled,
+    lastAt: r.last_at, lastOk: r.last_ok == null ? null : !!r.last_ok, lastMsg: r.last_msg
+  };
+}
+function mapTask(r) {
+  return {
+    id: r.id, name: r.name, includeDb: !!r.include_db, includeFiles: !!r.include_files,
+    freq: r.freq, weekday: r.weekday, atTime: r.at_time, keep: r.keep,
+    targetIds: String(r.target_ids || '').split(',').filter(Boolean), enabled: !!r.enabled,
+    lastRunAt: r.last_run_at, lastResult: r.last_result, nextAt: r.next_at
+  };
+}
+/* 传输依赖自检：镜像里缺哪个包，界面上要直接告诉管理员，而不是等下发失败才猜 */
+function whichCmd(name) {
+  const dirs = ['/usr/bin/', '/bin/', '/usr/local/bin/', '/usr/sbin/', '/sbin/'];
+  for (let i = 0; i < dirs.length; i++) {
+    try { fs.accessSync(dirs[i] + name, fs.constants.X_OK); return true; } catch (e) {}
+  }
+  return false;
+}
+function backupToolsAvailable() {
+  return {
+    tar: whichCmd('tar'), gzip: whichCmd('gzip'),
+    scp: whichCmd('scp'), sftp: whichCmd('sftp'), tftp: whichCmd('tftp'), sshpass: whichCmd('sshpass')
+  };
+}
+function backupSizes() {
+  let dbBytes = 0;
+  try { dbBytes = fs.statSync(DB_FILE).size; } catch (e) {}
+  return { dbBytes: dbBytes, filesBytes: BK.dirStats(path.join(DATA_DIR, 'uploads')) };
+}
+
+function listLocalBackups() {
+  let names = [];
+  try { names = fs.readdirSync(BACKUP_DIR); } catch (e) {}
+  return names
+    .filter(function (f) { return /^inspection-\d{8}-\d{4}-(config|full|files)\.tar\.gz$/.test(f); })
+    .map(function (f) {
+      const fp = path.join(BACKUP_DIR, f);
+      let st = null;
+      try { st = fs.statSync(fp); } catch (e) {}
+      const m = /^inspection-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})-(config|full|files)\.tar\.gz$/.exec(f);
+      return {
+        name: f, size: st ? st.size : 0, mtime: st ? st.mtimeMs : 0, scope: m ? m[6] : '',
+        at: m ? m[1] + '-' + m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] : ''
+      };
+    })
+    .sort(function (a, b) { return b.mtime - a.mtime; });
+}
+
+/* 执行一次备份：打包 → 逐个目标下发 → 记日志。scope: config | files | full */
+async function runBackupOnce(o) {
+  const opts = o || {};
+  const scope = opts.scope === 'full' ? 'full' : (opts.scope === 'files' ? 'files' : 'config');
+  const includeDb = scope !== 'files';
+  const includeFiles = scope !== 'config';
+  const name = BK.backupName(scope);
+  const outFile = path.join(BACKUP_DIR, name);
+  BK_BUSY = true;
+  BK_PROGRESS = { running: true, phase: 'pack', started: Date.now(), message: '正在生成备份包…' };
+  try {
+    const r = await BK.packBackup({
+      db: db, dataDir: DATA_DIR, outFile: outFile,
+      includeDb: includeDb, includeFiles: includeFiles,
+      tmpDir: path.join(BACKUP_DIR, '.tmp'), host: 'inspection'
+    });
+    if (!r.ok) { logBackup(opts.kind, scope, '', 0, false, opts.actor, r.msg); return r; }
+
+    /* 只下发被勾选且仍启用的目标 */
+    const want = (opts.targetIds || []).filter(Boolean);
+    const targets = want.length
+      ? db.prepare('SELECT * FROM backup_targets WHERE enabled = 1').all().filter(function (t) { return want.indexOf(t.id) >= 0; })
+      : [];
+    const pushed = [];
+    for (const t of targets) {
+      BK_PROGRESS = { running: true, phase: 'push', started: Date.now(), message: '正在下发到 ' + (t.name || t.host) + '…' };
+      const secret = BK.decSecret(bkKey(), t.secret);
+      const pr = await BK.pushToTarget({
+        proto: t.proto, host: t.host, port: t.port, user: t.user,
+        auth: t.auth, remote_dir: t.remote_dir
+      }, outFile, secret);
+      try {
+        db.prepare('UPDATE backup_targets SET last_at = ?, last_ok = ?, last_msg = ? WHERE id = ?')
+          .run(nowIso(), pr.ok ? 1 : 0, String(pr.msg || '').slice(0, 300), t.id);
+      } catch (e) {}
+      pushed.push({ id: t.id, name: t.name || t.host, ok: pr.ok, msg: pr.msg });
+      logBackup(opts.kind, scope, name, r.size, pr.ok, opts.actor, (t.name || t.host) + '：' + pr.msg);
+    }
+    logBackup(opts.kind, scope, name, r.size, true, opts.actor,
+      '包 ' + Math.round(r.size / 1048576 * 10) / 10 + 'MB' + (pushed.length ? '，下发 ' + pushed.length + ' 台' : ''));
+    return { ok: true, file: name, size: r.size, scope: scope, targets: pushed };
+  } catch (e) {
+    logBackup(opts.kind, scope, '', 0, false, opts.actor, e && e.message);
+    return { ok: false, msg: (e && e.message) || '备份失败' };
+  } finally {
+    BK_BUSY = false;
+    BK_PROGRESS = { running: false, phase: '', started: 0, message: '' };
+  }
+}
+
+/* 恢复：解包 → 校验 → 留回滚点 → 换库 → 换附件 → 清会话 */
+async function restoreFromFile(srcFile, actor) {
+  const tmp = path.join(BACKUP_DIR, '.restore-' + Date.now());
+  RESTORING = true;
+  try {
+    const u = await BK.unpackBackup(srcFile, tmp);
+    if (!u.ok) return { ok: false, msg: u.msg };
+
+    /* 回滚点：当前数据先留一份，恢复错了还能退回去 */
+    const rollbackDir = path.join(BACKUP_DIR, 'rollback');
+    fs.mkdirSync(rollbackDir, { recursive: true });
+    try {
+      const rb = path.join(rollbackDir, 'pre-restore-' + BK.stampLocal(new Date()) + '.db');
+      db.exec("VACUUM INTO '" + rb.replace(/'/g, "''") + "'");
+    } catch (e) { console.log('[backup] 回滚点生成失败：' + e.message); }
+
+    if (u.dbPath) {
+      db.close();
+      try {
+        try { fs.unlinkSync(DB_FILE + '-wal'); } catch (e) {}
+        try { fs.unlinkSync(DB_FILE + '-shm'); } catch (e) {}
+        fs.copyFileSync(u.dbPath, DB_FILE);
+      } catch (e) {
+        openDb();                                   /* 换库失败必须立刻把连接开回来 */
+        return { ok: false, msg: '替换数据库失败：' + (e && e.message) };
+      }
+      openDb();
+      /* 备份包里的会话早已失效/不属于当前环境，全部清空强制重新登录 */
+      try { db.prepare('DELETE FROM sessions').run(); } catch (e) {}
+    }
+
+    if (u.filesDir) {
+      const live = path.join(DATA_DIR, 'uploads');
+      const aside = path.join(DATA_DIR, 'uploads.pre-restore-' + Date.now());
+      try {
+        if (fs.existsSync(live)) fs.renameSync(live, aside);
+        fs.renameSync(u.filesDir, live);
+        fs.rmSync(aside, { recursive: true, force: true });
+      } catch (e) {
+        /* 换目录失败时把原目录挪回去，保证不丢数据 */
+        try { if (!fs.existsSync(live) && fs.existsSync(aside)) fs.renameSync(aside, live); } catch (e2) {}
+        return { ok: false, msg: '替换附件目录失败：' + (e && e.message) };
+      }
+      /* 预览缓存与恢复后的附件不匹配，清空后按需重新转 */
+      try { fs.rmSync(PREVIEW_DIR, { recursive: true, force: true }); fs.mkdirSync(PREVIEW_DIR, { recursive: true }); } catch (e) {}
+    }
+    logBackup('restore', (u.manifest && u.manifest.scope) || '', path.basename(srcFile), 0, true, actor,
+      '恢复完成；含数据库=' + (!!u.dbPath) + '，含附件=' + (!!u.filesDir));
+    return { ok: true, manifest: u.manifest, hasDb: !!u.dbPath, hasFiles: !!u.filesDir };
+  } catch (e) {
+    logBackup('restore', '', path.basename(srcFile), 0, false, actor, e && e.message);
+    return { ok: false, msg: (e && e.message) || '恢复失败' };
+  } finally {
+    RESTORING = false;
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
+  }
+}
+
+/* 调度：每分钟 tick，命中即执行一个任务后跳出（避免并发压缩） */
+async function backupTick() {
+  if (RESTORING || BK_BUSY) return;
+  let rows;
+  try { rows = db.prepare('SELECT * FROM backup_tasks WHERE enabled = 1').all(); } catch (e) { return; }
+  const now = new Date();
+  for (const t of rows) {
+    let due = t.next_at ? new Date(t.next_at) : null;
+    if (!due || isNaN(due.getTime())) {
+      /* 首次启用：以当前时刻为基准排下一个点，避免刚建任务就立刻跑一次 */
+      const nx = BK.nextRunOf(t, now);
+      try { db.prepare('UPDATE backup_tasks SET next_at = ? WHERE id = ?').run(nx.toISOString(), t.id); } catch (e) {}
+      continue;
+    }
+    if (due.getTime() > now.getTime()) continue;
+    const scope = BK.scopeOf(!!t.include_db, !!t.include_files);
+    const targetIds = String(t.target_ids || '').split(',').filter(Boolean);
+    const r = await runBackupOnce({ scope: scope, targetIds: targetIds, actor: '定时任务', kind: 'schedule' });
+    if (r.ok && t.keep) BK.pruneLocal(BACKUP_DIR, t.keep);
+    const nx = BK.nextRunOf(t, now);
+    try {
+      db.prepare('UPDATE backup_tasks SET last_run_at = ?, last_result = ?, next_at = ? WHERE id = ?')
+        .run(nowIso(), (r.ok ? '成功 ' : '失败 ') + (r.file || r.msg || ''), nx.toISOString(), t.id);
+    } catch (e) {}
+    break;
+  }
+}
+
 async function handleApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, '') || '/api';
   const method = req.method.toUpperCase();
+
+  /* 备份包上传走原始二进制流：若按 JSON 解析，190MB 包会变成 250MB base64
+     且整体驻留内存。因此必须在请求体解析之前拦截。 */
+  if (p === '/api/backup/restore-upload' && method === 'POST') {
+    const meUp = currentUser(req);
+    if (!meUp || meUp.role !== 'admin') { req.resume(); return bad(res, '仅超级管理员可执行恢复。', 403); }
+    if (RESTORING) { req.resume(); return bad(res, '已有恢复任务在执行，请稍后再试。', 409); }
+    const up = path.join(BACKUP_DIR, '.upload-' + Date.now() + '.tar.gz');
+    const ws = fs.createWriteStream(up);
+    let size = 0, done = false;
+    const fail = function (code, msg) {
+      if (done) return;
+      done = true;
+      try { ws.destroy(); } catch (e) {}
+      try { fs.unlinkSync(up); } catch (e) {}
+      return sendJson(res, { ok: false, error: msg }, code);
+    };
+    req.on('data', function (c) {
+      size += c.length;
+      if (size > MAX_RESTORE) { req.destroy(); fail(413, '备份包超过 2GB 上限'); }
+    });
+    req.on('aborted', function () { fail(499, '上传中断'); });
+    ws.on('error', function (e) { fail(500, '写入临时文件失败：' + (e && e.message)); });
+    ws.on('finish', async function () {
+      if (done) return;
+      done = true;
+      if (!size) { try { fs.unlinkSync(up); } catch (e) {} return sendJson(res, { ok: false, error: '未收到文件内容' }, 400); }
+      const r = await restoreFromFile(up, meUp.username);
+      try { fs.unlinkSync(up); } catch (e) {}
+      if (!r.ok) return sendJson(res, { ok: false, error: r.msg }, 400);
+      return sendJson(res, {
+        ok: true, msg: '恢复完成，所有会话已失效，请重新登录。',
+        manifest: r.manifest, hasDb: r.hasDb, hasFiles: r.hasFiles
+      });
+    });
+    req.pipe(ws);
+    return;
+  }
 
   let body = {};
   if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
@@ -2417,6 +2727,11 @@ async function handleApi(req, res, url) {
       const raw = await readBody(req);
       body = raw.length ? JSON.parse(raw.toString('utf8')) : {};
     } catch (e) { return bad(res, '请求体不是合法 JSON'); }
+  }
+
+  /* 恢复期间除备份接口外一律拒绝，避免读到「数据库已换、附件还没换」的中间态 */
+  if (RESTORING && p.indexOf('/api/backup') !== 0) {
+    return sendJson(res, { ok: false, error: '系统正在恢复数据，请稍候刷新页面…' }, 503);
   }
 
   /* --- 登录 --- */
@@ -2696,6 +3011,178 @@ async function handleApi(req, res, url) {
   if (p === '/api/auth/logout' && method === 'POST') {
     db.prepare('DELETE FROM sessions WHERE token = ?').run(me.token);
     return ok(res, null);
+  }
+
+  /* ---------------- 备份与恢复（仅超级管理员） ----------------
+     内容两档：config=全库快照（配置 + 台账，不含报告实体）；files=巡检报告实体；
+     full=两者合并。备份完成可直接下发到已配置的 scp/sftp/tftp 目标，
+     也可下载到本机；任何一包都可以反向还原（restore / restore-upload）。 */
+  if (p.indexOf('/api/backup') === 0) {
+    if (!isAdmin) return bad(res, '仅超级管理员可管理备份与恢复。', 403);
+
+    if (p === '/api/backup/overview' && method === 'GET') {
+      const sizes = backupSizes();
+      return ok(res, {
+        dir: BACKUP_DIR,
+        busy: BK_BUSY, restoring: RESTORING, progress: BK_PROGRESS,
+        tools: backupToolsAvailable(),
+        sizes: sizes,
+        targets: db.prepare('SELECT * FROM backup_targets ORDER BY created_at').all().map(mapTarget),
+        tasks: db.prepare('SELECT * FROM backup_tasks ORDER BY created_at').all().map(mapTask),
+        files: listLocalBackups(),
+        runs: db.prepare('SELECT * FROM backup_runs ORDER BY id DESC LIMIT 30').all()
+      });
+    }
+
+    if (p === '/api/backup/progress' && method === 'GET') {
+      return ok(res, {
+        busy: BK_BUSY, restoring: RESTORING, progress: BK_PROGRESS,
+        files: listLocalBackups(),
+        runs: db.prepare('SELECT * FROM backup_runs ORDER BY id DESC LIMIT 8').all()
+      });
+    }
+
+    /* 立即备份：异步执行，前端轮询 progress 看结果（190MB 打包可达数十秒） */
+    if (p === '/api/backup/run' && method === 'POST') {
+      if (RESTORING) return bad(res, '系统正在恢复数据，请稍后再试。', 409);
+      if (BK_BUSY) return bad(res, '已有备份任务在执行，请稍候。', 409);
+      const scope = body.scope === 'full' ? 'full' : (body.scope === 'files' ? 'files' : 'config');
+      const targetIds = Array.isArray(body.targetIds) ? body.targetIds.map(String) : [];
+      if (scope === 'files' && !fs.existsSync(path.join(DATA_DIR, 'uploads'))) {
+        return bad(res, '附件目录不存在，无法备份巡检报告。', 400);
+      }
+      runBackupOnce({ scope: scope, targetIds: targetIds, actor: me.name || me.username, kind: 'manual' })
+        .then(function (r) { console.log('[backup] 手动备份 ' + (r.ok ? '成功 ' + r.file : '失败 ' + r.msg)); });
+      return ok(res, { started: true, scope: scope });
+    }
+
+    /* 目标服务器：新增 / 修改。secret 为空表示「不修改已保存的密码或私钥」 */
+    if (p === '/api/backup/targets' && method === 'POST') {
+      const proto = String(body.proto || 'scp').toLowerCase();
+      if (['scp', 'sftp', 'tftp'].indexOf(proto) < 0) return bad(res, '协议只支持 scp / sftp / tftp。');
+      const host = String(body.host || '').trim();
+      if (!host) return bad(res, '请填写主机地址。');
+      const auth = body.auth === 'key' ? 'key' : 'password';
+      const port = proto === 'tftp' ? (Number(body.port) || 69) : (Number(body.port) || 22);
+      const name = String(body.name || '').trim() || host;
+      const remoteDir = String(body.remoteDir || body.remote_dir || '').trim().replace(/\/+$/, '');
+      const enabled = body.enabled === false ? 0 : 1;
+      const secretPlain = typeof body.secret === 'string' ? body.secret : '';
+      const id = String(body.id || '');
+      if (id) {
+        const row = db.prepare('SELECT * FROM backup_targets WHERE id = ?').get(id);
+        if (!row) return bad(res, '目标服务器不存在。', 404);
+        const secret = secretPlain ? BK.encSecret(bkKey(), secretPlain) : row.secret;
+        db.prepare('UPDATE backup_targets SET name=?, proto=?, host=?, port=?, user=?, auth=?, secret=?, remote_dir=?, enabled=? WHERE id=?')
+          .run(name, proto, host, port, String(body.user || '').trim(), auth, secret, remoteDir, enabled, id);
+        return ok(res, mapTarget(db.prepare('SELECT * FROM backup_targets WHERE id = ?').get(id)));
+      }
+      const newId = 'bt' + crypto.randomBytes(5).toString('hex');
+      db.prepare('INSERT INTO backup_targets (id, name, proto, host, port, user, auth, secret, remote_dir, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+        .run(newId, name, proto, host, port, String(body.user || '').trim(), auth,
+          secretPlain ? BK.encSecret(bkKey(), secretPlain) : '', remoteDir, enabled, nowIso());
+      return ok(res, { id: newId });
+    }
+
+    /* 连通性测试：用几百字节的探针文件试传，绝不把整包推出去 */
+    if (p === '/api/backup/targets/test' && method === 'POST') {
+      const row = db.prepare('SELECT * FROM backup_targets WHERE id = ?').get(String(body.id || ''));
+      if (!row) return bad(res, '目标服务器不存在。', 404);
+      const probe = path.join(BACKUP_DIR, '.probe-' + Date.now() + '.txt');
+      try { fs.writeFileSync(probe, 'inspection backup connectivity test ' + new Date().toISOString() + '\n'); } catch (e) {}
+      const r = await BK.pushToTarget({
+        proto: row.proto, host: row.host, port: row.port, user: row.user,
+        auth: row.auth, remote_dir: row.remote_dir
+      }, probe, BK.decSecret(bkKey(), row.secret));
+      try { fs.unlinkSync(probe); } catch (e) {}
+      db.prepare('UPDATE backup_targets SET last_at = ?, last_ok = ?, last_msg = ? WHERE id = ?')
+        .run(nowIso(), r.ok ? 1 : 0, String(r.msg || '').slice(0, 300), row.id);
+      return r.ok ? ok(res, { msg: r.msg }) : bad(res, r.msg, 400);
+    }
+
+    let m = /^\/api\/backup\/targets\/([A-Za-z0-9]{4,40})$/.exec(p);
+    if (m && method === 'DELETE') {
+      db.prepare('DELETE FROM backup_targets WHERE id = ?').run(m[1]);
+      return ok(res, null);
+    }
+
+    /* 定时任务：includeDb / includeFiles 自由组合，周期与保留份数逐条可配 */
+    if (p === '/api/backup/tasks' && method === 'POST') {
+      const includeDb = body.includeDb === false ? 0 : 1;
+      const includeFiles = body.includeFiles ? 1 : 0;
+      if (!includeDb && !includeFiles) return bad(res, '至少选择一种备份内容。');
+      const freq = body.freq === 'weekly' ? 'weekly' : 'daily';
+      const weekday = Math.max(0, Math.min(6, Number(body.weekday) || 0));
+      const atTime = String(body.atTime || '02:30').trim();
+      if (!/^\d{1,2}:\d{2}$/.test(atTime)) return bad(res, '备份时间格式应为 HH:MM。');
+      const keep = Math.max(1, Math.min(365, Number(body.keep) || 7));
+      const targetIds = Array.isArray(body.targetIds) ? body.targetIds.map(String).filter(Boolean) : [];
+      const name = String(body.name || '').trim() || (includeFiles ? '含报告全量' : '配置与台账');
+      const enabled = body.enabled === false ? 0 : 1;
+      const id = String(body.id || '');
+      if (id) {
+        const row = db.prepare('SELECT * FROM backup_tasks WHERE id = ?').get(id);
+        if (!row) return bad(res, '定时任务不存在。', 404);
+        /* 时间/周期改动后重算下次执行点；仅改名称不重置 */
+        const changed = row.freq !== freq || row.weekday !== weekday || row.at_time !== atTime || !!!row.enabled !== !!enabled;
+        const nextAt = changed || !row.next_at
+          ? BK.nextRunOf({ freq: freq, weekday: weekday, at_time: atTime }, new Date()).toISOString()
+          : row.next_at;
+        db.prepare('UPDATE backup_tasks SET name=?, include_db=?, include_files=?, freq=?, weekday=?, at_time=?, keep=?, target_ids=?, enabled=?, next_at=? WHERE id=?')
+          .run(name, includeDb, includeFiles, freq, weekday, atTime, keep, targetIds.join(','), enabled, nextAt, id);
+        return ok(res, mapTask(db.prepare('SELECT * FROM backup_tasks WHERE id = ?').get(id)));
+      }
+      const newId = 'bk' + crypto.randomBytes(5).toString('hex');
+      const nextAt = BK.nextRunOf({ freq: freq, weekday: weekday, at_time: atTime }, new Date()).toISOString();
+      db.prepare('INSERT INTO backup_tasks (id, name, include_db, include_files, freq, weekday, at_time, keep, target_ids, enabled, created_at, next_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(newId, name, includeDb, includeFiles, freq, weekday, atTime, keep, targetIds.join(','), enabled, nowIso(), nextAt);
+      return ok(res, { id: newId, nextAt: nextAt });
+    }
+
+    m = /^\/api\/backup\/tasks\/([A-Za-z0-9]{4,40})$/.exec(p);
+    if (m && method === 'DELETE') {
+      db.prepare('DELETE FROM backup_tasks WHERE id = ?').run(m[1]);
+      return ok(res, null);
+    }
+
+    /* 下载到本机 */
+    if (p === '/api/backup/download' && method === 'GET') {
+      const name = String(url.searchParams.get('name') || '');
+      if (!/^inspection-\d{8}-\d{4}-(config|full|files)\.tar\.gz$/.test(name)) return bad(res, '文件名不合法。', 400);
+      const fp = path.join(BACKUP_DIR, name);
+      let st;
+      try { st = fs.statSync(fp); } catch (e) { return bad(res, '备份文件不存在。', 404); }
+      res.writeHead(200, {
+        'content-type': 'application/gzip',
+        'content-length': st.size,
+        'content-disposition': 'attachment; filename="' + name + '"',
+        'cache-control': 'no-store'
+      });
+      fs.createReadStream(fp).pipe(res);
+      return;
+    }
+
+    /* 用服务器上已有的备份包还原 */
+    if (p === '/api/backup/restore' && method === 'POST') {
+      if (RESTORING) return bad(res, '已有恢复任务在执行，请稍后再试。', 409);
+      const name = String(body.name || '');
+      if (!/^inspection-\d{8}-\d{4}-(config|full|files)\.tar\.gz$/.test(name)) return bad(res, '文件名不合法。', 400);
+      const fp = path.join(BACKUP_DIR, name);
+      if (!fs.existsSync(fp)) return bad(res, '备份文件不存在。', 404);
+      const r = await restoreFromFile(fp, me.name || me.username);
+      if (!r.ok) return bad(res, r.msg, 400);
+      return ok(res, { msg: '恢复完成，所有会话已失效，请重新登录。', manifest: r.manifest, hasDb: r.hasDb, hasFiles: r.hasFiles });
+    }
+
+    /* 删除本地备份包 */
+    if (p === '/api/backup/file' && method === 'DELETE') {
+      const name = String(url.searchParams.get('name') || '');
+      if (!/^inspection-\d{8}-\d{4}-(config|full|files)\.tar\.gz$/.test(name)) return bad(res, '文件名不合法。', 400);
+      try { fs.unlinkSync(path.join(BACKUP_DIR, name)); } catch (e) { return bad(res, '删除失败：' + (e && e.message), 500); }
+      return ok(res, null);
+    }
+
+    return bad(res, '未知的备份接口：' + p, 404);
   }
 
   if (p === '/api/auth/password' && method === 'POST') {
@@ -3802,6 +4289,14 @@ server.headersTimeout = 70000;
 server.listen(PORT, '0.0.0.0', function () {
   console.log('巡检台账服务已启动: ' + (TLS_ON ? 'https' : 'http') + '://0.0.0.0:' + PORT +
     '  APP_DIR=' + APP_DIR + '  DB=' + DB_FILE + (TLS_ON ? '  TLS=on' : '  TLS=off（未找到证书）'));
+  /* 备份调度：每分钟检查一次定时任务是否到点。容器重启后靠库里的 next_at 续上，
+     不会因为停机而漏掉一整天的任务，也不会重复执行。 */
+  setInterval(function () {
+    backupTick().catch(function (e) { console.error('[backup] 调度检查失败：' + (e && e.message)); });
+  }, 60 * 1000).unref();
+  setTimeout(function () {
+    backupTick().catch(function (e) { console.error('[backup] 首次调度检查失败：' + (e && e.message)); });
+  }, 20 * 1000).unref();
 });
 
 /* 明文入口只做跳转，避免用户按 IP 直接访问时停在 http 上 */

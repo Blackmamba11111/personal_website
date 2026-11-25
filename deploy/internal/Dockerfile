@@ -42,6 +42,18 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     soffice --version
 
+# ---- 备份下发：scp / sftp / tftp 客户端 ----
+# 单独成层：这三包体积很小，独立构建可复用上面 LibreOffice 层的缓存，
+# 避免每次改这里都要重下几百 MB 的字体与办公套件。
+#   openssh-client 提供 ssh / scp / sftp；sshpass 让「密码认证」可用（-e 走环境变量，不上命令行）；
+#   tftp-hpa 提供 /usr/bin/tftp 客户端。
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends openssh-client sshpass tftp-hpa ca-certificates; \
+    rm -rf /var/lib/apt/lists/*; \
+    scp -V 2>&1 | head -1 || true; \
+    tar --version | head -1
+
 COPY . .
 
 RUN mkdir -p /data /data/preview
