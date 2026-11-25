@@ -1,6 +1,7 @@
-/* 备份与恢复 · admin 功能页（2026-11-25）
+/* 备份与恢复 · admin 功能页（2026-11-25 改版：技术手册风）
  *
  * 独立成文件：主页身体积守卫 614400 B，余量只有百来字节，本页只放这里。
+ * 样式外置到 assets/backup.css，本文件只在打开时注入一个 link。
  * 依赖主页面 window.__opBridge 暴露的 esc / toast / isAdmin；
  * 但请求与下载自己实现（备份包 190MB，需要原始流与上传进度，桥接的 JSON api 不够用）。
  *
@@ -9,6 +10,10 @@
  *   2. 定时任务：逐条自定义内容档位、每天/每周、时间、保留份数、下发目标
  *   3. 目标服务器：scp / sftp / tftp，密码或私钥认证，可配多台，支持连通性测试
  *   4. 备份文件：下载到本机、删除、以及用任意一包反向还原；也支持上传本机备份包还原
+ *
+ * 2026-11-25 修：原 #bkFiles 同时用作「巡检报告」复选框与文件列表容器，
+ * renderFiles 会把列表 HTML 写进复选框，导致备份文件列表永远渲染不出来。
+ * 列表容器改为 #bkFileList，复选框保留 #bkFiles。
  */
 (function () {
   'use strict';
@@ -58,32 +63,16 @@
   var WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   function scopeLabel(s) { return s === 'full' ? '配置+报告' : (s === 'files' ? '仅巡检报告' : '配置与台账'); }
   function protoLabel(p) { return String(p || '').toUpperCase(); }
+  function sep() { return '<i>·</i>'; }
 
-  /* ---------------- 样式 ---------------- */
+  /* ---------------- 样式（外置） ---------------- */
   function style() {
-    if (byId('bkStyle')) return;
-    var st = document.createElement('style');
-    st.id = 'bkStyle';
-    st.textContent =
-      '#bkView .bk-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:12px;flex-wrap:wrap;}' +
-      '#bkView .bk-row:last-child{border-bottom:0;}' +
-      '#bkView .bk-row .grow{flex:1 1 220px;min-width:0;}' +
-      '#bkView .bk-name{font-weight:600;color:var(--text-1);}' +
-      '#bkView .bk-dim{color:var(--text-2);font-size:11.5px;}' +
-      '#bkView .bk-tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;border:1px solid var(--line);color:var(--text-2);}' +
-      '#bkView .bk-tag.on{color:var(--brand);border-color:#AFC4F5;background:#F2F7FF;}' +
-      '#bkView .bk-tag.bad{color:var(--danger-ink);border-color:#F5C9C9;background:#FFF7F7;}' +
-      '#bkView .bk-form{display:none;margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:var(--r-sm);background:#FAFBFD;}' +
-      '#bkView .bk-form.on{display:block;}' +
-      '#bkView .bk-form .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}' +
-      '#bkView .bk-form label.fl{display:block;font-size:11.5px;color:var(--text-2);margin-bottom:4px;}' +
-      '#bkView .bk-form input[type=text],#bkView .bk-form input[type=password],#bkView .bk-form input[type=number],#bkView .bk-form select,#bkView .bk-form textarea{' +
-      'width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:var(--r-sm);font-size:12px;background:#fff;}' +
-      '#bkView .bk-form textarea{min-height:56px;font-family:ui-monospace,Menlo,monospace;}' +
-      '#bkView .bk-chk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-1);margin:3px 0;cursor:pointer;}' +
-      '#bkView .bk-pick{display:flex;flex-wrap:wrap;gap:10px;}' +
-      '#bkView .bk-prog{font-size:12px;color:var(--brand);}';
-    document.head.appendChild(st);
+    if (byId('bkCss')) return;
+    var l = document.createElement('link');
+    l.id = 'bkCss';
+    l.rel = 'stylesheet';
+    l.href = '/assets/backup.css?v=1';
+    document.head.appendChild(l);
   }
 
   /* ---------------- 页面骨架 ---------------- */
@@ -95,96 +84,143 @@
     el.className = 'page';
     el.id = 'bkView';
     el.innerHTML =
-      '<div class="page-head">' +
-      '<button type="button" class="btn" id="bkBack">← 返回看板</button>' +
-      '<h2>备份与恢复</h2>' +
-      '<span class="sub" id="bkSub">配置、台账与巡检报告</span>' +
-      '<div class="spacer"></div>' +
-      '<button type="button" class="btn" id="bkRefresh">刷新</button>' +
+      '<div class="bk-mast">' +
+        '<div>' +
+          '<div class="bk-kicker">Admin · Backup / Restore</div>' +
+          '<h1>备份与恢复</h1>' +
+          '<p class="bk-lead" id="bkSub">配置、台账与巡检报告的统一备份出口</p>' +
+        '</div>' +
+        '<div class="bk-mast-r">' +
+          '<button type="button" class="bk-btn" id="bkRefresh">刷新状态</button>' +
+          '<button type="button" class="bk-btn ghost" id="bkBack">← 返回看板</button>' +
+        '</div>' +
       '</div>' +
-      '<div class="page-body">' +
+      '<div class="bk-body"><div class="bk-wrap">' +
 
-      '<div class="ucard">' +
-      '<div class="m-caption">立即备份</div>' +
-      '<div class="hint" id="bkInfo">加载中…</div>' +
-      '<div class="grid2" style="grid-template-columns:1fr 1fr;gap:14px;margin-top:10px;">' +
-      '<div><label class="fl" style="font-size:11.5px;color:var(--text-2);">备份内容</label>' +
-      '<label class="bk-chk"><input type="checkbox" id="bkDb" checked> 配置与台账（全库快照）</label>' +
-      '<label class="bk-chk"><input type="checkbox" id="bkFiles"> 巡检报告实体（附件原件）</label>' +
-      '<div class="hint" id="bkSizeHint"></div></div>' +
-      '<div><label class="fl" style="font-size:11.5px;color:var(--text-2);">同时下发到（可多选）</label>' +
-      '<div class="bk-pick" id="bkTargetPick"><span class="bk-dim">暂无目标服务器</span></div>' +
-      '<div class="hint">不选则只保存在服务器本地，可随时下载。</div></div>' +
-      '</div>' +
-      '<div style="display:flex;align-items:center;gap:10px;margin-top:12px;">' +
-      '<button type="button" class="btn primary" id="bkRun">开始备份</button>' +
-      '<span class="bk-prog" id="bkProg"></span>' +
-      '</div>' +
-      '</div>' +
+        '<div class="bk-readout" id="bkReadout"></div>' +
+        '<div class="bk-alert" id="bkInfo"></div>' +
 
-      '<div class="ucard">' +
-      '<div class="m-caption">定时任务' +
-      '<button type="button" class="btn" id="bkTaskNew" style="float:right">+ 新建任务</button></div>' +
-      '<div id="bkTaskList"><div class="hint">加载中…</div></div>' +
-      '<div class="bk-form" id="bkTaskForm">' +
-      '<div class="grid2">' +
-      '<div><label class="fl">任务名称</label><input type="text" id="bkTName" placeholder="例如：每日配置备份"></div>' +
-      '<div><label class="fl">执行时间（HH:MM）</label><input type="text" id="bkTTime" value="02:30" placeholder="02:30"></div>' +
-      '<div><label class="fl">周期</label><select id="bkTFreq"><option value="daily">每天</option><option value="weekly">每周</option></select></div>' +
-      '<div><label class="fl">星期（每周有效）</label><select id="bkTWeek">' +
-      '<option value="0">周日</option><option value="1">周一</option><option value="2">周二</option>' +
-      '<option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option>' +
-      '</select></div>' +
-      '<div><label class="fl">保留份数（服务器本地）</label><input type="number" id="bkTKeep" min="1" max="365" value="7"></div>' +
-      '<div><label class="fl">状态</label><label class="bk-chk"><input type="checkbox" id="bkTEnabled" checked> 启用</label></div>' +
-      '</div>' +
-      '<div style="margin-top:8px;"><label class="fl">备份内容</label>' +
-      '<label class="bk-chk"><input type="checkbox" id="bkTDb" checked> 配置与台账（全库快照）</label>' +
-      '<label class="bk-chk"><input type="checkbox" id="bkTFiles"> 巡检报告实体</label></div>' +
-      '<div style="margin-top:8px;"><label class="fl">下发目标</label><div class="bk-pick" id="bkTTargets"></div></div>' +
-      '<div style="margin-top:12px;display:flex;gap:8px;">' +
-      '<button type="button" class="btn primary" id="bkTSave">保存任务</button>' +
-      '<button type="button" class="btn" id="bkTCancel">取消</button>' +
-      '</div></div>' +
-      '</div>' +
+        /* 01 立即备份 */
+        '<section class="bk-sec">' +
+          '<div class="bk-num">01</div>' +
+          '<div>' +
+            '<div class="bk-sec-head"><div>' +
+              '<h2>立即备份</h2>' +
+              '<p>生成一致快照包并保存在服务器本地；可同时下发到已启用的目标机。</p>' +
+            '</div></div>' +
+            '<div class="bk-choose">' +
+              '<label class="bk-opt"><input type="checkbox" id="bkDb" checked>' +
+                '<span class="bk-opt-box"><span class="bk-opt-t"><i></i>配置与台账</span>' +
+                '<em>全库快照 · <span id="bkDbSize">—</span></em></span></label>' +
+              '<label class="bk-opt"><input type="checkbox" id="bkFiles">' +
+                '<span class="bk-opt-box"><span class="bk-opt-t"><i></i>巡检报告实体</span>' +
+                '<em>附件原件 · <span id="bkFilesSize">—</span></em></span></label>' +
+            '</div>' +
+            '<div class="bk-field">' +
+              '<span class="bk-label">下发至目标服务器 · 可多选</span>' +
+              '<div class="bk-chips" id="bkTargetPick"></div>' +
+            '</div>' +
+            '<div class="bk-fire">' +
+              '<button type="button" class="bk-btn cta" id="bkRun">开始备份</button>' +
+              '<span class="bk-prog" id="bkProg"></span>' +
+            '</div>' +
+            '<p class="bk-note" id="bkSizeHint"></p>' +
+          '</div>' +
+        '</section>' +
 
-      '<div class="ucard">' +
-      '<div class="m-caption">目标服务器（scp / sftp / tftp）' +
-      '<button type="button" class="btn" id="bkTargetNew" style="float:right">+ 新增目标</button></div>' +
-      '<div id="bkTargetList"><div class="hint">加载中…</div></div>' +
-      '<div class="bk-form" id="bkTargetForm">' +
-      '<div class="grid2">' +
-      '<div><label class="fl">名称</label><input type="text" id="bkGName" placeholder="例如：备份服务器A"></div>' +
-      '<div><label class="fl">协议</label><select id="bkGProto"><option value="scp">SCP</option><option value="sftp">SFTP</option><option value="tftp">TFTP</option></select></div>' +
-      '<div><label class="fl">主机地址</label><input type="text" id="bkGHost" placeholder="10.1.114.200"></div>' +
-      '<div><label class="fl">端口</label><input type="number" id="bkGPort" value="22"></div>' +
-      '<div><label class="fl">登录用户（tftp 免填）</label><input type="text" id="bkGUser" placeholder="root"></div>' +
-      '<div><label class="fl">认证方式</label><select id="bkGAuth"><option value="password">密码</option><option value="key">私钥</option></select></div>' +
-      '<div><label class="fl">远端目录（tftp 免填，留空为默认）</label><input type="text" id="bkGDir" placeholder="/opt/backup"></div>' +
-      '<div><label class="fl">状态</label><label class="bk-chk"><input type="checkbox" id="bkGEnabled" checked> 启用</label></div>' +
-      '</div>' +
-      '<div style="margin-top:8px;"><label class="fl" id="bkGSecretLabel">密码</label>' +
-      '<textarea id="bkGSecret" placeholder="留空表示不修改已保存的凭据"></textarea>' +
-      '<div class="hint">凭据以 AES-256-GCM 加密存放在数据库中，界面不回显。</div></div>' +
-      '<div style="margin-top:12px;display:flex;gap:8px;">' +
-      '<button type="button" class="btn primary" id="bkGSave">保存目标</button>' +
-      '<button type="button" class="btn" id="bkGCancel">取消</button>' +
-      '</div></div>' +
-      '</div>' +
+        /* 02 定时任务 */
+        '<section class="bk-sec">' +
+          '<div class="bk-num">02</div>' +
+          '<div>' +
+            '<div class="bk-sec-head"><div>' +
+              '<h2>定时任务</h2>' +
+              '<p>按日或按周自动打包。容器重启后按库中记录的 next_at 续跑，不漏不重。</p>' +
+            '</div><div class="bk-sec-act">' +
+              '<button type="button" class="bk-btn" id="bkTaskNew">+ 新建任务</button>' +
+            '</div></div>' +
+            '<div class="bk-list" id="bkTaskList"></div>' +
+            '<div class="bk-form" id="bkTaskForm">' +
+              '<div class="bk-grid">' +
+                '<div class="bk-fld"><span class="bk-label">任务名称</span><input type="text" id="bkTName" placeholder="每日配置备份"></div>' +
+                '<div class="bk-fld"><span class="bk-label">执行时间 · HH:MM</span><input type="text" id="bkTTime" value="02:30" placeholder="02:30"></div>' +
+                '<div class="bk-fld"><span class="bk-label">周期</span><select id="bkTFreq"><option value="daily">每天</option><option value="weekly">每周</option></select></div>' +
+                '<div class="bk-fld"><span class="bk-label">星期 · 每周有效</span><select id="bkTWeek">' +
+                  '<option value="0">周日</option><option value="1">周一</option><option value="2">周二</option>' +
+                  '<option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option>' +
+                '</select></div>' +
+                '<div class="bk-fld"><span class="bk-label">本地保留份数</span><input type="number" id="bkTKeep" min="1" max="365" value="7"></div>' +
+                '<div class="bk-fld"><span class="bk-label">状态</span><label class="bk-check"><input type="checkbox" id="bkTEnabled" checked> 启用</label></div>' +
+              '</div>' +
+              '<div class="bk-field mt"><span class="bk-label">备份内容</span>' +
+                '<div class="bk-chips">' +
+                  '<label class="bk-chip"><input type="checkbox" id="bkTDb" checked><span class="bk-chip-t">配置与台账</span></label>' +
+                  '<label class="bk-chip"><input type="checkbox" id="bkTFiles"><span class="bk-chip-t">巡检报告</span></label>' +
+                '</div>' +
+              '</div>' +
+              '<div class="bk-field mt"><span class="bk-label">下发目标</span>' +
+                '<div class="bk-chips" id="bkTTargets"></div>' +
+              '</div>' +
+              '<div class="bk-form-foot">' +
+                '<button type="button" class="bk-btn cta" id="bkTSave">保存任务</button>' +
+                '<button type="button" class="bk-btn" id="bkTCancel">取消</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</section>' +
 
-      '<div class="ucard">' +
-      '<div class="m-caption">备份文件与恢复</div>' +
-      '<div id="bkFiles"><div class="hint">加载中…</div></div>' +
-      '<div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
-      '<button type="button" class="btn" id="bkUpBtn">上传备份包恢复…</button>' +
-      '<input type="file" id="bkUpFile" accept=".gz,.tgz,application/gzip" style="display:none">' +
-      '<span class="bk-prog" id="bkUpProg"></span>' +
-      '</div>' +
-      '<div class="hint" style="margin-top:6px;">恢复会先为当前数据留一份回滚点，然后替换数据库与附件目录，并让所有用户重新登录。</div>' +
-      '<div id="bkRuns" class="hint" style="margin-top:12px;"></div>' +
-      '</div>' +
+        /* 03 目标服务器 */
+        '<section class="bk-sec">' +
+          '<div class="bk-num">03</div>' +
+          '<div>' +
+            '<div class="bk-sec-head"><div>' +
+              '<h2>目标服务器</h2>' +
+              '<p>支持 scp / sftp / tftp。凭据以 AES-256-GCM 加密存放，界面不回显。</p>' +
+            '</div><div class="bk-sec-act">' +
+              '<button type="button" class="bk-btn" id="bkTargetNew">+ 新增目标</button>' +
+            '</div></div>' +
+            '<div class="bk-list" id="bkTargetList"></div>' +
+            '<div class="bk-form" id="bkTargetForm">' +
+              '<div class="bk-grid">' +
+                '<div class="bk-fld"><span class="bk-label">名称</span><input type="text" id="bkGName" placeholder="备份服务器 A"></div>' +
+                '<div class="bk-fld"><span class="bk-label">协议</span><select id="bkGProto"><option value="scp">SCP</option><option value="sftp">SFTP</option><option value="tftp">TFTP</option></select></div>' +
+                '<div class="bk-fld"><span class="bk-label">主机地址</span><input type="text" id="bkGHost" placeholder="10.1.114.200"></div>' +
+                '<div class="bk-fld"><span class="bk-label">端口</span><input type="number" id="bkGPort" value="22"></div>' +
+                '<div class="bk-fld"><span class="bk-label">登录用户 · tftp 免填</span><input type="text" id="bkGUser" placeholder="root"></div>' +
+                '<div class="bk-fld"><span class="bk-label">认证方式</span><select id="bkGAuth"><option value="password">密码</option><option value="key">私钥</option></select></div>' +
+                '<div class="bk-fld"><span class="bk-label">远端目录 · 留空为默认</span><input type="text" id="bkGDir" placeholder="/opt/backup"></div>' +
+                '<div class="bk-fld"><span class="bk-label">状态</span><label class="bk-check"><input type="checkbox" id="bkGEnabled" checked> 启用</label></div>' +
+              '</div>' +
+              '<div class="bk-field mt"><span class="bk-label" id="bkGSecretLabel">密码</span>' +
+                '<div class="bk-fld"><textarea id="bkGSecret" placeholder="留空表示不修改已保存的凭据"></textarea></div>' +
+              '</div>' +
+              '<div class="bk-form-foot">' +
+                '<button type="button" class="bk-btn cta" id="bkGSave">保存目标</button>' +
+                '<button type="button" class="bk-btn" id="bkGCancel">取消</button>' +
+                '<p class="bk-note">凭据加密存放，保存后仅显示「已设置」。</p>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</section>' +
 
-      '</div>';
+        /* 04 文件与恢复 */
+        '<section class="bk-sec">' +
+          '<div class="bk-num">04</div>' +
+          '<div>' +
+            '<div class="bk-sec-head"><div>' +
+              '<h2>备份文件与恢复</h2>' +
+              '<p>任意一包都可反向还原。恢复前自动留回滚点，完成后所有会话失效、需重新登录。</p>' +
+            '</div><div class="bk-sec-act">' +
+              '<button type="button" class="bk-btn" id="bkUpBtn">上传备份包恢复</button>' +
+              '<input type="file" id="bkUpFile" accept=".gz,.tgz,application/gzip" style="display:none">' +
+              '<span class="bk-prog" id="bkUpProg"></span>' +
+            '</div></div>' +
+            '<div class="bk-file-head"><span>文件</span><span>大小</span><span>生成时间</span><span>操作</span></div>' +
+            '<div class="bk-list" id="bkFileList"></div>' +
+            '<div class="bk-log" id="bkRuns"></div>' +
+          '</div>' +
+        '</section>' +
+
+      '</div></div>';
     document.body.appendChild(el);
 
     el.querySelector('#bkBack').addEventListener('click', function () { el.classList.remove('on'); });
@@ -222,13 +258,34 @@
     });
   }
 
+  function cell(v, label, small, title) {
+    return '<div class="bk-cell">' +
+      '<b' + (small ? ' class="sm"' : '') + (title ? ' title="' + esc(title) + '"' : '') + '>' + v + '</b>' +
+      '<span>' + esc(label) + '</span></div>';
+  }
+
+  function renderReadout() {
+    var d = OV.sizes || {};
+    var filesBytes = (d.filesBytes && d.filesBytes.bytes) || 0;
+    var filesCount = (d.filesBytes && d.filesBytes.count) || 0;
+    byId('bkReadout').innerHTML =
+      cell(esc(OV.dir), '存储位置', true, OV.dir) +
+      cell(fmtSize(d.dbBytes), '配置与台账') +
+      cell(fmtSize(filesBytes), '巡检报告 · ' + filesCount + ' 个文件') +
+      cell((OV.targets || []).length + ' / ' + (OV.tasks || []).length, '异地目标 / 定时任务');
+  }
+
   function render() {
     if (!OV) return;
     var d = OV.sizes || {};
     var filesBytes = (d.filesBytes && d.filesBytes.bytes) || 0;
     var filesCount = (d.filesBytes && d.filesBytes.count) || 0;
-    byId('bkInfo').innerHTML = '服务器：<b>' + esc(OV.dir) + '</b>　·　配置与台账 <b>' +
-      fmtSize(d.dbBytes) + '</b>　·　巡检报告 <b>' + fmtSize(filesBytes) + '</b>（' + filesCount + ' 个文件）';
+
+    byId('bkInfo').textContent = '';
+    renderReadout();
+    if (byId('bkDbSize')) byId('bkDbSize').textContent = fmtSize(d.dbBytes);
+    if (byId('bkFilesSize')) byId('bkFilesSize').textContent = fmtSize(filesBytes) + '（' + filesCount + ' 个）';
+
     var tools = OV.tools || {};
     var miss = [];
     if (!tools.tar) miss.push('tar');
@@ -237,9 +294,11 @@
     if (!tools.tftp) miss.push('tftp');
     if (!tools.sshpass) miss.push('sshpass');
     byId('bkSizeHint').innerHTML = miss.length
-      ? '<span style="color:var(--danger-ink)">缺少命令：' + miss.join('、') + '，对应通道不可用（需重建镜像）</span>'
-      : '已就绪：tar / scp / sftp / tftp / sshpass';
-    byId('bkSub').textContent = OV.restoring ? '正在恢复数据…' : '配置、台账与巡检报告';
+      ? '<span class="bk-st bad">缺少命令：' + miss.join('、') + '，对应通道不可用（需重建镜像）</span>'
+      : '已就绪 ' + sep() + ' tar / scp / sftp / tftp / sshpass';
+    byId('bkSub').textContent = OV.restoring
+      ? '正在恢复数据，请勿关闭页面…'
+      : '配置、台账与巡检报告的统一备份出口';
 
     renderTargetPick();
     renderTargets();
@@ -252,33 +311,47 @@
   function renderTargetPick() {
     var box = byId('bkTargetPick');
     var list = (OV.targets || []).filter(function (t) { return t.enabled; });
-    if (!list.length) { box.innerHTML = '<span class="bk-dim">暂无启用的目标服务器</span>'; return; }
+    if (!list.length) { box.innerHTML = '<span class="bk-note">暂无启用的目标服务器，备份只留在本机。</span>'; return; }
     var old = {};
     Array.prototype.forEach.call(box.querySelectorAll('input[type=checkbox]'), function (c) { if (c.checked) old[c.value] = 1; });
     box.innerHTML = list.map(function (t) {
-      return '<label class="bk-chk"><input type="checkbox" value="' + esc(t.id) + '"' +
-        (old[t.id] ? ' checked' : '') + '> ' + esc(t.name || t.host) + '（' + protoLabel(t.proto) + '）</label>';
+      return '<label class="bk-chip"><input type="checkbox" value="' + esc(t.id) + '"' +
+        (old[t.id] ? ' checked' : '') + '><span class="bk-chip-t">' + esc(t.name || t.host) +
+        '<small>' + protoLabel(t.proto) + '</small></span></label>';
     }).join('');
   }
 
   function renderTargets() {
     var box = byId('bkTargetList');
     var list = OV.targets || [];
-    if (!list.length) { box.innerHTML = '<div class="hint">还没有目标服务器。需要异地备份时在这里新增。</div>'; return; }
+    if (!list.length) {
+      box.innerHTML = '<div class="bk-empty"><strong>No target</strong>' +
+        '还没有目标服务器，备份只能落在本机磁盘。需要异地副本时点右上角「新增目标」。</div>';
+      return;
+    }
     box.innerHTML = list.map(function (t) {
-      var state = t.lastOk == null ? '<span class="bk-tag">未测试</span>'
-        : (t.lastOk ? '<span class="bk-tag on">上次成功</span>' : '<span class="bk-tag bad">上次失败</span>');
-      return '<div class="bk-row">' +
-        '<div class="grow"><div class="bk-name">' + esc(t.name || t.host) + ' ' +
-        (t.enabled ? '' : '<span class="bk-tag">已停用</span>') + '</div>' +
-        '<div class="bk-dim">' + protoLabel(t.proto) + ' · ' + esc(t.user ? t.user + '@' : '') + esc(t.host) + ':' + t.port +
-        (t.remoteDir ? ' · ' + esc(t.remoteDir) : '') + ' · ' + (t.auth === 'key' ? '私钥' : '密码') +
-        (t.hasSecret ? '' : '（未设置凭据）') + '</div>' +
-        '<div class="bk-dim">' + state + ' ' + esc(t.lastMsg || '') + (t.lastAt ? ' · ' + fmtWhen(t.lastAt) : '') + '</div></div>' +
-        '<button type="button" class="btn" data-bk-test="' + esc(t.id) + '">测试</button>' +
-        '<button type="button" class="btn" data-bk-edit="' + esc(t.id) + '">编辑</button>' +
-        '<button type="button" class="btn" data-bk-targetdel="' + esc(t.id) + '">删除</button>' +
-        '</div>';
+      var state = t.lastOk == null ? '<span class="bk-st">未测试</span>'
+        : (t.lastOk ? '<span class="bk-st ok">上次成功</span>' : '<span class="bk-st bad">上次失败</span>');
+      var addr = protoLabel(t.proto) + ' ' + (t.user ? t.user + '@' : '') + t.host + ':' + t.port;
+      return '<div class="bk-item">' +
+        '<div class="bk-item-t">' +
+          '<div class="n">' + esc(t.name || t.host) +
+            '<em>' + protoLabel(t.proto) + '</em>' +
+            (t.enabled ? '' : '<span class="bk-st off">已停用</span>') +
+            state + '</div>' +
+          '<div class="m">' + esc(addr) +
+            (t.remoteDir ? sep() + esc(t.remoteDir) : '') +
+            sep() + (t.auth === 'key' ? '私钥' : '密码') +
+            (t.hasSecret ? '' : sep() + '<b>未设置凭据</b>') +
+            (t.lastAt ? sep() + fmtWhen(t.lastAt) : '') +
+            (t.lastMsg ? sep() + esc(t.lastMsg) : '') + '</div>' +
+        '</div>' +
+        '<div class="bk-act">' +
+          '<button type="button" class="bk-btn" data-bk-test="' + esc(t.id) + '">测试</button>' +
+          '<button type="button" class="bk-btn" data-bk-edit="' + esc(t.id) + '">编辑</button>' +
+          '<button type="button" class="bk-btn danger" data-bk-targetdel="' + esc(t.id) + '">删除</button>' +
+        '</div>' +
+      '</div>';
     }).join('');
     Array.prototype.forEach.call(box.querySelectorAll('[data-bk-test]'), function (b) {
       b.addEventListener('click', function () { testTarget(b.getAttribute('data-bk-test')); });
@@ -295,22 +368,31 @@
     var box = byId('bkTaskList');
     var list = OV.tasks || [];
     if (!list.length) {
-      box.innerHTML = '<div class="hint">暂无定时任务。建议：每日 02:30 只备配置与台账（快、小），每周日 03:00 备含报告的完整包。</div>';
+      box.innerHTML = '<div class="bk-empty"><strong>No schedule</strong>' +
+        '暂无定时任务，只能手动备份。建议先配两条：每日 02:30 只备配置（快、小），每周日 03:00 备含报告的完整包。</div>';
       return;
     }
     box.innerHTML = list.map(function (t) {
       var when = t.freq === 'weekly' ? ('每' + WEEK[t.weekday] + ' ' + t.atTime) : ('每天 ' + t.atTime);
       var content = (t.includeDb ? '配置与台账' : '') + (t.includeDb && t.includeFiles ? ' + ' : '') + (t.includeFiles ? '巡检报告' : '');
       var tg = (t.targetIds || []).length;
-      return '<div class="bk-row">' +
-        '<div class="grow"><div class="bk-name">' + esc(t.name) + ' ' + (t.enabled ? '' : '<span class="bk-tag">已停用</span>') + '</div>' +
-        '<div class="bk-dim">' + esc(when) + ' · ' + esc(content) + ' · 保留 ' + t.keep + ' 份 · ' +
-        (tg ? '下发 ' + tg + ' 台' : '仅本地') + '</div>' +
-        '<div class="bk-dim">下次：' + (t.enabled ? fmtWhen(t.nextAt) : '—') +
-        (t.lastRunAt ? ' · 上次：' + fmtWhen(t.lastRunAt) + ' ' + esc(t.lastResult || '') : '') + '</div></div>' +
-        '<button type="button" class="btn" data-bk-tedit="' + esc(t.id) + '">编辑</button>' +
-        '<button type="button" class="btn" data-bk-tdel="' + esc(t.id) + '">删除</button>' +
-        '</div>';
+      var lastBad = t.lastRunAt && /失败|fail|error/i.test(String(t.lastResult || ''));
+      return '<div class="bk-item">' +
+        '<div class="bk-item-t">' +
+          '<div class="n">' + esc(t.name) +
+            (t.enabled ? '' : '<span class="bk-st off">已停用</span>') +
+            (lastBad ? '<span class="bk-st bad">上次失败</span>' : '') + '</div>' +
+          '<div class="m">' + esc(when) + sep() + esc(content) + sep() + '保留 ' + t.keep + ' 份' +
+            sep() + (tg ? '下发 ' + tg + ' 台' : '仅本地') + '</div>' +
+          '<div class="m">' + (t.enabled ? '下次 ' + fmtWhen(t.nextAt) : '未启用') +
+            (t.lastRunAt ? sep() + '上次 ' + fmtWhen(t.lastRunAt) + (t.lastResult ? sep() + esc(t.lastResult) : '') : '') +
+            '</div>' +
+        '</div>' +
+        '<div class="bk-act">' +
+          '<button type="button" class="bk-btn" data-bk-tedit="' + esc(t.id) + '">编辑</button>' +
+          '<button type="button" class="bk-btn danger" data-bk-tdel="' + esc(t.id) + '">删除</button>' +
+        '</div>' +
+      '</div>';
     }).join('');
     Array.prototype.forEach.call(box.querySelectorAll('[data-bk-tedit]'), function (b) {
       b.addEventListener('click', function () { openTaskForm(b.getAttribute('data-bk-tedit')); });
@@ -321,17 +403,25 @@
   }
 
   function renderFiles() {
-    var box = byId('bkFiles');
+    var box = byId('bkFileList');
     var list = OV.files || [];
-    if (!list.length) { box.innerHTML = '<div class="hint">服务器上还没有备份包。</div>'; return; }
+    if (!list.length) {
+      box.innerHTML = '<div class="bk-empty"><strong>No package</strong>' +
+        '服务器上还没有备份包。用上方「开始备份」生成第一个，或上传已有的 .tar.gz 直接恢复。</div>';
+      return;
+    }
     box.innerHTML = list.map(function (f) {
-      return '<div class="bk-row">' +
-        '<div class="grow"><div class="bk-name">' + esc(f.name) + '</div>' +
-        '<div class="bk-dim">' + fmtSize(f.size) + ' · ' + esc(scopeLabel(f.scope)) + ' · ' + esc(f.at) + '</div></div>' +
-        '<button type="button" class="btn" data-bk-dl="' + esc(f.name) + '">下载</button>' +
-        '<button type="button" class="btn" data-bk-rs="' + esc(f.name) + '">用此包恢复</button>' +
-        '<button type="button" class="btn" data-bk-fdel="' + esc(f.name) + '">删除</button>' +
-        '</div>';
+      return '<div class="bk-item bk-file">' +
+        '<div class="bk-item-t"><div class="n">' + esc(f.name) + '</div>' +
+          '<div class="m">' + esc(scopeLabel(f.scope)) + '</div></div>' +
+        '<div class="sz">' + fmtSize(f.size) + '</div>' +
+        '<div class="at">' + esc(fmtWhen(f.at)) + '</div>' +
+        '<div class="bk-act">' +
+          '<button type="button" class="bk-btn" data-bk-dl="' + esc(f.name) + '">下载</button>' +
+          '<button type="button" class="bk-btn" data-bk-rs="' + esc(f.name) + '">恢复</button>' +
+          '<button type="button" class="bk-btn danger" data-bk-fdel="' + esc(f.name) + '">删除</button>' +
+        '</div>' +
+      '</div>';
     }).join('');
     Array.prototype.forEach.call(box.querySelectorAll('[data-bk-dl]'), function (b) {
       b.addEventListener('click', function () { downloadPack(b.getAttribute('data-bk-dl'), b); });
@@ -347,19 +437,25 @@
   function renderRuns() {
     var box = byId('bkRuns');
     var list = (OV.runs || []).slice(0, 8);
-    if (!list.length) { box.innerHTML = ''; return; }
-    box.innerHTML = '<div style="font-weight:600;color:var(--text-1);margin-bottom:4px;">最近记录</div>' +
+    if (!list.length) { box.innerHTML = ''; box.style.display = 'none'; return; }
+    box.style.display = '';
+    box.innerHTML = '<h3>最近记录</h3>' +
       list.map(function (r) {
-        return '<div class="bk-dim">' + fmtWhen(r.at) + ' · ' +
-          (r.kind === 'restore' ? '恢复' : (r.kind === 'schedule' ? '定时' : '手动')) + ' · ' +
-          esc(scopeLabel(r.scope)) + ' · ' + (r.ok ? '成功' : '<span style="color:var(--danger-ink)">失败</span>') +
-          ' · ' + esc(r.file || '') + (r.detail ? ' · ' + esc(r.detail) : '') + '</div>';
+        var kind = r.kind === 'restore' ? '恢复' : (r.kind === 'schedule' ? '定时' : '手动');
+        return '<div class="bk-log-row">' +
+          '<span>' + fmtWhen(r.at) + '</span>' +
+          '<span class="k">' + kind + '</span>' +
+          '<span class="d">' + esc(scopeLabel(r.scope)) + sep() +
+            (r.ok ? '成功' : '<b class="fail">失败</b>') +
+            (r.file ? sep() + esc(r.file) : '') +
+            (r.detail ? sep() + esc(r.detail) : '') + '</span>' +
+        '</div>';
       }).join('');
   }
 
   function renderProgress() {
     var el = byId('bkProg');
-    if (!OV) return;
+    if (!OV || !el) return;
     if (OV.restoring) { el.textContent = '正在恢复数据，请勿关闭页面…'; return; }
     if (OV.busy && OV.progress) { el.textContent = OV.progress.message || '处理中…'; return; }
     el.textContent = '';
@@ -414,7 +510,7 @@
   function syncProtoUI() {
     var proto = byId('bkGProto').value;
     var auth = byId('bkGAuth').value;
-    byId('bkGSecretLabel').textContent = auth === 'key' ? '私钥内容（PEM）' : '密码';
+    byId('bkGSecretLabel').textContent = auth === 'key' ? '私钥内容 · PEM' : '密码';
     byId('bkGSecret').placeholder = auth === 'key'
       ? '-----BEGIN OPENSSH PRIVATE KEY----- …'
       : '留空表示不修改已保存的密码';
@@ -504,10 +600,10 @@
     byId('bkTEnabled').checked = t ? !!t.enabled : true;
     var picks = (OV.targets || []).map(function (g) {
       var on = t && (t.targetIds || []).indexOf(g.id) >= 0;
-      return '<label class="bk-chk"><input type="checkbox" value="' + esc(g.id) + '"' + (on ? ' checked' : '') + '> ' +
-        esc(g.name || g.host) + '（' + protoLabel(g.proto) + '）</label>';
+      return '<label class="bk-chip"><input type="checkbox" value="' + esc(g.id) + '"' + (on ? ' checked' : '') + '>' +
+        '<span class="bk-chip-t">' + esc(g.name || g.host) + '<small>' + protoLabel(g.proto) + '</small></span></label>';
     }).join('');
-    byId('bkTTargets').innerHTML = picks || '<span class="bk-dim">暂无目标服务器</span>';
+    byId('bkTTargets').innerHTML = picks || '<span class="bk-note">暂无目标服务器</span>';
     byId('bkTaskForm').classList.add('on');
     byId('bkTName').focus();
   }
@@ -655,6 +751,7 @@
   }
 
   function boot() {
+    style();
     var n = 0;
     var iv = setInterval(function () { ensureEntry(); if (++n > 3600) clearInterval(iv); }, 500);
     ensureEntry();

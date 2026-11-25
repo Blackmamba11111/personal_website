@@ -1,0 +1,923 @@
+/* 备份与恢复 · 技术手册风（2026-11-25 改版）
+ *
+ * 方向：Technical Manual / 仪器面板。纸面 + 墨黑 + 信号橙，侧栏分区编号 01–04，
+ * 数字与标签一律等宽，形成「读数」质感。
+ *
+ * 独立成文件的原因：
+ *   1) 主页面（inspection-dashboard.html）有 614400 B 体积守卫，余量不足 200 B；
+ *   2) 本页样式体量远超主页面能容纳的范围，只能外置。
+ *
+ * 所有选择器都带 #bkView 前缀，避免影响看板其他区域。
+ * 字体只用系统可见族：内网 10.1.114.115 无外网，Google Fonts 不可达。
+ */
+
+#bkView {
+  --bk-ink: #12100e;
+  --bk-ink2: #55504a;
+  --bk-ink3: #8b857c;
+  --bk-paper: #fbfbf9;
+  --bk-panel: #ffffff;
+  --bk-wash: #f4f3ef;
+  --bk-line: #e0ddd6;
+  --bk-line2: #edeae4;
+  --bk-accent: #c2410c;
+  --bk-accent-soft: #fdf1ea;
+  --bk-ok: #2f6b3e;
+  --bk-bad: #a32a22;
+  --bk-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --bk-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", -apple-system, BlinkMacSystemFont, sans-serif;
+
+  background-color: var(--bk-paper);
+  background-image: none;
+  color: var(--bk-ink);
+  font-family: var(--bk-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+#bkView :focus-visible {
+  outline: 2px solid var(--bk-accent);
+  outline-offset: 2px;
+}
+
+/* ---------- 顶部 masthead ---------- */
+#bkView .bk-mast {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px 28px 16px;
+  background: var(--bk-panel);
+  border-bottom: 1px solid var(--bk-ink);
+}
+
+#bkView .bk-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--bk-mono);
+  font-size: 10px;
+  letter-spacing: .19em;
+  text-transform: uppercase;
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-kicker::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  background: var(--bk-accent);
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+#bkView .bk-mast h1 {
+  margin: 7px 0 0;
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -.025em;
+  line-height: 1.1;
+  color: var(--bk-ink);
+}
+
+#bkView .bk-lead {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--bk-ink2);
+}
+
+#bkView .bk-mast-r {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding-bottom: 2px;
+}
+
+/* ---------- 按钮 ---------- */
+#bkView .bk-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 31px;
+  padding: 0 12px;
+  border: 1px solid var(--bk-line);
+  border-radius: 2px;
+  background: var(--bk-panel);
+  color: var(--bk-ink2);
+  font-family: var(--bk-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color .16s ease, color .16s ease, background .16s ease, box-shadow .16s ease;
+}
+
+#bkView .bk-btn:hover {
+  border-color: var(--bk-ink);
+  color: var(--bk-ink);
+}
+
+#bkView .bk-btn:active {
+  transform: translateY(1px);
+}
+
+#bkView .bk-btn[disabled] {
+  opacity: .45;
+  cursor: default;
+  transform: none;
+}
+
+#bkView .bk-btn.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+#bkView .bk-btn.ghost:hover {
+  background: var(--bk-wash);
+  border-color: var(--bk-line);
+}
+
+#bkView .bk-btn.danger:hover {
+  border-color: var(--bk-bad);
+  color: var(--bk-bad);
+}
+
+#bkView .bk-btn.cta {
+  height: 38px;
+  padding: 0 22px;
+  border-color: var(--bk-accent);
+  background: var(--bk-accent);
+  color: #fff;
+  font-family: var(--bk-mono);
+  font-size: 12.5px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+#bkView .bk-btn.cta:hover {
+  background: #a5370a;
+  border-color: #a5370a;
+  color: #fff;
+}
+
+/* ---------- 主体 ---------- */
+#bkView .bk-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 28px 64px;
+}
+
+#bkView .bk-wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+/* ---------- 读数条 ---------- */
+#bkView .bk-readout {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr 1fr;
+  border-bottom: 1px solid var(--bk-line);
+}
+
+#bkView .bk-cell {
+  padding: 16px 18px 15px 0;
+  border-right: 1px solid var(--bk-line2);
+  min-width: 0;
+}
+
+#bkView .bk-cell:last-child {
+  border-right: 0;
+  padding-right: 0;
+}
+
+#bkView .bk-cell b {
+  display: block;
+  font-family: var(--bk-mono);
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -.02em;
+  color: var(--bk-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#bkView .bk-cell b.sm {
+  font-size: 13px;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+#bkView .bk-cell span {
+  display: block;
+  margin-top: 5px;
+  font-family: var(--bk-mono);
+  font-size: 9.5px;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-alert {
+  margin-top: 0;
+  padding: 10px 14px;
+  border-left: 2px solid var(--bk-bad);
+  background: #fdf3f2;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--bk-bad);
+}
+
+#bkView .bk-alert:empty {
+  display: none;
+}
+
+/* ---------- 分区 ---------- */
+#bkView .bk-sec {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr);
+  gap: 0 8px;
+  padding: 30px 0 4px;
+  border-top: 1px solid var(--bk-line);
+  margin-top: 30px;
+}
+
+#bkView .bk-sec:first-of-type {
+  border-top: 0;
+  margin-top: 8px;
+  padding-top: 22px;
+}
+
+#bkView .bk-num {
+  font-family: var(--bk-mono);
+  font-size: 34px;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -.06em;
+  color: #cdc7bb;
+  padding-top: 1px;
+  user-select: none;
+}
+
+#bkView .bk-sec-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+#bkView .bk-sec-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  color: var(--bk-ink);
+}
+
+#bkView .bk-sec-head p {
+  margin: 5px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--bk-ink2);
+  max-width: 62ch;
+}
+
+#bkView .bk-sec-act {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* ---------- 内容选择（大块） ---------- */
+#bkView .bk-choose {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+/* 选中态一律用「input:checked + 容器」相邻兄弟选择器，不依赖 :has()——
+   :has 在此页面出现过 matches 为真但计算样式不更新的情况，不能赌。 */
+#bkView .bk-opt {
+  position: relative;
+  display: block;
+  cursor: pointer;
+}
+
+#bkView .bk-opt input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#bkView .bk-opt-box {
+  position: relative;
+  display: block;
+  padding: 13px 15px 12px;
+  border: 1px solid #d5d0c4;
+  border-radius: 2px;
+  background: var(--bk-panel);
+  transition: border-color .16s ease, background .16s ease;
+}
+
+#bkView .bk-opt:hover .bk-opt-box {
+  border-color: #9c9587;
+}
+
+#bkView .bk-opt .bk-opt-t {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bk-ink);
+}
+
+#bkView .bk-opt .bk-opt-t i {
+  width: 13px;
+  height: 13px;
+  border: 1px solid #a8a196;
+  border-radius: 1px;
+  flex: 0 0 auto;
+  position: relative;
+}
+
+#bkView .bk-opt em {
+  display: block;
+  margin-top: 5px;
+  font-style: normal;
+  font-family: var(--bk-mono);
+  font-size: 11px;
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-opt input:checked + .bk-opt-box {
+  border-color: var(--bk-ink);
+  background: #fff;
+}
+
+#bkView .bk-opt input:checked + .bk-opt-box::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: 3px;
+  background: var(--bk-accent);
+}
+
+#bkView .bk-opt input:checked + .bk-opt-box .bk-opt-t i {
+  border-color: var(--bk-ink);
+  background: var(--bk-ink);
+}
+
+#bkView .bk-opt input:checked + .bk-opt-box .bk-opt-t i::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0px;
+  width: 4px;
+  height: 7px;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(41deg);
+}
+
+/* ---------- 目标芯片 ---------- */
+#bkView .bk-field {
+  margin-bottom: 18px;
+}
+
+#bkView .bk-field.mt {
+  margin: 16px 0 0;
+}
+
+#bkView .bk-label {
+  display: block;
+  margin-bottom: 7px;
+  font-family: var(--bk-mono);
+  font-size: 9.5px;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+#bkView .bk-chip {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+#bkView .bk-chip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#bkView .bk-chip-t {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--bk-line);
+  border-radius: 999px;
+  background: var(--bk-panel);
+  font-size: 12px;
+  color: var(--bk-ink2);
+  transition: border-color .16s ease, background .16s ease, color .16s ease;
+}
+
+#bkView .bk-chip:hover .bk-chip-t {
+  border-color: #9c9587;
+  color: var(--bk-ink);
+}
+
+#bkView .bk-chip input:checked + .bk-chip-t {
+  border-color: var(--bk-ink);
+  background: var(--bk-ink);
+  color: #fff;
+}
+
+#bkView .bk-chip small {
+  font-family: var(--bk-mono);
+  font-size: 9.5px;
+  letter-spacing: .04em;
+  opacity: .72;
+}
+
+#bkView .bk-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-note b {
+  color: var(--bk-ink2);
+  font-weight: 500;
+}
+
+#bkView .bk-empty {
+  padding: 22px 18px;
+  border: 1px dashed #d8d3c8;
+  border-radius: 2px;
+  background: #fdfcfa;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-empty strong {
+  display: block;
+  margin-bottom: 3px;
+  font-family: var(--bk-mono);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--bk-ink2);
+  font-weight: 500;
+}
+
+/* ---------- 列表 ---------- */
+#bkView .bk-list {
+  border-top: 1px solid var(--bk-line);
+}
+
+#bkView .bk-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 15px 2px 14px 12px;
+  border-bottom: 1px solid var(--bk-line2);
+  transition: background .16s ease, box-shadow .16s ease;
+}
+
+#bkView .bk-item:hover {
+  background: #f7f6f2;
+  box-shadow: inset 2px 0 0 var(--bk-accent);
+}
+
+#bkView .bk-item-t {
+  min-width: 0;
+}
+
+#bkView .bk-item-t .n {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bk-ink);
+  line-height: 1.35;
+}
+
+#bkView .bk-item-t .n em {
+  font-style: normal;
+  font-family: var(--bk-mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: .02em;
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-item-t .m {
+  margin-top: 5px;
+  font-family: var(--bk-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--bk-ink3);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+#bkView .bk-item-t .m i {
+  font-style: normal;
+  color: #c4beb2;
+  padding: 0 3px;
+}
+
+#bkView .bk-item-t .m b {
+  font-weight: 500;
+  color: var(--bk-ink2);
+}
+
+#bkView .bk-act {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+#bkView .bk-act .bk-btn {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+/* 状态点 */
+#bkView .bk-st {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--bk-mono);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--bk-ink3);
+  white-space: nowrap;
+}
+
+#bkView .bk-st::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #c4beb2;
+  flex: 0 0 auto;
+}
+
+#bkView .bk-st.ok {
+  color: var(--bk-ok);
+}
+
+#bkView .bk-st.ok::before {
+  background: #3f8a52;
+}
+
+#bkView .bk-st.bad {
+  color: var(--bk-bad);
+}
+
+#bkView .bk-st.bad::before {
+  background: #c0392f;
+}
+
+#bkView .bk-st.off::before {
+  background: #c4beb2;
+  box-shadow: inset 0 0 0 1px #fbfbf9;
+}
+
+/* ---------- 文件行（四列） ---------- */
+#bkView .bk-file {
+  grid-template-columns: minmax(0, 1fr) 88px 132px 152px;
+  gap: 14px;
+}
+
+#bkView .bk-file .sz,
+#bkView .bk-file .at {
+  font-family: var(--bk-mono);
+  font-size: 11.5px;
+  color: var(--bk-ink2);
+  text-align: right;
+  white-space: nowrap;
+}
+
+#bkView .bk-file .at {
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-file-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 132px 152px;
+  gap: 14px;
+  padding: 0 2px 8px 12px;
+  border-bottom: 1px solid var(--bk-line);
+  font-family: var(--bk-mono);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: #7a746a;
+}
+
+#bkView .bk-file-head span:nth-child(2),
+#bkView .bk-file-head span:nth-child(3) {
+  text-align: right;
+}
+
+/* ---------- 表单 ---------- */
+#bkView .bk-form {
+  display: none;
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px solid var(--bk-line);
+  border-radius: 2px;
+  background: var(--bk-wash);
+}
+
+#bkView .bk-form.on {
+  display: block;
+  animation: bkFade .2s ease both;
+}
+
+#bkView .bk-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 16px;
+}
+
+#bkView .bk-fld {
+  min-width: 0;
+}
+
+#bkView .bk-fld > input[type=text],
+#bkView .bk-fld > input[type=password],
+#bkView .bk-fld > input[type=number],
+#bkView .bk-fld > select,
+#bkView .bk-fld > textarea {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d9d4c9;
+  border-radius: 2px;
+  background: #fff;
+  font-family: var(--bk-sans);
+  font-size: 12.5px;
+  color: var(--bk-ink);
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+
+#bkView .bk-fld > textarea {
+  height: auto;
+  min-height: 64px;
+  padding: 8px 10px;
+  font-family: var(--bk-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+#bkView .bk-fld > input:focus,
+#bkView .bk-fld > select:focus,
+#bkView .bk-fld > textarea:focus {
+  outline: none;
+  border-color: var(--bk-accent);
+  box-shadow: 0 0 0 3px rgba(194, 65, 12, .1);
+}
+
+#bkView .bk-fld > input[disabled],
+#bkView .bk-fld > select[disabled],
+#bkView .bk-fld > textarea[disabled] {
+  background: #f0eee9;
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-form-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--bk-line);
+}
+
+#bkView .bk-form-foot .bk-note {
+  margin-left: auto;
+  text-align: right;
+}
+
+/* 复选框行 */
+#bkView .bk-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--bk-ink);
+  cursor: pointer;
+  padding: 3px 0;
+}
+
+#bkView .bk-check input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--bk-ink);
+}
+
+/* ---------- 主操作条 ---------- */
+#bkView .bk-fire {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+#bkView .bk-fire + .bk-note {
+  margin-top: 11px;
+}
+
+#bkView .bk-prog {
+  font-family: var(--bk-mono);
+  font-size: 11.5px;
+  letter-spacing: .02em;
+  color: var(--bk-accent);
+}
+
+#bkView .bk-prog:empty {
+  display: none;
+}
+
+/* ---------- 时间轴 ---------- */
+#bkView .bk-log {
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--bk-line);
+}
+
+#bkView .bk-log h3 {
+  margin: 0 0 12px;
+  font-family: var(--bk-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--bk-ink3);
+}
+
+#bkView .bk-log-row {
+  display: grid;
+  grid-template-columns: 118px 52px minmax(0, 1fr);
+  gap: 14px;
+  padding: 7px 0;
+  font-family: var(--bk-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--bk-ink3);
+  border-bottom: 1px dotted #e6e2d9;
+}
+
+#bkView .bk-log-row:last-child {
+  border-bottom: 0;
+}
+
+#bkView .bk-log-row .k {
+  color: var(--bk-ink2);
+}
+
+#bkView .bk-log-row .d {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#bkView .bk-log-row .fail {
+  color: var(--bk-bad);
+  font-weight: 500;
+}
+
+/* ---------- 入场 ---------- */
+@keyframes bkFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes bkRise {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: none; }
+}
+
+#bkView.on .bk-sec {
+  animation: bkRise .4s cubic-bezier(.22, .7, .3, 1) both;
+}
+
+#bkView.on .bk-sec:nth-of-type(2) { animation-delay: .05s; }
+#bkView.on .bk-sec:nth-of-type(3) { animation-delay: .1s; }
+#bkView.on .bk-sec:nth-of-type(4) { animation-delay: .15s; }
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 900px) {
+  #bkView .bk-mast {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 16px 18px 14px;
+  }
+
+  #bkView .bk-body {
+    padding: 0 18px 48px;
+  }
+
+  #bkView .bk-readout {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  #bkView .bk-cell {
+    padding: 12px 14px 12px 0;
+  }
+
+  #bkView .bk-cell:nth-child(2n) {
+    border-right: 0;
+    padding-right: 0;
+  }
+
+  #bkView .bk-sec {
+    grid-template-columns: 1fr;
+    gap: 0;
+    padding-top: 24px;
+    margin-top: 24px;
+  }
+
+  #bkView .bk-num {
+    font-size: 12px;
+    letter-spacing: .14em;
+    color: var(--bk-accent);
+    margin-bottom: 8px;
+  }
+
+  #bkView .bk-choose,
+  #bkView .bk-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #bkView .bk-item,
+  #bkView .bk-file {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding-left: 10px;
+  }
+
+  #bkView .bk-file .sz,
+  #bkView .bk-file .at {
+    text-align: left;
+  }
+
+  #bkView .bk-file-head {
+    display: none;
+  }
+
+  #bkView .bk-act {
+    flex-wrap: wrap;
+  }
+
+  #bkView .bk-log-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #bkView.on .bk-sec,
+  #bkView .bk-form.on {
+    animation: none;
+  }
+
+  #bkView .bk-btn,
+  #bkView .bk-item,
+  #bkView .bk-opt,
+  #bkView .bk-chip {
+    transition: none;
+  }
+}
