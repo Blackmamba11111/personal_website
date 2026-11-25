@@ -9,6 +9,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://map.qq.com https://*.qq.com https://*.gtimg.com https://webapi.amap.com https://*.amap.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.qpic.cn https://*.amap.com https://*.autonavi.com; font-src 'self' data:; connect-src 'self' data: blob: https://*.qq.com https://*.gtimg.com https://*.map.qq.com https://*.qpic.cn https://*.amap.com https://*.autonavi.com https://cloudflareinsights.com https://static.cloudflareinsights.com; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' https://map.qq.com; base-uri 'self'; form-action 'self'; object-src 'none'">
 <title>客户巡检管理看板</title>
 <link rel="icon" id="favIcon" href="assets/favicon.png?v=2" type="image/png">
+<link rel="stylesheet" href="assets/att-chip.css?v=1">
 <script>
 /* 页签图标：内网用 ZDNS logo（favicon.png 不入 git，由部署脚本同步）；
    公网 demo 站维持原 svg 图标，logo 不上互联网 */
@@ -680,13 +681,7 @@
   .att-chip.up{opacity:.7;}
   .att-chip.err{border-color:#F5C9C9;background:#FFF7F7;}
 
-  /* 时间线里的附件 */
-  .tl-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;}
-  .tl-att{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2);
-    background:#fff;border:1px solid var(--border);border-radius:7px;padding:2px 7px 2px 2px;cursor:pointer;max-width:230px;}
-  .tl-att img{width:28px;height:22px;object-fit:cover;border-radius:4px;}
-  .tl-att .att-ico{width:28px;height:22px;font-size:8.5px;}
-  .tl-att:hover{border-color:#AFC4F5;}
+  /* 时间线里的附件：样式已外置到 assets/att-chip.css（含「文件已缺失」态） */
 
   /* 在线预览（2026-11-09 重构）
      坑：容器原先是 display:flex + 居中，而表格预览的「页签工具栏 + 表格」是两个兄弟节点，
@@ -5734,8 +5729,8 @@
       var thumb = isImgMime(a.mime)
         ? '<img src="' + esc(a.url) + '" alt="">'
         : '<span class="att-ico">' + esc(attKind(a.name, a.mime)) + '</span>';
-      return '<span class="tl-att" role="button" tabindex="0" data-vid="' + esc(vid || '') +
-        '" data-att="' + i + '">' + thumb +
+      return '<span class="tl-att' + (a.miss ? ' miss' : '') + '" role="button" tabindex="0" data-vid="' + esc(vid || '') +
+        '" data-att="' + i + '"' + (a.miss ? ' title="该附件文件已缺失，需重新上传"' : '') + '>' + thumb +
         '<span class="att-name" style="max-width:150px;" title="' + esc(a.name || '') + '">' +
         esc(a.name || '附件') + '</span></span>';
     }).join('') + '</div>';
@@ -5793,6 +5788,7 @@
         if (e) { e.preventDefault(); e.stopPropagation(); }
         var v = DB.visits.filter(function (x) { return x.id === el.getAttribute('data-vid'); })[0];
         var a = v && v.atts && v.atts[Number(el.getAttribute('data-att'))];
+        if (a && a.miss) { toast('该附件文件已缺失（历史数据迁移时未随迁），需重新上传'); return; }
         if (a) openAttachment(a);
       };
       el.onclick = act;

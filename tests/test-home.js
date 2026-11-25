@@ -449,6 +449,14 @@ async function main() {
     /* ---------- 删除账号不删数据（2026-11-25 软删除）与卡片双击 ---------- */
     check('客户卡片双击打开详情抽屉', /ondblclick = function[\s\S]{0,220}openDetail/.test(dash));
     check('删号确认文案说明数据保留', /附件与日志<b>全部保留<\/b>/.test(dash));
+    /* 失效附件：服务端打 miss → 前端置灰标注「文件已缺失」，点击只提示不打开 */
+    const css = fs.readFileSync(path.join(DIR, 'assets/att-chip.css'), 'utf8');
+    check('附件芯片样式已外置并声明缺失态', /\.tl-att\.miss\{/.test(css) && /content:"文件已缺失"/.test(css));
+    check('看板引用外置附件样式', /assets\/att-chip\.css\?v=1/.test(dash));
+    check('附件芯片按 miss 打标', /class="tl-att' \+ \(a\.miss \? ' miss' : ''\)/.test(dash));
+    check('缺失附件点击只提示不打开', /a\.miss\) \{ toast\('该附件文件已缺失/.test(dash));
+    check('内网服务端下发失效附件标记', /aliveAtt = new Set\(db\.prepare\('SELECT id FROM attachments'\)/.test(
+      fs.readFileSync(path.join(DIR, 'deploy/internal/server.js'), 'utf8')));
   });
 
   const pass = results.filter(r => r[0] === 'PASS').length;

@@ -1822,6 +1822,20 @@ async function bundleFor(env, u) {
       if (p) ledgers[mineKey(u.username)] = mask(p);
     }
   }
+  /* 失效附件标记（与内网版同口径）：台账引用了、attachments 表已无实体的附件，
+     前端置灰显示「文件已缺失」。附件表可能尚未创建，失败不影响主流程。 */
+  let aliveAtt;
+  try {
+    const ar = await env.DB.prepare('SELECT id FROM attachments').all();
+    aliveAtt = new Set((ar.results || []).map(function (r) { return r.id; }));
+  } catch (e) { aliveAtt = null; }
+  if (aliveAtt) {
+    Object.keys(ledgers).forEach(function (k) {
+      ((ledgers[k] || {}).visits || []).forEach(function (v) {
+        (v.atts || []).forEach(function (a) { if (a && a.id && !aliveAtt.has(a.id)) a.miss = true; });
+      });
+    });
+  }
   return {
     user: mapUser(u, srvMap), users: users, ledgers: ledgers, admin: isAdmin,
     canWrite: canWriteUser(u), attachMax: ATTACH_MAX,

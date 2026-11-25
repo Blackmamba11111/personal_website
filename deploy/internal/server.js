@@ -1941,6 +1941,15 @@ function bundleFor(u) {
       if (p) ledgers[mineKey(u.username)] = mask(p);
     }
   }
+  /* 失效附件标记：台账 JSON 里引用了、但 attachments 表里已无实体的附件，
+     前端据此置灰显示「文件已缺失」。readLedger 每次 JSON.parse 出新对象，
+     这里打标不会污染库里的原始 JSON（PUT 回写不会带上 miss）。 */
+  const aliveAtt = new Set(db.prepare('SELECT id FROM attachments').all().map(function (r) { return r.id; }));
+  Object.keys(ledgers).forEach(function (k) {
+    ((ledgers[k] || {}).visits || []).forEach(function (v) {
+      (v.atts || []).forEach(function (a) { if (a && a.id && !aliveAtt.has(a.id)) a.miss = true; });
+    });
+  });
   return {
     user: mapUser(u, srvMap), users: users, ledgers: ledgers, admin: isAdmin,
     canWrite: canWriteUser(u), attachMax: ATTACH_MAX,

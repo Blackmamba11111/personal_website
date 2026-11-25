@@ -1,0 +1,17 @@
+/* 附件胶囊样式（2026-11-25 从 inspection-dashboard.html 内联样式外置）
+   原因：主页面体积守卫 614400 B，余量只剩百来字节，新增视觉一律走外部文件。 */
+.tl-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;}
+.tl-att{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2);
+  background:#fff;border:1px solid var(--border);border-radius:7px;padding:2px 7px 2px 2px;cursor:pointer;max-width:230px;}
+.tl-att img{width:28px;height:22px;object-fit:cover;border-radius:4px;}
+.tl-att .att-ico{width:28px;height:22px;font-size:8.5px;}
+.tl-att:hover{border-color:#AFC4F5;}
+
+/* 文件已缺失：台账里保留了附件引用，但服务端既无 attachments 表行也无实体文件
+   （典型成因：历史版本数据迁移时只搬了台账 JSON，未随迁 uploads/ 与附件表）。
+   条目保留以便追溯「当时确实传过报告」，仅置灰、加删除线并标注，不可点击。 */
+.tl-att.miss{opacity:.6;border-style:dashed;background:#F7F7F9;cursor:not-allowed;max-width:272px;}
+.tl-att.miss:hover{border-color:var(--border);}
+.tl-att.miss .att-ico{filter:grayscale(1);}
+.tl-att.miss .att-name{text-decoration:line-through;color:#8A8F99;}
+.tl-att.miss::after{content:"文件已缺失";font-size:10px;color:#C0392B;white-space:nowrap;flex:0 0 auto;}
