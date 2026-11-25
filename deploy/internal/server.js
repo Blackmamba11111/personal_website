@@ -3642,7 +3642,14 @@ function pickEncoding(req, hit) {
 async function serveStatic(req, res, url) {
   let rel;
   try { rel = decodeURIComponent(url.pathname); } catch (e) { rel = '/'; }
-  if (rel === '/' || rel === '') rel = '/index.html';
+  /* 2026-11-25：内网入口直接进巡检系统（登录页），不再经个人主页中转——
+     打开 https://<ip>/ 就是登录框，登录后原地进入看板。
+     个人主页保留在 /index.html（看板账号菜单里的「返回站点首页」仍指向它）。
+     只改内网版；公网 Worker 的根路径依旧给个人主页对外展示。 */
+  if (rel === '/' || rel === '') {
+    res.writeHead(302, { location: '/inspection-dashboard.html' + (url.search || ''), 'cache-control': 'no-store' });
+    return res.end();
+  }
   if (!path.extname(rel)) rel += '.html';       /* 与 Cloudflare 行为一致：/x → /x.html */
   if (BLOCKED.test(rel)) return serve404(req, res);
 

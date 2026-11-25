@@ -311,6 +311,12 @@ async function main() {
     check('内网服务端与 Worker 同款照片接口', /p === '\/api\/photo' && method === 'POST'/.test(
       fs.readFileSync(path.join(DIR, 'deploy/internal/server.js'), 'utf8')));
 
+    /* 2026-11-25：内网入口直接进巡检系统（登录页），个人主页保留在 /index.html；
+       公网 Worker 根路径不动，仍是对外展示的个人主页 */
+    const inner0 = fs.readFileSync(path.join(DIR, 'deploy/internal/server.js'), 'utf8');
+    check('内网根路径 302 到巡检系统看板',
+      /rel === '\/' \|\| rel === ''\) \{\s*res\.writeHead\(302, \{ location: '\/inspection-dashboard\.html'/.test(inner0));
+
     const notFound = fs.readFileSync(path.join(DIR, '404.html'), 'utf8');
     check('404 页可回到首页与看板', notFound.indexOf('href="/"') >= 0 && notFound.indexOf('inspection-dashboard.html') >= 0);
     check('README 含 Cloudflare Pages 步骤', /Cloudflare Pages/.test(fs.readFileSync(path.join(DIR, 'README.md'), 'utf8')));
