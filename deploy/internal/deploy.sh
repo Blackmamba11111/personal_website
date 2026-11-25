@@ -152,7 +152,13 @@ fi
 echo "    一致"
 
 echo "==> 重建镜像并重启"
-$SSH "cd $REMOTE_DIR && docker compose build 2>&1 | tail -3 && docker compose up -d 2>&1 | tail -3" </dev/null
+# 远程命令必须自带 pipefail：本地 set -o pipefail 不作用于 ssh 里的 shell，
+# 而 `docker compose build | tail` 会把失败的退出码换成 tail 的 0 ——
+# 曾因此出现过「构建因 apt 失败、部署却报成功、容器还在跑旧镜像」的假成功。
+$SSH "cd $REMOTE_DIR && set -o pipefail && docker compose build 2>&1 | tail -25" </dev/null \
+  || { echo "!! 镜像构建失败，部署中止（文件已同步，但容器仍是旧镜像，功能不会生效）"; exit 1; }
+$SSH "cd $REMOTE_DIR && docker compose up -d 2>&1 | tail -5" </dev/null \
+  || { echo "!! 容器启动失败，部署中止"; exit 1; }
 
 echo "==> 健康检查"
 sleep 4

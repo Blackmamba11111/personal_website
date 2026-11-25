@@ -7,7 +7,17 @@
 #   改端口 / 环境变量请改这里，不要在服务器上直接编辑。
 services:
   inspection:
-    build: .
+    build:
+      context: .
+      # 内网 DNS(53/UDP) 被策略封禁，宿主机配的公网 DNS 一律超时，
+      # 于是构建期 apt-get update 解析不到 deb.debian.org，整层安装失败。
+      # 443/80 出网本身是放通的，所以把 CDN 地址直接钉进构建容器的 /etc/hosts。
+      # 151.101.2.132 是 fastly 边缘节点；security.debian.org 已在镜像源里并入
+      # deb.debian.org/debian-security，同样由这条记录覆盖。
+      # 若日后 CDN 换 IP 导致构建失败，用 `dig +short deb.debian.org` 取新值替换。
+      extra_hosts:
+        - "deb.debian.org:151.101.2.132"
+        - "security.debian.org:151.101.2.132"
     image: inspection-ledger:1.2.0
     container_name: inspection-ledger
     restart: unless-stopped
